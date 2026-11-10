@@ -9,15 +9,16 @@
 #include "hardware/display_font.h"
 #include "services/ota_github.h"
 #include "ui/radar_theme.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
 
-constexpr int kBezelInsetPx = 10;
-constexpr int kTextPadPx = 6;
-constexpr int kLineGap = 4;
+constexpr int kBezelInsetPx = ui::sc(10);
+constexpr int kTextPadPx = ui::sc(6);
+constexpr int kLineGap = ui::sc(4);
 /** Extra space between firmware version and author lines. */
-constexpr int kAuthorTopGap = 20;
+constexpr int kAuthorTopGap = ui::sc(20);
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;

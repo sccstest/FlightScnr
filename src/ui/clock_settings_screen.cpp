@@ -10,14 +10,15 @@
 #include "services/clock_time.h"
 #include "ui/radar_accent.h"
 #include "ui/radar_theme.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
 
-constexpr int kBezelInsetPx = 10;
-constexpr int kTextPadPx = 6;
-constexpr int kTitleGap = 6;
-constexpr int kLineGap = 4;
+constexpr int kBezelInsetPx = ui::sc(10);
+constexpr int kTextPadPx = ui::sc(6);
+constexpr int kTitleGap = ui::sc(6);
+constexpr int kLineGap = ui::sc(4);
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;

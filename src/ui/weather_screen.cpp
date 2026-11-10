@@ -15,14 +15,15 @@
 #include "ui/radar_accent.h"
 #include "ui/radar_theme.h"
 #include "ui/temp_label.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
-constexpr int kBezelInsetPx = 10;
-constexpr int kTextPadPx = 6;
+constexpr int kBezelInsetPx = ui::sc(10);
+constexpr int kTextPadPx = ui::sc(6);
 const int kCircleRadius = kCenterX - kBezelInsetPx;
 
 // Usable half-width of the visible circular chord at a given text row (same
@@ -58,16 +59,17 @@ constexpr int kLoY = 226;
 constexpr int kRainY = 252;
 constexpr int kCreditY = 288;
 #else
-constexpr int kForecastColOffset = 110;
+// 390 px design (T-Encoder Pro), scaled by ui::sc() on larger panels (Waveshare 4C).
+constexpr int kForecastColOffset = ui::sc(110);
 // Smaller icons leave room for the larger hi/lo temperature fonts.
-constexpr int kForecastIconSize = 72;
-constexpr int kTitleY = 48;
-constexpr int kLabelY = 104;
-constexpr int kIconY = 128;
-constexpr int kHiY = 214;
-constexpr int kLoY = 256;
-constexpr int kRainY = 292;
-constexpr int kCreditY = 330;
+constexpr int kForecastIconSize = ui::sc(72);
+constexpr int kTitleY = ui::sc(48);
+constexpr int kLabelY = ui::sc(104);
+constexpr int kIconY = ui::sc(128);
+constexpr int kHiY = ui::sc(214);
+constexpr int kLoY = ui::sc(256);
+constexpr int kRainY = ui::sc(292);
+constexpr int kCreditY = ui::sc(330);
 #endif
 
 UiTextStyle forecastHiStyle() {
@@ -195,8 +197,8 @@ void weatherScreenDraw() {
   const bool any_source = tomorrow_ready || services::apikeys::useOpenMeteo();
 
   if (!any_source) {
-    drawCentered("No weather source", kCenterY - 12, displayFontDetail(), dim, bg);
-    drawCentered("enable it in web settings", kCenterY + 12, displayFontDetail(), dim, bg);
+    drawCentered("No weather source", kCenterY - ui::sc(12), displayFontDetail(), dim, bg);
+    drawCentered("enable it in web settings", kCenterY + ui::sc(12), displayFontDetail(), dim, bg);
   } else if (!services::weather::hasData()) {
     drawCentered(services::weather::fetchInProgress() ? "Loading weather…"
                                                       : "No weather data",

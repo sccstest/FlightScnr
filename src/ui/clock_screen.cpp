@@ -13,22 +13,23 @@
 #include "ui/radar_accent.h"
 #include "ui/radar_theme.h"
 #include "ui/temp_label.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
 
-constexpr int kBezelInsetPx = 10;
-constexpr int kTextPadPx = 6;
-constexpr int kLineGap = 4;
-constexpr int kSectionGap = 8;
+constexpr int kBezelInsetPx = ui::sc(10);
+constexpr int kTextPadPx = ui::sc(6);
+constexpr int kLineGap = ui::sc(4);
+constexpr int kSectionGap = ui::sc(8);
 /** Extra space between the time row and the date line. */
-constexpr int kTimeDateGap = 14;
+constexpr int kTimeDateGap = ui::sc(14);
 /** On-screen size of the current-weather icon (downscaled from the native 96px
  *  forecast art) so the clock's time row stays inside the round display. */
-constexpr int kClockIconSize = 92;
+constexpr int kClockIconSize = ui::sc(92);
 /** Shift the whole clock block up from the panel center so the bottom
  *  sunrise/sunset row clears the round display's clipped lower corners. */
-constexpr int kClockTopBiasPx = 30;
+constexpr int kClockTopBiasPx = ui::sc(30);
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
@@ -96,13 +97,13 @@ void drawTimeWithAmPm(int* y, const char* time_line, const char* ampm_line, uint
   const int time_w = displayFontWidth(tft, time_style, time_line);
   const int time_h = displayFontHeight(tft, time_style);
 
-  constexpr int kAmPmGap = 8;
+  constexpr int kAmPmGap = ui::sc(8);
   int ampm_w = 0;
   if (ampm_line[0] != '\0') {
     ampm_w = displayFontWidth(tft, ampm_style, ampm_line);
   }
 
-  constexpr int kTimeRowShiftX = 10;
+  constexpr int kTimeRowShiftX = ui::sc(10);
   const int total_w = time_w + (ampm_w > 0 ? kAmPmGap + ampm_w : 0);
   const int x = kCenterX - total_w / 2 + kTimeRowShiftX;
   const int bottom_y = *y + time_h;
@@ -135,7 +136,7 @@ void drawSunGroup(int cx, bool sunset, const char* time_str, int y, uint16_t fg,
   const int icon = services::weather_icon::sunIconSize();
   displayFontApply(tft, displayFontDetail());
   const int text_w = tft.textWidth(time_str);
-  constexpr int kGap = 4;
+  constexpr int kGap = ui::sc(4);
   const int total = icon + kGap + text_w;
   const int left = cx - total / 2;
 
@@ -170,8 +171,8 @@ void drawSunRow(int* y, uint16_t dim, uint16_t bg) {
   services::clock::formatClockFromEpoch(wx.sunrise_epoch, sr, sizeof(sr));
   services::clock::formatClockFromEpoch(wx.sunset_epoch, ss, sizeof(ss));
   if (services::weather_icon::hasSunIcons()) {
-    drawSunGroup(kCenterX - 82, false, sr, *y, dim, bg);
-    drawSunGroup(kCenterX + 82, true, ss, *y, dim, bg);
+    drawSunGroup(kCenterX - ui::sc(82), false, sr, *y, dim, bg);
+    drawSunGroup(kCenterX + ui::sc(82), true, ss, *y, dim, bg);
     *y += services::weather_icon::sunIconSize() + kLineGap;
     return;
   }

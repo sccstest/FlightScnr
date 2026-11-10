@@ -25,6 +25,7 @@
 #include "ui/radar_theme.h"
 
 #include "hardware/gfx_log.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace radar {
@@ -706,6 +707,21 @@ void drawCardinalLabel(const char* text, int x, int y, TextDatum datum) {
 
 void drawScaleLabelWithBackground(const char* text, int x, int y) {
   displayFontApply(*s_draw, s_scale_style);
+  // Keep the label's left end inside the round panel. Only moves labels that would
+  // be clipped (e.g. the outer ring's "9.7km" on the 720 px panel); others are untouched.
+  {
+    const int w = s_draw->textWidth(text);
+    const int h = s_scale_label_h;
+    const int dy = y - h / 2 - radar::kCenterY;
+    const int r = radar::kSize / 2 - ui::sc(4);
+    if (dy * dy < r * r) {
+      const int half_chord = static_cast<int>(sqrtf(static_cast<float>(r * r - dy * dy)));
+      const int left_limit = radar::kCenterX - half_chord;
+      if (x - w < left_limit) {
+        x = left_limit + w;
+      }
+    }
+  }
   // Bottom-right anchor: text grows up/left into the W–SW wedge (not toward S).
   s_draw->setTextDatum(TextDatum::BottomRight);
   s_draw->setTextColor(radar::kColorGrid);
@@ -1274,7 +1290,7 @@ void recoverSweepAfterGap(unsigned long gap_ms) {
  *  rotating sweep happens to repaint that region from the content sprite. */
 IntRect aircraftMarkerBounds(int x, int y, const label_layout::Box& tag) {
   const int symbol_half = aircraftSymbolHalfPx();
-  constexpr int kPad = 6;
+  constexpr int kPad = ui::sc(6);
 
   int min_x = x - symbol_half - kPad;
   int max_x = x + symbol_half + kPad;

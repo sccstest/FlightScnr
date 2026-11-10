@@ -5,13 +5,14 @@
 #include "hardware/plane_gfx.h"
 #include "services/adsb_client.h"
 #include "ui/aircraft_icon.h"
+#include "ui/ui_scale.h"
 
 namespace ui::aircraft_symbol {
 namespace {
 
 constexpr float kDegToRad = 0.01745329252f;
-constexpr int kFullSidePx = 28;
-constexpr int kCompactSidePx = 16;
+constexpr int kFullSidePx = ui::sc(28);
+constexpr int kCompactSidePx = ui::sc(16);
 
 /** Local +y = aft, -y = nose. Same basis as radar sweep / noseTip. */
 void mapLocal(int lx, int ly, int cx, int cy, float heading_deg, int* ox, int* oy) {

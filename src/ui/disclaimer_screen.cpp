@@ -5,29 +5,30 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "hardware/display_font.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
 
-constexpr int kLineGap = 2;
-constexpr int kTitleBodyGap = 8;
-constexpr int kTopSafePx = 36;
+constexpr int kLineGap = ui::sc(2);
+constexpr int kTitleBodyGap = ui::sc(8);
+constexpr int kTopSafePx = ui::sc(36);
 
-constexpr int kBtnW = 120;
-constexpr int kBtnH = 36;
+constexpr int kBtnW = ui::sc(120);
+constexpr int kBtnH = ui::sc(36);
 /** Keep inside the round bezel; room above for checkbox + countdown. */
-constexpr int kBtnBottomInset = 24;
-constexpr int kBodyBtnGap = 10;
-constexpr int kCheckSize = 18;
-constexpr int kCheckGap = 8;
-constexpr int kCheckRowGap = 6;
-constexpr int kHitPad = 10;
+constexpr int kBtnBottomInset = ui::sc(24);
+constexpr int kBodyBtnGap = ui::sc(10);
+constexpr int kCheckSize = ui::sc(18);
+constexpr int kCheckGap = ui::sc(8);
+constexpr int kCheckRowGap = ui::sc(6);
+constexpr int kHitPad = ui::sc(10);
 
 const int kCenterX = config::kDisplayWidth / 2;
-const int kCountdownY = config::kDisplayHeight - 64;
-constexpr int kCountdownRegionX = 40;
+const int kCountdownY = config::kDisplayHeight - ui::sc(64);
+constexpr int kCountdownRegionX = ui::sc(40);
 const int kCountdownRegionW = config::kDisplayWidth - 2 * kCountdownRegionX;
-constexpr int kCountdownRegionH = 30;
+constexpr int kCountdownRegionH = ui::sc(30);
 
 int s_btn_x = 0;
 int s_btn_y = 0;
@@ -214,7 +215,7 @@ void disclaimerScreenDraw(int countdown_sec) {
   tft.fillRect(s_check_box_x, s_check_box_y, 2, kCheckSize, btn_edge);
   tft.fillRect(s_check_box_x + kCheckSize - 2, s_check_box_y, 2, kCheckSize, btn_edge);
   if (s_remember_checked) {
-    constexpr int kInner = 8;
+    constexpr int kInner = ui::sc(8);
     const int ix = s_check_box_x + (kCheckSize - kInner) / 2;
     const int iy = s_check_box_y + (kCheckSize - kInner) / 2;
     tft.fillRect(ix, iy, kInner, kInner, fg);

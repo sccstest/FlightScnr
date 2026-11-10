@@ -12,17 +12,49 @@
 #include "fonts/MontserratBold36pt4aa.h"
 #include "fonts/MontserratBold8pt4aa.h"
 #include "fonts/MontserratBold9pt4aa.h"
+#include "hardware/pin_config.h"
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 720 px panel: every preset is the 390 px design size x 720/390 (see ui/ui_scale.h).
+#include "fonts/MontserratBold15pt4aa.h"
+#include "fonts/MontserratBold17pt4aa.h"
+#include "fonts/MontserratBold20pt4aa.h"
+#include "fonts/MontserratBold22pt4aa.h"
+#include "fonts/MontserratBold26pt4aa.h"
+#include "fonts/MontserratBold33pt4aa.h"
+#include "fonts/MontserratBold44pt4aa.h"
+#include "fonts/MontserratBold66pt4aa.h"
+#define FS_FONT_8 MontserratBold15pt4aa
+#define FS_FONT_9 MontserratBold17pt4aa
+#define FS_FONT_10 MontserratBold18pt4aa
+#define FS_FONT_11 MontserratBold20pt4aa
+#define FS_FONT_12 MontserratBold22pt4aa
+#define FS_FONT_14 MontserratBold26pt4aa
+#define FS_FONT_18 MontserratBold33pt4aa
+#define FS_FONT_24 MontserratBold44pt4aa
+#define FS_FONT_36 MontserratBold66pt4aa
+#else
+#define FS_FONT_8 MontserratBold8pt4aa
+#define FS_FONT_9 MontserratBold9pt4aa
+#define FS_FONT_10 MontserratBold10pt4aa
+#define FS_FONT_11 MontserratBold11pt4aa
+#define FS_FONT_12 MontserratBold12pt4aa
+#define FS_FONT_14 MontserratBold14pt4aa
+#define FS_FONT_18 MontserratBold18pt4aa
+#define FS_FONT_24 MontserratBold24pt4aa
+#define FS_FONT_36 MontserratBold36pt4aa
+#endif
 
 namespace {
 
 const AaFont* kFonts[] = {
-    &MontserratBold8pt4aa,
-    &MontserratBold9pt4aa,
-    &MontserratBold10pt4aa,
-    &MontserratBold11pt4aa,
-    &MontserratBold12pt4aa,
-    &MontserratBold14pt4aa,
-    &MontserratBold18pt4aa,
+    &FS_FONT_8,
+    &FS_FONT_9,
+    &FS_FONT_10,
+    &FS_FONT_11,
+    &FS_FONT_12,
+    &FS_FONT_14,
+    &FS_FONT_18,
 };
 
 constexpr size_t kFontCount = sizeof(kFonts) / sizeof(kFonts[0]);
@@ -31,23 +63,23 @@ int absDiff(int a, int b) { return std::abs(a - b); }
 
 }  // namespace
 
-UiTextStyle displayFontTitle() { return UiTextStyle{&MontserratBold18pt4aa}; }
+UiTextStyle displayFontTitle() { return UiTextStyle{&FS_FONT_18}; }
 
-UiTextStyle displayFontBody() { return UiTextStyle{&MontserratBold12pt4aa}; }
+UiTextStyle displayFontBody() { return UiTextStyle{&FS_FONT_12}; }
 
-UiTextStyle displayFontDetail() { return UiTextStyle{&MontserratBold10pt4aa}; }
+UiTextStyle displayFontDetail() { return UiTextStyle{&FS_FONT_10}; }
 
-UiTextStyle displayFontCardinal() { return UiTextStyle{&MontserratBold12pt4aa}; }
+UiTextStyle displayFontCardinal() { return UiTextStyle{&FS_FONT_12}; }
 
-UiTextStyle displayFontScale() { return UiTextStyle{&MontserratBold9pt4aa}; }
+UiTextStyle displayFontScale() { return UiTextStyle{&FS_FONT_9}; }
 
-UiTextStyle displayFontTag() { return UiTextStyle{&MontserratBold11pt4aa}; }
+UiTextStyle displayFontTag() { return UiTextStyle{&FS_FONT_11}; }
 
-UiTextStyle displayFontClockTime() { return UiTextStyle{&MontserratBold36pt4aa}; }
+UiTextStyle displayFontClockTime() { return UiTextStyle{&FS_FONT_36}; }
 
-UiTextStyle displayFontClockAmPm() { return UiTextStyle{&MontserratBold24pt4aa}; }
+UiTextStyle displayFontClockAmPm() { return UiTextStyle{&FS_FONT_24}; }
 
-UiTextStyle displayFontClockDate() { return UiTextStyle{&MontserratBold18pt4aa}; }
+UiTextStyle displayFontClockDate() { return UiTextStyle{&FS_FONT_18}; }
 
 UiTextStyle displayFontPickForHeight(PlaneGfx& gfx, int target_px, size_t lo_index,
                                      size_t hi_index) {

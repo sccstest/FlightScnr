@@ -10,22 +10,23 @@
 #include "hardware/display_font.h"
 #include "services/device_identity.h"
 #include "ui/qr_draw.h"
+#include "ui/ui_scale.h"
 
 namespace {
 
-constexpr int kLineGap = 10;
+constexpr int kLineGap = ui::sc(10);
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
 
-constexpr int kSonarOuterRadius = 186;
-constexpr int kSonarInnerRadius = 118;
-constexpr int kSonarRingStepPx = 6;
+constexpr int kSonarOuterRadius = ui::sc(186);
+constexpr int kSonarInnerRadius = ui::sc(118);
+constexpr int kSonarRingStepPx = ui::sc(6);
 constexpr uint16_t kSonarGuideColor = 0x0320;
 
 char s_connecting_ssid[33];
 char s_ssid_line[33];
 char s_portal_ip_alt[32];
-constexpr int kConnectingTextMaxWidthPx = 358;
+constexpr int kConnectingTextMaxWidthPx = ui::sc(358);
 int s_ping_radius = kSonarInnerRadius;
 int s_ping_erase_radius = 0;
 bool s_connecting_text_drawn = false;
@@ -171,10 +172,10 @@ void bootScreenShowPortalHint() {
 
   // Round panel: keep the whole stack inside a safe chord so wide SSID / header
   // text is not cropped at the top/bottom bezel.
-  constexpr int kBezelInsetPx = 20;
+  constexpr int kBezelInsetPx = ui::sc(20);
   constexpr int kSafeRadius = config::kDisplayWidth / 2 - kBezelInsetPx;
   // Max |y - center| for ~180 px-wide detail text (half-width ≈ 90).
-  constexpr int kTextHalfWidthPx = 90;
+  constexpr int kTextHalfWidthPx = ui::sc(90);
   const int max_dy =
       static_cast<int>(sqrtf(static_cast<float>(kSafeRadius * kSafeRadius -
                                                  kTextHalfWidthPx * kTextHalfWidthPx)));
@@ -184,7 +185,7 @@ void bootScreenShowPortalHint() {
   const UiTextStyle detail_style = displayFontDetail();
   const int header_h = displayFontHeight(tft, header_style);
   const int detail_h = displayFontHeight(tft, detail_style);
-  constexpr int kGap = 8;
+  constexpr int kGap = ui::sc(8);
   const int fixed_h = header_h + kGap + kGap + detail_h + 4 + detail_h;
 
   // Largest module size whose QR box (version 3 + quiet zone) fits the band.
@@ -248,7 +249,7 @@ namespace {
 constexpr int kWifiResetCx = config::kDisplayWidth / 2;
 constexpr int kWifiResetCy = config::kDisplayHeight / 2;
 constexpr int kWifiResetRingOuterR = kWifiResetCx - 1;
-constexpr int kWifiResetRingInnerR = kWifiResetRingOuterR - 4;
+constexpr int kWifiResetRingInnerR = kWifiResetRingOuterR - ui::sc(4);
 constexpr int kWifiResetRingDegStep = 1;
 
 bool s_wifi_reset_ui_active = false;

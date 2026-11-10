@@ -23,6 +23,7 @@
 #include "ui/radar_scale.h"
 #include "ui/radar_theme.h"
 #include "ui/radar_accent.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 
@@ -30,17 +31,17 @@ void flightDetailDraw();
 
 namespace {
 
-constexpr int kBezelInsetPx = 10;
-constexpr int kTextPadPx = 6;
-constexpr int kTitleGap = 4;
-constexpr int kLogoGap = 3;
-constexpr int kLogoTopMarginPx = 2;
-constexpr int kPhotoCreditGap = 2;
-constexpr int kPhotoBelowGap = 10;
-constexpr int kLineGap = 3;
-constexpr int kSectionGap = 6;
-constexpr int kFooterGap = 6;
-constexpr int kTapPickRadiusPx = 36;
+constexpr int kBezelInsetPx = ui::sc(10);
+constexpr int kTextPadPx = ui::sc(6);
+constexpr int kTitleGap = ui::sc(4);
+constexpr int kLogoGap = ui::sc(3);
+constexpr int kLogoTopMarginPx = ui::sc(2);
+constexpr int kPhotoCreditGap = ui::sc(2);
+constexpr int kPhotoBelowGap = ui::sc(10);
+constexpr int kLineGap = ui::sc(3);
+constexpr int kSectionGap = ui::sc(6);
+constexpr int kFooterGap = ui::sc(6);
+constexpr int kTapPickRadiusPx = ui::sc(36);
 constexpr size_t kRouteLabelLen = data::airports::kMaxNameLen + 6;  // "ICAO, " + name
 
 PlaneGfxSprite s_detail_sprite(&tft);
@@ -114,7 +115,7 @@ const int kCenterY = config::kDisplayHeight / 2;
 const int kCircleRadius = kCenterX - kBezelInsetPx;
 /** Idle timeout ring: filled annulus near the physical display rim. */
 constexpr int kIdleRingOuterR = kCenterX - 1;
-constexpr int kIdleRingInnerR = kIdleRingOuterR - 4;
+constexpr int kIdleRingInnerR = kIdleRingOuterR - ui::sc(4);
 constexpr int kIdleRingDegStep = 1;
 constexpr float kDegToRad = 0.01745329252f;
 
@@ -1301,7 +1302,7 @@ void flightDetailDraw() {
   if (!copySelectedAircraft(&ac)) {
     detailGfx().fillScreen(bg);
     s_snapshot.valid = false;
-    int y = kCenterY - 20;
+    int y = kCenterY - ui::sc(20);
     drawCenterLine("No aircraft", &y, displayFontBody(), label_fg, bg);
     drawCenterLine("Swipe right", &y, displayFontDetail(), hint_fg, bg);
     drawCenterLine("for radar", &y, displayFontDetail(), hint_fg, bg);

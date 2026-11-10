@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "config.h"
+#include "ui/ui_scale.h"
 
 namespace ui::radar {
 
@@ -14,48 +15,48 @@ constexpr int kCenterY = kSize / 2;
 constexpr int kGridOuterRadius = (kSize * 174) / 390;
 
 /** N: pixels inset from top edge (TopCenter anchor). */
-constexpr int kCardinalNorthOffsetY = 10;
+constexpr int kCardinalNorthOffsetY = ui::sc(10);
 /** S: pixels inset from bottom edge (BottomCenter anchor). */
-constexpr int kCardinalSouthOffsetY = 10;
+constexpr int kCardinalSouthOffsetY = ui::sc(10);
 /** Intercardinal (NE/SE/SW/NW) labels sit on the outer grid ring minus this inset. */
-constexpr int kCardinalDiagonalInsetPx = 6;
+constexpr int kCardinalDiagonalInsetPx = ui::sc(6);
 
 /** Radial inset from each ring for scale labels (px; positive = toward center). */
-constexpr int kScaleGapFromOuterRing = 12;
+constexpr int kScaleGapFromOuterRing = ui::sc(12);
 /** Outermost ring only, when distance units are km. */
-constexpr int kScaleGapOuterRingKm = 20;
+constexpr int kScaleGapOuterRingKm = ui::sc(20);
 /** Range ring labels: bearing from north, clockwise (between W and SW on display). */
 constexpr float kScaleLabelBearingDeg = 245.5f;
 
 /** Target cap height (px) for N/S/E/W. */
-constexpr int kCardinalLabelHeightPx = 23;
+constexpr int kCardinalLabelHeightPx = ui::sc(23);
 /** Scale label is this many px shorter than cardinals. */
-constexpr int kScaleBelowCardinalPx = 5;
+constexpr int kScaleBelowCardinalPx = ui::sc(5);
 
 constexpr int kRingCount = 3;
 
 /** Shared grid stroke: drawWideLine half-width (~2 px total); rings use the same px count. */
-constexpr float kGridStrokeHalfWidth = 1.0f;
+constexpr float kGridStrokeHalfWidth = ui::scf(1.0f);
 /** Dashed grid: dash and gap length along lines / arcs (px). */
-constexpr int kGridDashLenPx = 7;
-constexpr int kGridDashGapPx = 15;
+constexpr int kGridDashLenPx = ui::sc(7);
+constexpr int kGridDashGapPx = ui::sc(15);
 
 /** Top-down aircraft icon half-extent (see ui/aircraft_symbol). */
-constexpr int kAircraftIconRadiusPx = 15;
+constexpr int kAircraftIconRadiusPx = ui::sc(15);
 /** Gap from icon edge to tag block (px). */
-constexpr int kAircraftLabelGapPx = 3;
+constexpr int kAircraftLabelGapPx = ui::sc(3);
 /** Keep icon inside outer ring by at least this inset (px). */
-constexpr int kAircraftInsideRingInsetPx = kAircraftIconRadiusPx + 2;
+constexpr int kAircraftInsideRingInsetPx = kAircraftIconRadiusPx + ui::sc(2);
 
 /** Beyond-ring traffic: compact aircraft icons on screen rim. */
-constexpr int kBeyondRingScreenMarginPx = 3;
+constexpr int kBeyondRingScreenMarginPx = ui::sc(3);
 /** Target cap height (px) for aircraft tags (bold, slightly above scale label). */
-constexpr int kAircraftTagLabelHeightPx = 21;
+constexpr int kAircraftTagLabelHeightPx = ui::sc(21);
 /**
  * Tag blocks stay inside this radius so text clears the round bezel. Clamping
  * to the square framebuffer instead would leave rim tags half off the glass.
  */
-constexpr int kAircraftLabelVisibleRadiusPx = kCenterX - 8;
+constexpr int kAircraftLabelVisibleRadiusPx = kCenterX - ui::sc(8);
 
 /** Radar sweep: one full rotation period (ms). */
 constexpr unsigned long kSweepPeriodMs = 6000;
@@ -70,7 +71,7 @@ constexpr float kSweepIncrementalMaxDeg = 10.0f;
 /** Sweep line from center to this radius (px). */
 constexpr int kSweepRadiusPx = kCenterX - kBeyondRingScreenMarginPx;
 /** drawWideLine half-width for the sweep spoke (~2 px total). */
-constexpr float kSweepLineHalfWidth = 1.0f;
+constexpr float kSweepLineHalfWidth = ui::scf(1.0f);
 /** Trailing sweep lines (1 = leading spoke only, no trail). */
 constexpr int kSweepTrailLines = 1;
 constexpr float kSweepTrailSpanDeg = 12.0f;

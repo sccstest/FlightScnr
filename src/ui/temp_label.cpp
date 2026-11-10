@@ -1,3 +1,4 @@
+#include "ui/ui_scale.h"
 #include "ui/temp_label.h"
 
 #include <cstdio>
@@ -10,8 +11,8 @@ namespace {
 
 // Generous gaps so the opaque text cells (drawString paints fg-on-bg) never
 // overlap — and thus never clip — the drawn degree ring between them.
-constexpr int kDegGap1 = 5;
-constexpr int kDegGap2 = 4;
+constexpr int kDegGap1 = ui::sc(5);
+constexpr int kDegGap2 = ui::sc(4);
 
 int ringRadius(int temp_h) {
   if (temp_h >= 44) {

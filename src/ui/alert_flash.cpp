@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "ui/radar_display.h"
+#include "ui/ui_scale.h"
 
 namespace ui {
 namespace {
@@ -13,9 +14,9 @@ constexpr unsigned long kAlertFlashMs = 10000;
 /** Ring blink interval: 500ms on, 500ms off. */
 constexpr unsigned long kRingBlinkPhaseMs = 500;
 /** Outer bezel inset so the ring stays on the visible round panel. */
-constexpr int kRingOuterInsetPx = 2;
+constexpr int kRingOuterInsetPx = ui::sc(2);
 /** Radial thickness of the alert ring (px). */
-constexpr int kRingThicknessPx = 20;
+constexpr int kRingThicknessPx = ui::sc(20);
 
 constexpr int kRingOuterRadiusPx = config::kDisplayWidth / 2 - kRingOuterInsetPx;
 constexpr int kRingInnerRadiusPx = kRingOuterRadiusPx - kRingThicknessPx;

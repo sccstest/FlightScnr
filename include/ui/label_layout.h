@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "ui/ui_scale.h"
 
 /**
  * Stable slot assignment for radar aircraft tags.
@@ -52,7 +53,7 @@ constexpr int coverageLimitPct(uint8_t previous_tier, uint8_t candidate_tier) {
   return candidate_tier < previous_tier ? kUnhideCoveragePct : kHideCoveragePct;
 }
 /** Ranking pad (px) so slots that merely touch still cost something. */
-constexpr int kClearancePx = 4;
+constexpr int kClearancePx = ui::sc(4);
 /** Cost per px a candidate box is displaced by bezel clamping. */
 constexpr int kClampPenaltyPerPx = 6;
 /**
