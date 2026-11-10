@@ -36,8 +36,12 @@ constexpr char kUrlKey[] = "url";
 constexpr char kAvailKey[] = "av";
 
 constexpr char kApiHost[] = "api.github.com";
-constexpr char kApiPath[] =
-    "/repos/yashmulgaonkar/FlightScnr/releases/latest";
+// Boards built from a fork set FLIGHTSCNR_OTA_REPO in their board header so OTA
+// pulls that fork's releases instead of upstream's.
+#ifndef FLIGHTSCNR_OTA_REPO
+#define FLIGHTSCNR_OTA_REPO "yashmulgaonkar/FlightScnr"
+#endif
+constexpr char kApiPath[] = "/repos/" FLIGHTSCNR_OTA_REPO "/releases/latest";
 constexpr char kAppAssetName[] = "FlightScnr-" FLIGHTSCNR_BOARD_NAME "-app.bin";
 constexpr char kUserAgent[] = "FlightScnr-OTA";
 

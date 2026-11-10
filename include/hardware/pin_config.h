@@ -10,7 +10,9 @@
  * Run `pio run` (env: auto) to pick a connected board, or `pio run -e <board>`.
  */
 
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "boards/waveshare_p4_4c.h"
+#elif defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
 #include "boards/waveshare_knob_18.h"
 #elif defined(FLIGHTSCNR_BOARD_TENCODER_PRO)
 #include "boards/tencoder_pro.h"

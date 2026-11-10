@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFi.h>  // WiFiClient (core 3.x no longer pulls it in via HTTPClient)
 #include <WiFiClientSecure.h>
 
 #include "services/secure_client.h"

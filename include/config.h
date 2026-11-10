@@ -215,6 +215,17 @@ constexpr uint32_t kDetailApiTimeoutMs = 4000;
 constexpr uint32_t kAircraftPhotoTimeoutMs = 5000;
 /** Debounce before starting a photo fetch after encoder settle (ms). */
 constexpr unsigned long kAircraftPhotoDebounceMs = 450UL;
+/**
+ * ADS-B feed endpoint. Keep host and URL here only, so a feed outage or move
+ * (adsb.lol / airplanes.live closed their public APIs in 2026) is a one-line OTA fix.
+ */
+#define FLIGHTSCNR_ADSB_HOST "opendata.adsb.fi"
+constexpr char kAdsbHost[] = FLIGHTSCNR_ADSB_HOST;
+constexpr char kAdsbApiBase[] = "https://" FLIGHTSCNR_ADSB_HOST "/api/v3/lat/";
+/** Identifying User-Agent sent to adsb.fi so the public feed can see who is polling. */
+constexpr char kAdsbUserAgent[] =
+    "FlightScnr/" FLIGHTSCNR_FIRMWARE_VERSION
+    " (ADS-B desk display; +https://github.com/yashmulgaonkar/FlightScnr)";
 /** Descriptive User-Agent required by Planespotters Photo API. */
 constexpr char kPlanespottersUserAgent[] =
     "FlightScnr/" FLIGHTSCNR_FIRMWARE_VERSION

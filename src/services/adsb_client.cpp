@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFi.h>  // WiFiClient (core 3.x no longer pulls it in via HTTPClient)
 #include <WiFiClientSecure.h>
 
 #include "services/secure_client.h"
@@ -65,7 +66,6 @@ AircraftCategory Aircraft::classify() const {
 
 namespace {
 
-constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
 constexpr uint32_t kFetchHttpTimeoutMs = 8000;
 constexpr uint32_t kFetchHttpTimeoutSec = kFetchHttpTimeoutMs / 1000UL;
@@ -1066,7 +1066,7 @@ bool fetchUpdateBlocking(double center_lat, double center_lon, float fetch_radiu
   }
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
-  String url = kApiBase;
+  String url = config::kAdsbApiBase;
   url += String(center_lat, 6);
   url += "/lon/";
   url += String(center_lon, 6);
@@ -1097,6 +1097,7 @@ bool fetchUpdateBlocking(double center_lat, double center_lon, float fetch_radiu
   http.setConnectTimeout(kFetchHttpTimeoutMs);
   http.setTimeout(kFetchHttpTimeoutMs);
   http.setReuse(false);
+  http.setUserAgent(config::kAdsbUserAgent);
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     if (code == 429) {

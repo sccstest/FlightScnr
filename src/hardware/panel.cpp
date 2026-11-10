@@ -14,7 +14,9 @@ namespace {
 constexpr char kStoreNs[] = "flightscnr";
 constexpr char kPanelKey[] = "panel_hw";
 
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+PanelType s_panel = PanelType::WaveshareP4Dsi;
+#elif defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
 PanelType s_panel = PanelType::WaveshareSt77916;
 #else
 PanelType s_panel = PanelType::DxqSh8601;
@@ -84,7 +86,11 @@ void persistPanel(PanelType type) {
 }  // namespace
 
 void panelBootResolve() {
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  s_panel = PanelType::WaveshareP4Dsi;
+  Serial.println("Panel: Waveshare 4C MIPI-DSI / GT9271 (compile-time board)");
+  return;
+#elif defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
   s_panel = PanelType::WaveshareSt77916;
   Serial.println("Panel: Waveshare ST77916 / CST816 (compile-time board)");
   return;
@@ -120,6 +126,8 @@ const char* panelTypeName() {
       return "TFD12 / CO5300";
     case PanelType::WaveshareSt77916:
       return "Waveshare / ST77916";
+    case PanelType::WaveshareP4Dsi:
+      return "Waveshare 4C / MIPI-DSI";
     case PanelType::DxqSh8601:
     default:
       return "DXQ120 / SH8601";

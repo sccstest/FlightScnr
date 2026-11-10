@@ -6,6 +6,8 @@ Arduino_DataBus *create_default_Arduino_DataBus()
   return new Arduino_NRFXSPI(DF_GFX_DC, DF_GFX_CS, DF_GFX_SCK, DF_GFX_MOSI, DF_GFX_MISO);
 #elif defined(TARGET_RP2040)
   return new Arduino_RPiPicoSPI(DF_GFX_DC, DF_GFX_CS, DF_GFX_SCK, DF_GFX_MOSI, DF_GFX_MISO, DF_GFX_SPI);
+#elif defined(ESP32) && defined(CONFIG_IDF_TARGET_ESP32P4)
+  return nullptr;  // FlightScnr: P4 has no default SPI panel (see hardware/p4_dsi_panel)
 #elif defined(ESP32)
   return new Arduino_ESP32SPI(DF_GFX_DC, DF_GFX_CS, DF_GFX_SCK, DF_GFX_MOSI, DF_GFX_MISO);
 #elif defined(ESP8266)

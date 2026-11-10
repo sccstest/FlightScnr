@@ -4,7 +4,7 @@
  */
 #include "Arduino_ESP32SPI.h"
 
-#if defined(ESP32)
+#if defined(ESP32) && !defined(CONFIG_IDF_TARGET_ESP32P4)  // FlightScnr: P4 uses hardware/p4_dsi_panel
 
 struct spi_struct_t
 {

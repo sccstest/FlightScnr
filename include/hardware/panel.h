@@ -12,6 +12,8 @@ enum class PanelType : uint8_t {
   TfdCo5300 = 2,
   /** Waveshare ESP32-S3-Knob-Touch-LCD-1.8 — ST77916 + CST816. */
   WaveshareSt77916 = 3,
+  /** Waveshare ESP32-P4-WIFI6-Touch-LCD-4C — MIPI-DSI 720×720 + GT9271. */
+  WaveshareP4Dsi = 4,
 };
 
 /**

@@ -2,7 +2,7 @@
 
 #include "Arduino_DataBus.h"
 
-#if defined(ESP32)
+#if defined(ESP32) && !defined(CONFIG_IDF_TARGET_ESP32P4)  // FlightScnr: P4 uses hardware/p4_dsi_panel
 #include "soc/spi_struct.h"
 #if CONFIG_IDF_TARGET_ESP32S3
 #include "driver/periph_ctrl.h"

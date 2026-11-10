@@ -2,7 +2,7 @@
 
 #include "Arduino_DataBus.h"
 
-#if defined(ESP32)
+#if defined(ESP32) && !defined(CONFIG_IDF_TARGET_ESP32P4)  // FlightScnr: P4 uses hardware/p4_dsi_panel
 #include <driver/spi_master.h>
 
 #define SPI_MAX_PIXELS_AT_ONCE 4096//1024

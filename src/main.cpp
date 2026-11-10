@@ -354,10 +354,10 @@ bool adsbDnsReady(unsigned long now) {
   }
 
   IPAddress ip;
-  s_resolved = WiFi.hostByName("opendata.adsb.fi", ip);
+  s_resolved = WiFi.hostByName(config::kAdsbHost, ip);
   s_next_probe_ms = now + (s_resolved ? 60000UL : 1500UL);
   if (!s_resolved && config::kSerialTraceDebug) {
-    Serial.println("[fetch] defer: DNS not ready for opendata.adsb.fi");
+    Serial.println("[fetch] defer: DNS not ready for " FLIGHTSCNR_ADSB_HOST);
   }
   return s_resolved;
 }

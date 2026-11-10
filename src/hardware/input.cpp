@@ -1,3 +1,6 @@
+// Rotary/CST816/CHSC5816 input for the ESP32-S3 boards. P4 4C: see input_p4.cpp.
+#include "hardware/pin_config.h"
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 #include "hardware/input.h"
 
 #include <Wire.h>
@@ -602,3 +605,5 @@ bool inputConsumeWifiResetUiCancelled() {
   s_wifi_reset_ui_cancelled_pending = false;
   return pending;
 }
+
+#endif  // !FLIGHTSCNR_BOARD_WAVESHARE_P4_4C

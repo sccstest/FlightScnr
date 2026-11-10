@@ -44,14 +44,27 @@ void ensureBacklightPwm() {
   if (s_bl_pwm_ready) {
     return;
   }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttachChannel(LCD_BL, kBlLedcFreqHz, kBlLedcResolution, kBlLedcChannel);
+#else
   ledcSetup(kBlLedcChannel, kBlLedcFreqHz, kBlLedcResolution);
   ledcAttachPin(LCD_BL, kBlLedcChannel);
+#endif
   s_bl_pwm_ready = true;
 }
 
 void applyBacklightPwm(uint8_t pct) {
   ensureBacklightPwm();
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Waveshare's BSP caps the 4C backlight at 95% duty.
+  ledcWrite(LCD_BL, static_cast<uint32_t>(panelLevelForPercent(pct)) * 95u / 100u);
+#else
+  ledcWrite(LCD_BL, panelLevelForPercent(pct));
+#endif
+#else
   ledcWrite(kBlLedcChannel, panelLevelForPercent(pct));
+#endif
 }
 #endif
 

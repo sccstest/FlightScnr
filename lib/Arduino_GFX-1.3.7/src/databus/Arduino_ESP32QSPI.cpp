@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#if defined(ESP32)
+#if defined(ESP32) && !defined(CONFIG_IDF_TARGET_ESP32P4)  // FlightScnr: P4 uses hardware/p4_dsi_panel
 
 /**
  * @brief Arduino_ESP32QSPI
