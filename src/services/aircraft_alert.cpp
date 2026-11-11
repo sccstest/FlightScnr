@@ -38,6 +38,7 @@ constexpr char kPrivateKey[] = "alert_ga";
 constexpr char kTypeColorsKey[] = "type_colors";
 constexpr char kApproachKey[] = "alert_appr";
 constexpr char kOverheadKey[] = "alert_ovh";
+constexpr char kHideAirlinersKey[] = "hide_air";
 constexpr char kNotableKey[] = "alert_notbl";
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -60,6 +61,7 @@ bool s_private_enabled = config::kFactoryAlertPrivate;
 bool s_type_colors = kTypeColorsDefault;
 bool s_alert_on_approach = config::kFactoryAlertOnApproach;
 bool s_overhead_any = config::kFactoryAlertOverheadAny;
+bool s_hide_airliners = config::kFactoryHideAirliners;
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 bool s_notable_enabled = config::kFactoryAlertNotable;
 #endif
@@ -388,6 +390,9 @@ bool overheadAnyMatch(const services::adsb::Aircraft& ac) {
   if (!s_overhead_any) {
     return false;
   }
+  if (s_hide_airliners && trafficClass(ac) == TrafficClass::Airline) {
+    return false;  // hidden big jets don't pop back in as "overhead"
+  }
   bool ground = false;
   const int ft = altitudeFeet(ac, &ground);
   if (ground || ft < 0 || ft > kOverheadMaxAltFt) {
@@ -534,6 +539,7 @@ void bootLoad() {
   s_type_colors = prefs.getBool(kTypeColorsKey, kTypeColorsDefault);
   s_alert_on_approach = prefs.getBool(kApproachKey, config::kFactoryAlertOnApproach);
   s_overhead_any = prefs.getBool(kOverheadKey, config::kFactoryAlertOverheadAny);
+  s_hide_airliners = prefs.getBool(kHideAirlinersKey, config::kFactoryHideAirliners);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   s_notable_enabled = prefs.getBool(kNotableKey, config::kFactoryAlertNotable);
 #endif
@@ -824,6 +830,30 @@ void saveApproachFromForm(const char* approach_checkbox, const char* overhead_ch
 bool typeColorsEnabled() { return s_type_colors; }
 bool helicopterAlertEnabled() { return s_heli_enabled; }
 bool privateAlertEnabled() { return s_private_enabled; }
+
+bool airlinersHidden() { return s_hide_airliners; }
+void toggleHideAirliners() {
+  s_hide_airliners = !s_hide_airliners;
+  persistBool(kHideAirlinersKey, s_hide_airliners);
+  clearSeen();
+}
+void saveHideAirlinersFromForm(const char* checkbox) {
+  const bool v = checkbox != nullptr && checkbox[0] == 'T';
+  if (v != s_hide_airliners) {
+    s_hide_airliners = v;
+    persistBool(kHideAirlinersKey, s_hide_airliners);
+    clearSeen();
+  }
+}
+bool hiddenOnRadar(const services::adsb::Aircraft& ac) {
+  if (!s_hide_non_alerted && !s_hide_airliners) {
+    return false;
+  }
+  if (isHighlighted(ac)) {
+    return false;
+  }
+  return s_hide_non_alerted || trafficClass(ac) == TrafficClass::Airline;
+}
 
 void toggleTypeColors() {
   s_type_colors = !s_type_colors;

@@ -54,6 +54,7 @@ enum class DisplayAdjustRow : uint8_t {
   Facing,
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   Rain,
+  Airliners,
 #endif
 };
 
@@ -438,7 +439,7 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[8][48];
+  char deco[9][48];
   char rings_line[28];
   snprintf(rings_line, sizeof(rings_line), "Rings: %s", ui::radar::gridModeLabel());
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -447,6 +448,9 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
            ui::displayPrefsOverheadSignEnabled() ? "on" : "off");
   char rain_line[24];
   snprintf(rain_line, sizeof(rain_line), "Rain: %s", services::rain::enabled() ? "On" : "Off");
+  char jets_line[28];
+  snprintf(jets_line, sizeof(jets_line), "Airliners: %s",
+           services::alert::airlinersHidden() ? "hidden" : "shown");
 #endif
   const InfoLine option_lines[] = {
       {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
@@ -470,6 +474,8 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
       {focusDecorate(rain_line, s_display_focus == DisplayAdjustRow::Rain, deco[7], 48),
        displayFontBody(), s_display_focus == DisplayAdjustRow::Rain ? active_fg : label_fg},
+      {focusDecorate(jets_line, s_display_focus == DisplayAdjustRow::Airliners, deco[8], 48),
+       displayFontBody(), s_display_focus == DisplayAdjustRow::Airliners ? active_fg : label_fg},
 #endif
   };
   const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
@@ -815,6 +821,9 @@ void infoScreenCycleDisplayFocus() {
     case DisplayAdjustRow::Facing:
       s_display_focus = DisplayAdjustRow::Rain;
       break;
+    case DisplayAdjustRow::Rain:
+      s_display_focus = DisplayAdjustRow::Airliners;
+      break;
 #endif
     default:
       s_display_focus = DisplayAdjustRow::Brightness;
@@ -1017,6 +1026,9 @@ void infoScreenHandleKnob(int8_t delta) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
     case DisplayAdjustRow::Rain:
       services::rain::toggleEnabled();
+      break;
+    case DisplayAdjustRow::Airliners:
+      services::alert::toggleHideAirliners();
       break;
 #endif
   }

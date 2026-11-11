@@ -557,7 +557,6 @@ void resolveAircraftLabels() {
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
   fillAircraftLabelKeys(planes, n);
-  const bool hide_others = services::alert::hideNonAlertedEnabled();
   const int line_h = tagLineHeight();
 
   // Static: drawAircraft() already holds two 64-entry arrays on the display
@@ -566,7 +565,7 @@ void resolveAircraftLabels() {
   size_t target_count = 0;
 
   for (size_t i = 0; i < n && target_count < services::adsb::kMaxAircraft; ++i) {
-    if (hide_others && !services::alert::isHighlighted(planes[i])) {
+    if (services::alert::hiddenOnRadar(planes[i])) {
       continue;
     }
     float dx_km = 0.0f;
@@ -665,10 +664,9 @@ size_t inRangeAircraftCount() {
 size_t visibleAircraftCount() {
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
-  const bool hide_others = services::alert::hideNonAlertedEnabled();
   size_t visible = 0;
   for (size_t i = 0; i < n; ++i) {
-    if (hide_others && !services::alert::isHighlighted(planes[i])) {
+    if (services::alert::hiddenOnRadar(planes[i])) {
       continue;
     }
     if (isAircraftInRange(planes[i])) {
@@ -896,9 +894,8 @@ void drawAircraft() {
   size_t draw_count = 0;
   size_t dot_count = 0;
 
-  const bool hide_others = services::alert::hideNonAlertedEnabled();
   for (size_t i = 0; i < n; ++i) {
-    if (hide_others && !services::alert::isHighlighted(planes[i])) {
+    if (services::alert::hiddenOnRadar(planes[i])) {
       continue;
     }
     float dx_km = 0.0f;

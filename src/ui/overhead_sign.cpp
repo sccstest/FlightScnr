@@ -115,8 +115,8 @@ void ensureLayout(PlaneGfx& gfx) {
   if (s_layout_ready) {
     return;
   }
-  s_l1_h = displayFontHeight(gfx, displayFontBody());
-  s_l2_h = displayFontHeight(gfx, displayFontTag());
+  s_l1_h = displayFontHeight(gfx, displayFontDetail());
+  s_l2_h = displayFontHeight(gfx, displayFontScale());
   const int l2_bottom = radar::kSize - kLine2BottomInset;
   s_l2_top = l2_bottom - s_l2_h;
   s_l1_top = s_l2_top - kLineGap - s_l1_h;
@@ -297,7 +297,6 @@ float distanceKm(const services::adsb::Aircraft& ac) {
 const services::adsb::Aircraft* pickAircraft(float* out_dist_km) {
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
-  const bool hide_others = services::alert::hideNonAlertedEnabled();
 
   const services::adsb::Aircraft* best = nullptr;
   bool best_in = false;
@@ -308,7 +307,7 @@ const services::adsb::Aircraft* pickAircraft(float* out_dist_km) {
 
   for (size_t i = 0; i < n; ++i) {
     const services::adsb::Aircraft& ac = planes[i];
-    if (hide_others && !services::alert::isHighlighted(ac)) {
+    if (services::alert::hiddenOnRadar(ac)) {
       continue;
     }
     const bool in = radarDisplayIsInRange(ac);
@@ -521,7 +520,7 @@ void drawLine(PlaneGfx& gfx, const Line& line, int x, int top, int h, uint16_t a
 bool buildLine1(PlaneGfx& gfx, int max_w, int first, int last, Line* out) {
   const char* ident = s_state.callsign[0] != '\0' ? s_state.callsign : s_state.hex;
   const char* candidates[] = {s_state.type_full, s_state.type_short, s_state.type_code, ""};
-  displayFontApply(gfx, displayFontBody());
+  displayFontApply(gfx, displayFontDetail());
   bool any = false;
   for (int i = first; i <= last; ++i) {
     const char* type = candidates[i];
@@ -552,7 +551,7 @@ bool buildLine1(PlaneGfx& gfx, int max_w, int first, int last, Line* out) {
 
 /** Line 2: route · altitude · distance, dropping the least useful part to fit. */
 void buildLine2(PlaneGfx& gfx, int max_w, Line* out) {
-  displayFontApply(gfx, displayFontTag());
+  displayFontApply(gfx, displayFontScale());
   const bool has_route = s_state.origin[0] != '\0' && s_state.dest[0] != '\0';
   // Variants in preference order: bit0 route, bit1 altitude, bit2 distance.
   const uint8_t variants[] = {0x7, 0x3, 0x5, 0x6, 0x1, 0x2, 0x4};
@@ -671,7 +670,7 @@ void overheadSignDraw(PlaneGfx& gfx, uint16_t* fb, int fb_w, int fb_h) {
   if (!logo) {
     logo_w = 0;
   }
-  displayFontApply(gfx, displayFontBody());
+  displayFontApply(gfx, displayFontDetail());
   const int l1_w = lineWidth(gfx, l1);
   const int l1_x = radar::kCenterX - (l1_w + logo_w) / 2;
   if (logo) {
@@ -681,7 +680,7 @@ void overheadSignDraw(PlaneGfx& gfx, uint16_t* fb, int fb_w, int fb_h) {
 
   Line l2;
   buildLine2(gfx, rowMaxWidth(s_l2_top, s_l2_h), &l2);
-  displayFontApply(gfx, displayFontTag());
+  displayFontApply(gfx, displayFontScale());
   const int l2_w = lineWidth(gfx, l2);
   drawLine(gfx, l2, radar::kCenterX - l2_w / 2, s_l2_top, s_l2_h, accent, ink, dim);
   gfx.setTextDatum(TextDatum::TopLeft);

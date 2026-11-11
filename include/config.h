@@ -111,6 +111,7 @@ constexpr bool kFactoryAlertHelicopter = true;
 constexpr bool kFactoryAlertPrivate = true;
 constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
 constexpr bool kFactoryAlertOverheadAny = true;
+constexpr bool kFactoryHideAirliners = false;   // radar shows airliners and cargo jets
 constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
 constexpr bool kFactoryAlertNotable = true;     // 'go look' alarm for notable aircraft
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
@@ -133,6 +134,7 @@ constexpr bool kFactoryAlertHelicopter = false;
 constexpr bool kFactoryAlertPrivate = false;
 constexpr bool kFactoryAlertOnApproach = false;
 constexpr bool kFactoryAlertOverheadAny = false;
+constexpr bool kFactoryHideAirliners = false;
 constexpr bool kFactoryAlertNotable = false;
 constexpr bool kFactoryBasemapVfr = false;
 #endif

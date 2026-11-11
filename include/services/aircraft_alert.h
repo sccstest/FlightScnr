@@ -42,6 +42,15 @@ void saveApproachFromForm(const char* approach_checkbox, const char* overhead_ch
 bool helicopterAlertEnabled();
 bool privateAlertEnabled();
 
+/** Hide airliners and cargo jets (TrafficClass::Airline) from the radar, the overhead
+ *  sign, the detail list and Overhead (any). Special ones (military, emergency,
+ *  notable, watch list) still show. */
+bool airlinersHidden();
+void toggleHideAirliners();
+void saveHideAirlinersFromForm(const char* checkbox);
+/** True when this aircraft should not be drawn or listed (hide filters applied). */
+bool hiddenOnRadar(const services::adsb::Aircraft& ac);
+
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 /**
  * "Go outside and look" alarm for notable aircraft (services/notable_aircraft.h):

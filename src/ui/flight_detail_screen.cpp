@@ -573,11 +573,14 @@ void redrawCenterLineAt(int y, const char* text, UiTextStyle style, uint16_t fg,
 
 void rebuildOrderByDistance() {
   s_plane_count = services::adsb::copyAircraftSnapshot(s_planes, services::adsb::kMaxAircraft);
-  const size_t n = s_plane_count;
-  s_order_count = n;
-  for (size_t i = 0; i < n; ++i) {
-    s_order[i] = static_cast<uint8_t>(i);
+  // Only planes the radar shows (hide filters), so next/previous skips hidden ones.
+  size_t n = 0;
+  for (size_t i = 0; i < s_plane_count; ++i) {
+    if (!services::alert::hiddenOnRadar(s_planes[i])) {
+      s_order[n++] = static_cast<uint8_t>(i);
+    }
   }
+  s_order_count = n;
 
   for (size_t i = 0; i + 1 < n; ++i) {
     for (size_t j = i + 1; j < n; ++j) {

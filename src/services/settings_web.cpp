@@ -549,6 +549,9 @@ void handleSettingsPage() {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   appendToggle(page, kSettingsPageCap, &used, "overhead_sign",
                "Overhead sign (closest plane banner)", ui::displayPrefsOverheadSignEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "hide_airliners",
+               "Hide airliners and cargo jets (special ones still show)",
+               services::alert::airlinersHidden());
 #endif
 
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
@@ -1446,6 +1449,7 @@ void handleSettingsPage() {
       "setVal('hide_blip_details',j.hide_blip_details);"
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
       "setVal('overhead_sign',j.overhead_sign);"
+      "setVal('hide_airliners',j.hide_airliners);"
 #endif
       "setVal('use_basemap',j.use_basemap);"
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -1573,6 +1577,7 @@ void handleSave() {
   ui::displayPrefsSaveHideBlipDetailsFromForm(s_server->arg("hide_blip_details").c_str());
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   ui::displayPrefsSaveOverheadSignFromForm(s_server->arg("overhead_sign").c_str());
+  services::alert::saveHideAirlinersFromForm(s_server->arg("hide_airliners").c_str());
 #endif
   ui::displayPrefsSaveAutoIdleClockFromForm(s_server->arg("idle_clock").c_str());
   services::basemap::saveEnabledFromForm(s_server->arg("use_basemap").c_str());
@@ -2265,8 +2270,10 @@ void handleSettingsApi() {
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   {
-    const int n = snprintf(s_api_buf + used, kApiCap - used, "\"overhead_sign\":%s,",
-                           ui::displayPrefsOverheadSignEnabled() ? "true" : "false");
+    const int n = snprintf(s_api_buf + used, kApiCap - used,
+                           "\"overhead_sign\":%s,\"hide_airliners\":%s,",
+                           ui::displayPrefsOverheadSignEnabled() ? "true" : "false",
+                           services::alert::airlinersHidden() ? "true" : "false");
     if (n <= 0 || static_cast<size_t>(n) >= kApiCap - used) {
       s_server->send(500, "text/plain", "json overflow");
       return;
