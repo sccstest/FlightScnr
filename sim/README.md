@@ -90,8 +90,8 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 
 - CARTO styles need a free key from <https://carto.com/basemaps/apikey>. Without one,
   every tile comes back as an "API KEY REQUIRED" placeholder.
-- The map covers the current range, or `-MapMiles`. Zooming in is fine, though it gets
-  softer. Zooming out past the baked range, moving the center, or changing Facing
+- The map covers the current range, or `-MapMiles`, plus a sharper copy for each smaller
+  range preset (as the 4C's settings page does), so zooming in stays crisp. Zooming out past the baked range, moving the center, or changing Facing
   hides the map until you bake again, just like on the device.
 - The launcher closes a running simulator first, because the simulator rewrites
   `nvs.txt` while it runs.

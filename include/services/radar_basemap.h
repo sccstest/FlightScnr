@@ -85,6 +85,11 @@ bool metaMatchesLive();
 void uploadBegin();
 bool uploadWrite(const uint8_t* data, size_t len);
 bool uploadFinish(size_t total_bytes, Style style, uint8_t range_miles);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** Store the upload as the sharper copy for a smaller range under the current main
+ *  bake (the settings page sends one per smaller preset right after the main one). */
+bool uploadFinishDetail(uint8_t range_miles);
+#endif
 void uploadAbort();
 
 /** Delete /basemap.jpg and clear meta/cache. */

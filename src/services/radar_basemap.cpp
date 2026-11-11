@@ -26,6 +26,14 @@ namespace {
 
 constexpr char kPath[] = "/basemap.jpg";
 constexpr char kTmpPath[] = "/basemap.tmp";
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// Sharper copies for the smaller range presets, baked in the same session as the
+// main image (same center / facing / style). Bit i of the mask = a file for
+// ui::radar::kRangeMileOptions[i]. Without them, zooming in only upscales the main
+// bake (10x at 3 mi from a 30 mi bake: very soft).
+constexpr char kDetailMaskKey[] = "lvl";
+uint8_t s_detail_mask = 0;
+#endif
 constexpr char kStoreNs[] = "fs_basemap";
 constexpr char kEnKey[] = "en";
 constexpr char kLatKey[] = "lat";
@@ -56,6 +64,8 @@ uint8_t s_wash_vfr_pct = kDefaultWashVfrPct;
 
 uint16_t* s_cache = nullptr;
 bool s_cache_valid = false;
+/** Coverage (miles) of the bake currently decoded into s_cache. */
+uint8_t s_cache_mi = 0;
 
 /** Cache LittleFS presence — exists()/open on a missing path spams VFS errors
  *  and was hit from every stalled radar full-draw retry. */
@@ -95,6 +105,58 @@ void persistEnabled() {
   }
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+void detailPath(uint8_t mi, char* out, size_t len) {
+  snprintf(out, len, "/basemap_%u.jpg", static_cast<unsigned>(mi));
+}
+
+int rangeIndex(uint8_t mi) {
+  for (size_t i = 0; i < ui::radar::kRangeMileOptionCount; ++i) {
+    if (ui::radar::kRangeMileOptions[i] == mi) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void persistDetailMask() {
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putUChar(kDetailMaskKey, s_detail_mask);
+    prefs.end();
+  }
+}
+
+/** Delete every detail bake (a new main bake or a clear invalidates them). */
+void removeDetailFiles() {
+  char path[24];
+  for (size_t i = 0; i < ui::radar::kRangeMileOptionCount; ++i) {
+    detailPath(ui::radar::kRangeMileOptions[i], path, sizeof(path));
+    if ((s_detail_mask & (1U << i)) != 0 || LittleFS.exists(path)) {
+      LittleFS.remove(path);
+    }
+  }
+  s_detail_mask = 0;
+  persistDetailMask();
+}
+#endif
+
+/** Bake to draw from for the live range: the smallest detail bake that still covers
+ *  it, else the main one. */
+uint8_t sourceMiles(uint8_t live_mi) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  for (size_t i = 0; i < ui::radar::kRangeMileOptionCount; ++i) {
+    const uint8_t r = ui::radar::kRangeMileOptions[i];
+    if (r >= live_mi && r < s_meta.range_miles && (s_detail_mask & (1U << i)) != 0) {
+      return r;
+    }
+  }
+#else
+  (void)live_mi;
+#endif
+  return s_meta.range_miles;
+}
+
 void persistMeta() {
   Preferences prefs;
   if (!prefs.begin(kStoreNs, false)) {
@@ -130,6 +192,9 @@ void loadPrefs() {
     s_wash_vfr_pct = 100;
   }
   s_meta.valid = prefs.getBool(kValidKey, false);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  s_detail_mask = prefs.getUChar(kDetailMaskKey, 0);
+#endif
   if (s_meta.valid) {
     s_meta.lat = prefs.getDouble(kLatKey, 0);
     s_meta.lon = prefs.getDouble(kLonKey, 0);
@@ -153,6 +218,7 @@ void freeCache() {
   psramFree(s_cache);
   s_cache = nullptr;
   s_cache_valid = false;
+  s_cache_mi = 0;
 }
 
 void noteFilePresent() { s_file_state = FileState::Present; }
@@ -229,14 +295,14 @@ int jpegDrawCallback(JPEGDRAW* draw) {
   return 1;
 }
 
-bool decodeFileToCache() {
+bool decodeFileToCache(const char* path) {
   const unsigned long t0 = millis();
   freeCache();
-  if (!ensureFs() || !LittleFS.exists(kPath)) {
+  if (!ensureFs() || !LittleFS.exists(path)) {
     return false;
   }
 
-  File f = LittleFS.open(kPath, "r");
+  File f = LittleFS.open(path, "r");
   if (!f) {
     return false;
   }
@@ -475,6 +541,11 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
     clearMetaIfOrphaned();
     return false;
   }
+  const uint8_t live_mi = ui::radar::scaleActiveMiles();
+  const uint8_t baked_mi = sourceMiles(live_mi);
+  if (s_cache_valid && s_cache_mi != baked_mi) {
+    freeCache();  // zoom moved to a different detail bake
+  }
   if (!s_cache_valid) {
     // Never decode on the radar stall path while TLS is active / heap is low —
     // JPEGDEC blocked the loop for ~18s in the field and left max_blk wedged.
@@ -484,13 +555,30 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
                     ESP.getMaxAllocHeap());
       return false;
     }
-    if (!decodeFileToCache()) {
+    const char* path = kPath;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    char detail[24];
+    if (baked_mi != s_meta.range_miles) {
+      detailPath(baked_mi, detail, sizeof(detail));
+      path = detail;
+    }
+#endif
+    if (!decodeFileToCache(path)) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      if (path != kPath) {
+        // Missing / bad detail bake: forget it so the next frame uses the main one.
+        const int idx = rangeIndex(baked_mi);
+        if (idx >= 0) {
+          s_detail_mask = static_cast<uint8_t>(s_detail_mask & ~(1U << idx));
+          persistDetailMask();
+        }
+      }
+#endif
       return false;
     }
+    s_cache_mi = baked_mi;
   }
 
-  const uint8_t live_mi = ui::radar::scaleActiveMiles();
-  const uint8_t baked_mi = s_meta.range_miles;
   const size_t px =
       static_cast<size_t>(kPixelSize) * static_cast<size_t>(kPixelSize);
   if (live_mi == baked_mi) {
@@ -709,6 +797,9 @@ bool uploadFinish(size_t total_bytes, Style style, uint8_t range_miles) {
   }
 
   noteFilePresent();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  removeDetailFiles();  // they belong to the previous bake; the page re-sends them
+#endif
   s_meta.lat = services::map_center::latitude();
   s_meta.lon = services::map_center::longitude();
   uint8_t mi = range_miles;
@@ -756,6 +847,40 @@ bool uploadFinish(size_t total_bytes, Style style, uint8_t range_miles) {
   return true;
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool uploadFinishDetail(uint8_t range_miles) {
+  if (!s_upload_active || s_upload_failed || !s_upload) {
+    uploadAbort();
+    return false;
+  }
+  s_upload.close();
+  s_upload_active = false;
+  const int idx = rangeIndex(range_miles);
+  // Detail bakes only make sense under a matching main bake, for a smaller range.
+  if (s_upload_bytes < 64 || idx < 0 || !s_meta.valid || range_miles >= s_meta.range_miles) {
+    LittleFS.remove(kTmpPath);
+    return false;
+  }
+  char path[24];
+  detailPath(range_miles, path, sizeof(path));
+  LittleFS.remove(path);
+  if (!LittleFS.rename(kTmpPath, path)) {
+    LittleFS.remove(kTmpPath);
+    return false;
+  }
+  s_detail_mask = static_cast<uint8_t>(s_detail_mask | (1U << idx));
+  persistDetailMask();
+  if (s_cache_mi != 0) {
+    freeCache();  // a sharper bake may now cover the live range
+  }
+  Serial.printf("[basemap] detail %u mi saved (%u bytes, mask 0x%02X)\n",
+                static_cast<unsigned>(range_miles), static_cast<unsigned>(s_upload_bytes),
+                static_cast<unsigned>(s_detail_mask));
+  ui::radarDisplayInvalidateBasemap();
+  return true;
+}
+#endif
+
 void uploadAbort() {
   if (s_upload) {
     s_upload.close();
@@ -774,6 +899,9 @@ bool clear() {
   }
   LittleFS.remove(kPath);
   LittleFS.remove(kTmpPath);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  removeDetailFiles();
+#endif
   noteFileAbsent();
   s_meta = {};
   persistMeta();

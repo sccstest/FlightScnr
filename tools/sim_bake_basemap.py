@@ -276,6 +276,20 @@ def main() -> int:
     size_kb = out.stat().st_size / 1024
     print(f"  wrote {out} ({size_kb:.0f} KB)")
 
+    # Sharper copies for every smaller zoom preset (same as the settings page on
+    # the 4C): the radar draws the closest one instead of upscaling the main bake.
+    mask = 0
+    for i, r in enumerate(RANGE_OPTIONS):
+        detail_path = args.data / "littlefs" / f"basemap_{r}.jpg"
+        if detail_path.exists():
+            detail_path.unlink()
+        if r >= miles:
+            continue
+        bake(args.style, lat, lon, r, facing, args.carto_key or None, contrast,
+             wash).save(detail_path, "JPEG", quality=88, optimize=True)
+        mask |= 1 << i
+    nvs[("fs_basemap", "lvl")] = str(mask)
+
     nvs.update({
         ("fs_basemap", "en"): "1",
         ("fs_basemap", "ok"): "1",
@@ -286,8 +300,8 @@ def main() -> int:
         ("fs_basemap", "sty"): str(STYLE_IDS[args.style]),
     })
     save_nvs(nvs_path, nvs)
-    print(f"Basemap on: {args.style}, {miles} mi. Zoom in freely; zooming out past "
-          f"{miles} mi or moving the center needs a re-bake.")
+    print(f"Basemap on: {args.style}, {miles} mi plus sharper copies for each closer zoom. "
+          f"Zooming out past {miles} mi or moving the center needs a re-bake.")
     return 0
 
 

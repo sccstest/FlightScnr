@@ -728,12 +728,8 @@ void handleSettingsPage() {
         "if(styleKey()==='vfr')res(null);"
         "else rej(new Error('tile '+z+'/'+x+'/'+y));};"
         "i.src=tileUrl(z,x,y);});}"
-        "async function bake(){"
-        "if(styleKey()!=='vfr'&&!activeCartoKey()){"
-        "msg.textContent='CARTO API key required — paste key above, then Generate';"
-        "return;}"
-        "await persistBakeAdjust();"
-        "var miles=bakeMiles(),labelKm=miles*1.609344,ppm=OUTER/labelKm;"
+        "async function bakeOne(miles,detail){"
+        "var labelKm=miles*1.609344,ppm=OUTER/labelKm;"
         "var coverR=Math.ceil(Math.hypot(CX,CY))+2;"
         "msg.textContent='Fetching '+styleLabel()+' @ '+miles+' mi\\u2026';"
         "var z=pickZ(labelKm),f=facing*Math.PI/180,cf=Math.cos(f),sf=Math.sin(f);"
@@ -751,7 +747,7 @@ void handleSettingsPage() {
         "for(var x=x0;x<=x1;x++)for(var y=y0;y<=y1;y++)(function(X,Y){"
         "jobs.push(loadTile(z,X,Y).then(function(img){if(img){tiles[X+','+Y]=img;got++;}}));})(x,y);"
         "await Promise.all(jobs);"
-        "if(!got){msg.textContent='No tiles loaded (check coverage / network)';return;}"
+        "if(!got)throw new Error('No tiles loaded (check coverage / network)');"
         "msg.textContent='Compositing\\u2026';"
         "var tw=(x1-x0+1)*256,th=(y1-y0+1)*256;"
         "var mc=document.createElement('canvas');mc.width=tw;mc.height=th;"
@@ -783,19 +779,38 @@ void handleSettingsPage() {
         "g.putImageData(out,0,0);"
         "msg.textContent='Uploading\\u2026';"
         "var blob=await new Promise(function(r){c.toBlob(r,'image/jpeg',0.88);});"
-        "if(!blob){msg.textContent='JPEG encode failed';return;}"
+        "if(!blob)throw new Error('JPEG encode failed');"
         "var fd=new FormData();fd.append('basemap',blob,'basemap.jpg');"
-        "var q='style='+encodeURIComponent(styleKey())+'&mi='+miles;"
+        "var q='style='+encodeURIComponent(styleKey())+'&mi='+miles+(detail?'&detail=1':'');"
+        "await new Promise(function(res,rej){"
         "var x=new XMLHttpRequest();x.open('POST','/basemap/upload?'+q);"
-        "x.onload=function(){if(x.status==200){msg.textContent='Basemap saved. Open radar to view.';"
-        "location.href='/?saved=1';}else{msg.textContent='Upload failed: '+(x.responseText||x.status);}};"
-        "x.onerror=function(){msg.textContent='Upload error';};x.send(fd);"
+        "x.onload=function(){if(x.status==200)res();"
+        "else rej(new Error('Upload failed: '+(x.responseText||x.status)));};"
+        "x.onerror=function(){rej(new Error('Upload error'));};x.send(fd);});"
+        "}"
+        "async function bake(){"
+        "if(styleKey()!=='vfr'&&!activeCartoKey()){"
+        "msg.textContent='CARTO API key required — paste key above, then Generate';"
+        "return;}"
+        "await persistBakeAdjust();"
+        "var miles=bakeMiles();"
+        "await bakeOne(miles,false);"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        // Sharper copies for every smaller zoom preset, so zooming in stays crisp.
+        "var LEVELS=[2,3,6,8,10,20,30];"
+        "for(var li=0;li<LEVELS.length;li++){if(LEVELS[li]<miles)await bakeOne(LEVELS[li],true);}"
+#endif
+        "msg.textContent='Basemap saved. Open radar to view.';location.href='/?saved=1';"
         "}"
         "document.getElementById('bm_gen').addEventListener('click',function(){"
         "var miles=bakeMiles();"
         "if(!confirm('Bake '+styleLabel()+' at '+miles+' mi for current center/facing?\\n'"
         "+(miles===maxMiles"
+        #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        "?'Sharper copies for each closer zoom level are made too (takes a minute).'"
+#else
         "?'Zooming in will soft-upscale (regenerate at current range for sharper detail).'"
+#endif
         ":'Zooming out past '+miles+' mi requires regenerate.')))return;"
         "bake().catch(function(e){msg.textContent=String(e&&e.message||e);});});"
         "document.getElementById('bm_clear').addEventListener('click',function(){"
@@ -1746,6 +1761,14 @@ void handleBasemapUpload() {
           mi = static_cast<uint8_t>(v);
         }
       }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      if (s_server->hasArg("detail")) {
+        if (!services::basemap::uploadFinishDetail(mi)) {
+          s_basemap_upload_failed = true;
+        }
+        break;
+      }
+#endif
       if (!services::basemap::uploadFinish(upload.totalSize, style, mi)) {
         s_basemap_upload_failed = true;
       }
