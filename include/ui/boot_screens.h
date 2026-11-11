@@ -4,6 +4,8 @@
 void bootScreenShowPortalHint();
 void bootScreenShowConnectFailed();
 void bootScreenShowWifiCleared();
+/** "Connected" + network name + the settings page address by IP (mDNS often fails). */
+void bootScreenShowConnected(const char* ssid, const char* ip);
 
 void bootScreenConnectingStart(const char* ssid);
 void bootScreenConnectingPulse();

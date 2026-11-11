@@ -19,6 +19,77 @@
 WiFiClass WiFi;
 
 // ---------------------------------------------------------------------------
+// Fault injection, to exercise the firmware's offline handling:
+//   --offline            Wi-Fi down and every HTTP request fails, for the whole run
+//   --wifi-down A[:B]    WiFi.status() reports disconnected from A s to B s (B omitted = forever)
+//   --feed-down A[:B]    Wi-Fi stays up but every HTTP request fails from A s to B s
+// FLIGHTSCNR_SIM_OFFLINE=1 in the environment is the same as --offline.
+// Times are seconds since the simulator started (the --tap/--shot clock).
+// Read from the process command line here so sim_main.cpp needs no changes.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct FaultWindow {
+  double from_s = -1;  // <0: never
+  double to_s = -1;    // <0: until exit
+  bool active(double now_s) const {
+    return from_s >= 0 && now_s >= from_s && (to_s < 0 || now_s < to_s);
+  }
+};
+
+struct NetFaults {
+  FaultWindow wifi;
+  FaultWindow http;
+};
+
+void parseWindow(const char* v, FaultWindow* w) {
+  double a = 0, b = -1;
+  const int n = sscanf(v, "%lf:%lf", &a, &b);
+  if (n >= 1) {
+    w->from_s = a;
+    w->to_s = n == 2 ? b : -1;
+  }
+}
+
+const NetFaults& netFaults() {
+  static NetFaults f = [] {
+    NetFaults out;
+    const char* env = getenv("FLIGHTSCNR_SIM_OFFLINE");
+    bool offline = env != nullptr && env[0] != '\0' && env[0] != '0';
+    for (int i = 1; i < __argc; ++i) {
+      const char* next = i + 1 < __argc ? __argv[i + 1] : nullptr;
+      if (strcmp(__argv[i], "--offline") == 0) {
+        offline = true;
+      } else if (strcmp(__argv[i], "--wifi-down") == 0 && next != nullptr) {
+        parseWindow(next, &out.wifi);
+      } else if (strcmp(__argv[i], "--feed-down") == 0 && next != nullptr) {
+        parseWindow(next, &out.http);
+      }
+    }
+    if (offline) {
+      out.wifi.from_s = 0;
+      out.wifi.to_s = -1;
+    }
+    if (out.wifi.from_s >= 0 || out.http.from_s >= 0) {
+      printf("[sim] fault injection: wifi-down %.0f..%.0f s, feed-down %.0f..%.0f s (-1 = off/forever)\n",
+             out.wifi.from_s, out.wifi.to_s, out.http.from_s, out.http.to_s);
+    }
+    return out;
+  }();
+  return f;
+}
+
+double simNowS() { return static_cast<double>(millis()) / 1000.0; }
+
+}  // namespace
+
+bool simWifiDown() { return netFaults().wifi.active(simNowS()); }
+bool simHttpDown() {
+  const double now = simNowS();
+  return netFaults().wifi.active(now) || netFaults().http.active(now);
+}
+
+// ---------------------------------------------------------------------------
 // WiFiClient: a buffer the HTTP response body is served from.
 // ---------------------------------------------------------------------------
 void WiFiClient::simLoad(std::vector<uint8_t>&& body) {
@@ -48,10 +119,10 @@ uint8_t WiFiClient::connected() { return open_ && pos_ < buf_.size() ? 1 : 0; }
 // ---------------------------------------------------------------------------
 // WiFi
 // ---------------------------------------------------------------------------
-wl_status_t WiFiClass::status() { return WL_CONNECTED; }
+wl_status_t WiFiClass::status() { return simWifiDown() ? WL_DISCONNECTED : WL_CONNECTED; }
 int8_t WiFiClass::RSSI() { return -52; }
 String WiFiClass::SSID() { return String("Simulator (PC network)"); }
-IPAddress WiFiClass::localIP() { return IPAddress(127, 0, 0, 1); }
+IPAddress WiFiClass::localIP() { return simWifiDown() ? IPAddress(0, 0, 0, 0) : IPAddress(127, 0, 0, 1); }
 uint8_t* WiFiClass::macAddress(uint8_t* mac) {
   const uint8_t m[6] = {0x02, 0x00, 0x00, 0x51, 0x4D, 0x01};
   memcpy(mac, m, 6);
@@ -59,6 +130,7 @@ uint8_t* WiFiClass::macAddress(uint8_t* mac) {
 }
 
 int WiFiClass::hostByName(const char* host, IPAddress& out) {
+  if (simHttpDown()) return 0;
   static std::once_flag wsa_once;
   std::call_once(wsa_once, [] {
     WSADATA d;
@@ -173,6 +245,11 @@ int HTTPClient::sendRequest(const char* type, const uint8_t* payload, size_t siz
   client_->stop();
   size_ = -1;
   resp_headers_.clear();
+  if (simHttpDown()) {
+    // Like a dead uplink: a short stall, then a refused connection.
+    delay(300);
+    return HTTPC_ERROR_CONNECTION_REFUSED;
+  }
 
   const std::wstring wurl = widen(url_);
   URL_COMPONENTS uc = {};

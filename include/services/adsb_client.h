@@ -138,6 +138,11 @@ bool rateLimitBackoffActive(unsigned long now_ms);
 /** Clear fail streak after a WiFi/TLS recycle. */
 void fetchResetFailStreak();
 
+/** True after config::kFeedDownAfterFails polls in a row failed (errors, hung
+ *  fetches or HTTP 429), until the next good poll. An empty sky is not a failure.
+ *  Drives the radar's "Flight data offline" badge. */
+bool feedLooksDown();
+
 /** Free stack space (bytes) on the adsb_fetch FreeRTOS task. */
 uint32_t fetchTaskStackFreeBytes();
 
