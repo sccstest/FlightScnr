@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+
+#include "config.h"
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -46,14 +48,14 @@ constexpr size_t kWatchCallsignLen = 9;
 constexpr size_t kWatchBlobLen = 160;
 constexpr unsigned long kPulseCycleMs = 250;
 
-bool s_mil_enabled = false;
-bool s_emrg_enabled = false;
+bool s_mil_enabled = config::kFactoryAlertMilitary;
+bool s_emrg_enabled = config::kFactoryAlertEmergency;
 bool s_hide_non_alerted = false;
-bool s_heli_enabled = false;
-bool s_private_enabled = false;
+bool s_heli_enabled = config::kFactoryAlertHelicopter;
+bool s_private_enabled = config::kFactoryAlertPrivate;
 bool s_type_colors = kTypeColorsDefault;
-bool s_alert_on_approach = false;
-bool s_overhead_any = false;
+bool s_alert_on_approach = config::kFactoryAlertOnApproach;
+bool s_overhead_any = config::kFactoryAlertOverheadAny;
 
 char s_watch_blob[kWatchBlobLen] = "";
 char s_watch_callsigns[kWatchMax][kWatchCallsignLen];
@@ -403,14 +405,14 @@ void bootLoad() {
     Serial.println("[alert] NVS open failed");
     return;
   }
-  s_mil_enabled = prefs.getBool(kMilKey, false);
-  s_emrg_enabled = prefs.getBool(kEmrgKey, false);
+  s_mil_enabled = prefs.getBool(kMilKey, config::kFactoryAlertMilitary);
+  s_emrg_enabled = prefs.getBool(kEmrgKey, config::kFactoryAlertEmergency);
   s_hide_non_alerted = prefs.getBool(kHideKey, false);
-  s_heli_enabled = prefs.getBool(kHeliKey, false);
-  s_private_enabled = prefs.getBool(kPrivateKey, false);
+  s_heli_enabled = prefs.getBool(kHeliKey, config::kFactoryAlertHelicopter);
+  s_private_enabled = prefs.getBool(kPrivateKey, config::kFactoryAlertPrivate);
   s_type_colors = prefs.getBool(kTypeColorsKey, kTypeColorsDefault);
-  s_alert_on_approach = prefs.getBool(kApproachKey, false);
-  s_overhead_any = prefs.getBool(kOverheadKey, false);
+  s_alert_on_approach = prefs.getBool(kApproachKey, config::kFactoryAlertOnApproach);
+  s_overhead_any = prefs.getBool(kOverheadKey, config::kFactoryAlertOverheadAny);
   const String watch = prefs.getString(kWatchKey, "");
   strncpy(s_watch_blob, watch.c_str(), sizeof(s_watch_blob) - 1);
   s_watch_blob[sizeof(s_watch_blob) - 1] = '\0';

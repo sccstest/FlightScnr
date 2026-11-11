@@ -2,6 +2,8 @@
 
 #include <Preferences.h>
 
+#include "config.h"
+
 #include <cstdlib>
 #include <cstring>
 
@@ -14,7 +16,7 @@ namespace {
 constexpr char kStoreNs[] = "flightscnr";
 constexpr char kAccentKey[] = "radar_accent";
 
-constexpr RadarAccentColor kDefaultAccent = RadarAccentColor::Green;
+constexpr RadarAccentColor kDefaultAccent = static_cast<RadarAccentColor>(config::kFactoryRadarAccent);
 
 RadarAccentColor s_accent = kDefaultAccent;
 

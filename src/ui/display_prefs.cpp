@@ -1,6 +1,8 @@
 #include "ui/display_prefs.h"
 
 #include <Preferences.h>
+
+#include "config.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -24,9 +26,9 @@ constexpr uint8_t kDefaultClockTimeoutSec = 10;
 uint8_t s_flight_detail_timeout_sec = kDefaultDetailTimeoutSec;
 /** 0 = manual; otherwise 5, 10, or 15. */
 uint8_t s_clock_weather_timeout_sec = kDefaultClockTimeoutSec;
-bool s_sweep_line_enabled = true;
+bool s_sweep_line_enabled = config::kFactorySweepLine;
 bool s_hide_blip_details = false;
-bool s_auto_idle_clock_enabled = true;
+bool s_auto_idle_clock_enabled = config::kFactoryAutoIdleClock;
 
 constexpr uint8_t kTimeoutOptions[] = {0, 10, 20, 30};
 constexpr size_t kTimeoutOptionCount = sizeof(kTimeoutOptions) / sizeof(kTimeoutOptions[0]);
@@ -141,9 +143,9 @@ void displayPrefsBootLoad() {
   const uint8_t clock_stored = prefs.getUChar(kClockTimeoutKey, kDefaultClockTimeoutSec);
   s_clock_weather_timeout_sec =
       isValidClockTimeoutSec(clock_stored) ? clock_stored : kDefaultClockTimeoutSec;
-  s_sweep_line_enabled = prefs.getBool(kSweepLineKey, true);
+  s_sweep_line_enabled = prefs.getBool(kSweepLineKey, config::kFactorySweepLine);
   s_hide_blip_details = prefs.getBool(kHideBlipDetailsKey, false);
-  s_auto_idle_clock_enabled = prefs.getBool(kIdleClockKey, true);
+  s_auto_idle_clock_enabled = prefs.getBool(kIdleClockKey, config::kFactoryAutoIdleClock);
   prefs.end();
 }
 

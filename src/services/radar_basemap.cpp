@@ -6,6 +6,8 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 
+#include "config.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -414,7 +416,10 @@ void invalidateCache() { freeCache(); }
 
 Meta storedMeta() { return s_meta; }
 
-Style storedStyle() { return s_meta.valid ? s_meta.style : Style::Dark; }
+Style storedStyle() {
+  if (s_meta.valid) return s_meta.style;
+  return config::kFactoryBasemapVfr ? Style::Vfr : Style::Dark;
+}
 
 bool wantsDisplay() {
   return s_enabled && s_meta.valid && metaMatchesLive() && filePresent();

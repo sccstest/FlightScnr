@@ -93,9 +93,43 @@ constexpr unsigned long kBootConnectedIpMs = 2500;
 /** When disclaimer acceptance is remembered, show it this long then continue. */
 constexpr unsigned long kDisclaimerRememberedTimeoutMs = 5000;
 
-// --- Map center factory defaults (portal can override) ---
+// --- Factory defaults (portal / settings can override; Reset to defaults returns here) ---
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// Gift unit presets: 1900 Gunn Hwy, Odessa FL, clean look, special-traffic alerts.
+constexpr double kFactoryLatitude = 28.1858871582507;
+constexpr double kFactoryLongitude = -82.59020475337591;
+constexpr uint8_t kFactoryRangeMiles = 20;
+constexpr uint8_t kFactoryDistUnit = 1;        // DistanceUnit::StatuteMile
+constexpr uint8_t kFactoryGridMode = 2;        // GridMode::Off (home "+" only)
+constexpr bool kFactoryCompassRose = false;
+constexpr bool kFactorySweepLine = false;
+constexpr bool kFactoryAutoIdleClock = false;
+constexpr uint8_t kFactoryRadarAccent = 4;     // RadarAccentColor::White
+constexpr bool kFactoryAlertMilitary = true;
+constexpr bool kFactoryAlertEmergency = true;
+constexpr bool kFactoryAlertHelicopter = true;
+constexpr bool kFactoryAlertPrivate = true;
+constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
+constexpr bool kFactoryAlertOverheadAny = true;
+constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
+#else
 constexpr double kFactoryLatitude = 37.61977;
 constexpr double kFactoryLongitude = -122.37227;
+constexpr uint8_t kFactoryRangeMiles = 6;          // what a fresh S3 unit has always booted with
+constexpr uint8_t kFactoryDistUnit = 0;        // Km
+constexpr uint8_t kFactoryGridMode = 0;        // Full
+constexpr bool kFactoryCompassRose = true;
+constexpr bool kFactorySweepLine = true;
+constexpr bool kFactoryAutoIdleClock = true;
+constexpr uint8_t kFactoryRadarAccent = 3;     // Green
+constexpr bool kFactoryAlertMilitary = false;
+constexpr bool kFactoryAlertEmergency = false;
+constexpr bool kFactoryAlertHelicopter = false;
+constexpr bool kFactoryAlertPrivate = false;
+constexpr bool kFactoryAlertOnApproach = false;
+constexpr bool kFactoryAlertOverheadAny = false;
+constexpr bool kFactoryBasemapVfr = false;
+#endif
 
 /** ADS-B poll interval (adsb.fi public limit ~1 req/s).
  *  The fetch worker is pinned to core 0 and the render loop is decoupled, so a
@@ -283,7 +317,11 @@ constexpr unsigned long kWeatherMinFetchIntervalMs = 20000UL;  // 20 s
 constexpr uint32_t kMinFreeHeapForWeather = 18000;
 constexpr uint32_t kMinContiguousHeapForWeather = 6000;
 /** Default unit system when the user has not overridden it (true = Â°F/imperial). */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+constexpr bool kWeatherUseImperialDefault = true;   // gift unit: °F
+#else
 constexpr bool kWeatherUseImperialDefault = false;
+#endif
 
 // --- Off-hours (night mode) ---
 constexpr uint16_t kOffHoursDefaultStartMin = 1320;  // 22:00

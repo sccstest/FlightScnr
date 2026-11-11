@@ -3,6 +3,8 @@
 #include "ui/radar_theme.h"
 
 #include <Preferences.h>
+
+#include "config.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,14 +29,14 @@ constexpr char kLegacyScaleSlotKey[] = "scale_slot";
 constexpr char kLegacyMilesKey[] = "useMiles";
 constexpr char kLegacyRoseKey[] = "showCard";
 
-constexpr uint8_t kDefaultRangeMiles = 8;
+constexpr uint8_t kDefaultRangeMiles = config::kFactoryRangeMiles;
 constexpr uint8_t kLegacyMilesFromIndex[] = {2, 6, 6, 8};
 constexpr uint16_t kFacingStepDeg = 5;
 
 uint8_t s_active_miles = kDefaultRangeMiles;
 ScaleBand s_active_band{};
-DistanceUnit s_distance_unit = DistanceUnit::Km;
-bool s_compass_rose = true;
+DistanceUnit s_distance_unit = static_cast<DistanceUnit>(config::kFactoryDistUnit);
+bool s_compass_rose = config::kFactoryCompassRose;
 uint16_t s_facing_deg = 0;
 
 uint16_t normalizeFacingDeg(int deg) {
@@ -151,9 +153,11 @@ void scaleBootLoad() {
   } else {
     uint8_t legacy_index = prefs.getUChar(kLegacyScaleSlotKey, 255);
     if (legacy_index == 255) {
-      legacy_index = prefs.getUChar(kLegacyScaleKey, 1);
+      legacy_index = prefs.getUChar(kLegacyScaleKey, 255);
     }
-    s_active_miles = migrateLegacyRangeIndex(legacy_index);
+    // Fresh unit (no legacy keys either): use the factory range.
+    s_active_miles =
+        legacy_index == 255 ? kDefaultRangeMiles : migrateLegacyRangeIndex(legacy_index);
   }
 
   if (prefs.isKey(kDistUnitKey)) {
@@ -166,13 +170,15 @@ void scaleBootLoad() {
         prefs.getBool(kDistMiKey, false) ? DistanceUnit::StatuteMile : DistanceUnit::Km;
   } else {
     s_distance_unit =
-        prefs.getBool(kLegacyMilesKey, false) ? DistanceUnit::StatuteMile : DistanceUnit::Km;
+        prefs.isKey(kLegacyMilesKey)
+            ? (prefs.getBool(kLegacyMilesKey, false) ? DistanceUnit::StatuteMile : DistanceUnit::Km)
+            : static_cast<DistanceUnit>(config::kFactoryDistUnit);
   }
 
   if (prefs.isKey(kRoseKey)) {
-    s_compass_rose = prefs.getBool(kRoseKey, true);
+    s_compass_rose = prefs.getBool(kRoseKey, config::kFactoryCompassRose);
   } else {
-    s_compass_rose = prefs.getBool(kLegacyRoseKey, true);
+    s_compass_rose = prefs.getBool(kLegacyRoseKey, config::kFactoryCompassRose);
   }
 
   s_facing_deg = normalizeFacingDeg(static_cast<int>(prefs.getUShort(kFacingKey, 0)));
@@ -287,7 +293,7 @@ void saveDistanceUnitsFromForm(const char* unit_value,
 bool showCompassRose() { return s_compass_rose; }
 
 namespace {
-GridMode s_grid_mode = GridMode::Full;
+GridMode s_grid_mode = static_cast<GridMode>(config::kFactoryGridMode);
 bool s_grid_mode_loaded = false;
 
 void loadGridMode() {
@@ -297,7 +303,7 @@ void loadGridMode() {
   s_grid_mode_loaded = true;
   Preferences prefs;
   if (prefs.begin(kStoreNs, true)) {
-    const uint8_t v = prefs.getUChar(kGridModeKey, 0);
+    const uint8_t v = prefs.getUChar(kGridModeKey, config::kFactoryGridMode);
     s_grid_mode = v <= 2 ? static_cast<GridMode>(v) : GridMode::Full;
     prefs.end();
   }
