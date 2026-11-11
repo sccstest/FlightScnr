@@ -7,9 +7,12 @@ namespace ui {
 enum class AlertFlashKind : uint8_t {
   Tracked,
   Military,
+  Helicopter,
+  Private,
 };
 
-/** Start a 10s blinking ring: red for military, green for other tracked aircraft. */
+/** Start a 10s blinking ring: red military, blue helicopter, white private,
+ *  green for other tracked (watch-list / emergency) aircraft. */
 void alertFlashStart(AlertFlashKind kind);
 
 /** True while the red ring flash window is active. */

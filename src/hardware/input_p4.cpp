@@ -37,6 +37,9 @@ constexpr float kPinchStepRatio = 1.30f;
 bool s_pinching = false;
 bool s_pinch_used = false;
 float s_pinch_base = 0.0f;
+unsigned long s_pinch_end_ms = 0;
+// Fingers rarely lift together; ignore taps briefly after a pinch ends.
+constexpr unsigned long kPostPinchTapLockMs = 400;
 
 // S3 boards use 70 px on a 360–390 px screen; keep the same physical swipe length.
 constexpr int kSwipeMinPx = 70 * LCD_WIDTH / 360;
@@ -85,6 +88,9 @@ void queueSwipe(SwipeGesture gesture) {
 }
 
 void queueTap(int16_t x, int16_t y) {
+  if (s_pinch_end_ms != 0 && millis() - s_pinch_end_ms < kPostPinchTapLockMs) {
+    return;
+  }
   portENTER_CRITICAL(&s_input_mux);
   s_tap_x = x;
   s_tap_y = y;
@@ -126,6 +132,12 @@ void trackPinch(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
     s_pinch_used = true;
     s_pinch_base = d;
     s_touch_tracking = false;  // the first finger's touch is not a tap/swipe
+    // Drop anything the first finger may already have queued.
+    portENTER_CRITICAL(&s_input_mux);
+    s_tap_x = -1;
+    s_tap_y = -1;
+    s_swipe_pending = SwipeNone;
+    portEXIT_CRITICAL(&s_input_mux);
     return;
   }
   if (s_pinch_base < 1.0f) {
@@ -202,6 +214,7 @@ void pollTouchGt911() {
       s_pinch_used = false;
       s_pinching = false;
       s_touch_was_down = false;
+      s_pinch_end_ms = millis();
     }
     return;
   }

@@ -24,6 +24,8 @@ param(
   [string]$Map = '',
   [int]$MapMiles = 0,
   [string]$CartoKey = '',
+  # Separate settings/map folder, e.g. one per location: -Data sim_data_odessa
+  [string]$Data = '',
   [string[]]$Extra = @()
 )
 
@@ -60,6 +62,7 @@ if ($Map) {
   if ($Map -eq 'off') { $bake += '--off' } else { $bake += @('--style', $Map) }
   if ($MapMiles -gt 0) { $bake += @('--miles', "$MapMiles") }
   if ($CartoKey) { $bake += @('--carto-key', $CartoKey) }
+  if ($Data) { $bake += @('--data', (Join-Path $root $Data)) }
   if (-not [double]::IsNaN($Lat) -and -not [double]::IsNaN($Lon)) {
     $bake += @('--lat', "$Lat", '--lon', "$Lon")
   }
@@ -68,6 +71,7 @@ if ($Map) {
 }
 
 $argsList = @('--scale', "$Scale")
+if ($Data) { $argsList += @('--data', (Join-Path $root $Data)) }
 if (-not [double]::IsNaN($Lat) -and -not [double]::IsNaN($Lon)) {
   $argsList += @('--lat', "$Lat", '--lon', "$Lon")
 }

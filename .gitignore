@@ -28,3 +28,4 @@ src/idf_component.yml.orig
 # Desktop simulator: downloaded SDL2 and runtime data
 sim/third_party/
 sim_data/
+sim_data*/

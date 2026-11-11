@@ -948,6 +948,14 @@ void handleSettingsPage() {
   appendToggle(page, kSettingsPageCap, &used, "alert_emrg",
                "Alert on emergency squawk (7700/7600/7500)",
                services::alert::emergencyAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_heli", "Alert on helicopters",
+               services::alert::helicopterAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_ga",
+               "Alert on private / general aviation planes",
+               services::alert::privateAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "type_colors",
+               "Color radar icons by type (red military, blue helicopter, white private)",
+               services::alert::typeColorsEnabled());
   appendToggle(page, kSettingsPageCap, &used, "alert_hide",
                "Hide non-alerted aircraft on radar",
                services::alert::hideNonAlertedEnabled());
@@ -1558,6 +1566,9 @@ void handleSave() {
                                 watch_type_arg_present,
                                 watch_reg_arg_present ? watch_reg_form : nullptr,
                                 watch_reg_arg_present);
+  services::alert::saveClassAlertsFromForm(s_server->arg("alert_heli").c_str(),
+                                           s_server->arg("alert_ga").c_str(),
+                                           s_server->arg("type_colors").c_str());
 
   Serial.printf("Settings web save (lat/lon %s)\n", loc_ok ? "ok" : "invalid");
 

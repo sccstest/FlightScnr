@@ -50,11 +50,26 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
   const int ri = kRingInnerRadiusPx;
   const int ro2 = ro * ro;
   const int ri2 = ri * ri;
-  // Red for military; green for other tracked aircraft.
+  // Same colors as the radar's type colors: red military, blue helicopter,
+  // white private; green for other tracked (watch-list / emergency) aircraft.
   constexpr uint16_t kMilitaryRed = 0xD882;
+  constexpr uint16_t kHelicopterBlue = 0x455F;  // ~(64,170,255)
+  constexpr uint16_t kPrivateWhite = 0xE73C;    // ~(230,230,230)
   constexpr uint16_t kTrackedGreen = 0x0666;
-  const uint16_t ring_color =
-      s_kind == AlertFlashKind::Military ? kMilitaryRed : kTrackedGreen;
+  uint16_t ring_color = kTrackedGreen;
+  switch (s_kind) {
+    case AlertFlashKind::Military:
+      ring_color = kMilitaryRed;
+      break;
+    case AlertFlashKind::Helicopter:
+      ring_color = kHelicopterBlue;
+      break;
+    case AlertFlashKind::Private:
+      ring_color = kPrivateWhite;
+      break;
+    default:
+      break;
+  }
 
   for (int dy = -ro; dy <= ro; ++dy) {
     const int y = cy + dy;
@@ -91,7 +106,10 @@ void alertFlashStart(AlertFlashKind kind) {
   }
   s_active = true;
   Serial.printf("[alert] outer %s ring %lums thick=%dpx\n",
-                s_kind == AlertFlashKind::Military ? "red military" : "green tracked",
+                s_kind == AlertFlashKind::Military     ? "red military"
+                : s_kind == AlertFlashKind::Helicopter ? "blue helicopter"
+                : s_kind == AlertFlashKind::Private    ? "white private"
+                                                       : "green tracked",
                 static_cast<unsigned long>(kAlertFlashMs), kRingThicknessPx);
   // Bake into the next radar content rebuild + blit — keeps SPI off the hot path.
   radarDisplayInvalidateAircraft();

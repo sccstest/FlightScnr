@@ -141,5 +141,9 @@ extern uint16_t kColorTagAltitudeAscend;
 extern uint16_t kColorTagAltitudeDescend;
 extern uint16_t kColorAlertMilitary;
 extern uint16_t kColorAlertEmergency;
+/** Type colors (services::alert::trafficClass): set per palette in initPalette(). */
+extern uint16_t kColorTypeMilitary;
+extern uint16_t kColorTypeHelicopter;
+extern uint16_t kColorTypePrivate;
 
 }  // namespace ui::radar

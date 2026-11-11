@@ -915,7 +915,7 @@ void openSettingsFromRadar() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (1/3)");
+  Serial.println("Screen: settings (1/4)");
   logNavContext("settings_p1");
 }
 
@@ -943,7 +943,7 @@ void saveOrientationAdjust() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (2/3) facing saved");
+  Serial.println("Screen: settings (2/4) facing saved");
   logNavContext("orient_save");
 }
 
@@ -953,7 +953,7 @@ void cancelOrientationAdjust() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (2/3) facing cancelled");
+  Serial.println("Screen: settings (2/4) facing cancelled");
   logNavContext("orient_cancel");
 }
 
@@ -1142,7 +1142,7 @@ void handleNavigation() {
     ui::infoScreenSetPage(ui::InfoSettingsPage::Display);
     ui::infoScreenResetDisplayFocus();
     showSettings();
-    Serial.println("Screen: settings (2/3)");
+    Serial.println("Screen: settings (2/4)");
     logNavContext("settings_p2");
     navigated = true;
   } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings &&
@@ -1150,8 +1150,16 @@ void handleNavigation() {
     ui::infoScreenSetPage(ui::InfoSettingsPage::Colors);
     ui::infoScreenResetColorsFocus();
     showSettings();
-    Serial.println("Screen: settings (3/3)");
+    Serial.println("Screen: settings (3/4)");
     logNavContext("settings_p3");
+    navigated = true;
+  } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings &&
+             ui::infoScreenPage() == ui::InfoSettingsPage::Colors) {
+    ui::infoScreenSetPage(ui::InfoSettingsPage::Alerts);
+    ui::infoScreenResetAlertsFocus();
+    showSettings();
+    Serial.println("Screen: settings (4/4) alerts");
+    logNavContext("settings_p4");
     navigated = true;
 #if !FLIGHTSCNR_HAS_ENCODER
   } else if ((swipe == SwipeUp || swipe == SwipeDown) &&
@@ -1169,18 +1177,26 @@ void handleNavigation() {
     cancelOrientationAdjust();
     navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
+             ui::infoScreenPage() == ui::InfoSettingsPage::Alerts) {
+    ui::infoScreenSetPage(ui::InfoSettingsPage::Colors);
+    ui::infoScreenResetColorsFocus();
+    showSettings();
+    Serial.println("Screen: settings (3/4)");
+    logNavContext("settings_p3");
+    navigated = true;
+  } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
              ui::infoScreenPage() == ui::InfoSettingsPage::Colors) {
     ui::infoScreenSetPage(ui::InfoSettingsPage::Display);
     ui::infoScreenResetDisplayFocus();
     showSettings();
-    Serial.println("Screen: settings (2/3)");
+    Serial.println("Screen: settings (2/4)");
     logNavContext("settings_p2");
     navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
              ui::infoScreenPage() == ui::InfoSettingsPage::Display) {
     ui::infoScreenSetPage(ui::InfoSettingsPage::Main);
     showSettings();
-    Serial.println("Screen: settings (1/3)");
+    Serial.println("Screen: settings (1/4)");
     logNavContext("settings_p1");
     navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings) {
@@ -1529,6 +1545,38 @@ void handleInput() {
       ) {
         noteSecondaryActivity();
         ui::infoScreenCycleDisplayFocus();
+        showSettings();
+        return;
+      }
+    } else if (ui::infoScreenPage() == ui::InfoSettingsPage::Alerts) {
+      if (inputConsumeKnobPress()) {
+        noteSecondaryActivity();
+        hardware::buzzerClick();
+      }
+#if !FLIGHTSCNR_HAS_ENCODER
+      {
+        int16_t tx = 0;
+        int16_t ty = 0;
+        if (inputConsumeScreenTap(&tx, &ty)) {
+          noteSecondaryActivity();
+          hardware::buzzerClick();
+          const int8_t step = ui::infoScreenTouch(tx, ty);
+          if (step != 0) {
+            ui::infoScreenHandleKnob(step);
+          } else {
+            showSettings();
+          }
+          return;
+        }
+      }
+#endif
+      if (inputConsumeKnobTap()
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+          || inputConsumeScreenTap(nullptr, nullptr)
+#endif
+      ) {
+        noteSecondaryActivity();
+        ui::infoScreenCycleAlertsFocus();
         showSettings();
         return;
       }

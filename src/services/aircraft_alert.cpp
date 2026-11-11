@@ -9,6 +9,7 @@
 #include "hardware/pin_config.h"
 #include "services/watch_reg_parse.h"
 #include "services/watch_type_parse.h"
+#include "ui/aircraft_icon.h"
 #include "ui/alert_flash.h"
 #include "ui/radar_display.h"
 #include "ui/radar_scale.h"
@@ -23,6 +24,15 @@ constexpr char kHideKey[] = "alert_hide";
 constexpr char kWatchKey[] = "alert_watch";
 constexpr char kWatchTypeKey[] = "alert_wtype";
 constexpr char kWatchRegKey[] = "alert_wreg";
+constexpr char kHeliKey[] = "alert_heli";
+constexpr char kPrivateKey[] = "alert_ga";
+constexpr char kTypeColorsKey[] = "type_colors";
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+constexpr bool kTypeColorsDefault = true;
+#else
+constexpr bool kTypeColorsDefault = false;  // S3 boards keep their original look
+#endif
 
 constexpr size_t kSeenCapacity = 32;
 constexpr size_t kWatchMax = 16;
@@ -33,6 +43,9 @@ constexpr unsigned long kPulseCycleMs = 250;
 bool s_mil_enabled = false;
 bool s_emrg_enabled = false;
 bool s_hide_non_alerted = false;
+bool s_heli_enabled = false;
+bool s_private_enabled = false;
+bool s_type_colors = kTypeColorsDefault;
 
 char s_watch_blob[kWatchBlobLen] = "";
 char s_watch_callsigns[kWatchMax][kWatchCallsignLen];
@@ -54,6 +67,8 @@ struct SeenEntry {
 SeenEntry s_seen[kSeenCapacity];
 size_t s_seen_write = 0;
 uint8_t s_seen_range_mi = 0;
+
+bool classAlert(const services::adsb::Aircraft& ac);  // helicopter / private alerts
 
 uint32_t hashCallsign(const char* cs) {
   uint32_t h = 2166136261u;
@@ -286,6 +301,9 @@ bool shouldAlert(const services::adsb::Aircraft& ac) {
   if (s_mil_enabled && ac.isMilitary()) {
     return true;
   }
+  if (classAlert(ac)) {
+    return true;
+  }
   if (s_emrg_enabled && ac.isEmergencySquawk()) {
     return true;
   }
@@ -302,8 +320,33 @@ bool shouldAlert(const services::adsb::Aircraft& ac) {
 }
 
 bool alertsActive() {
-  return s_mil_enabled || s_emrg_enabled || s_watch_count > 0 || s_watch_type_count > 0 ||
-         s_watch_reg_count > 0;
+  return s_mil_enabled || s_emrg_enabled || s_heli_enabled || s_private_enabled ||
+         s_watch_count > 0 || s_watch_type_count > 0 || s_watch_reg_count > 0;
+}
+
+/** Airline flight numbers: 3-letter ICAO operator code then a digit (AAL576, UPS1340). */
+bool looksLikeAirlineFlight(const char* cs) {
+  return cs != nullptr && isalpha(static_cast<unsigned char>(cs[0])) &&
+         isalpha(static_cast<unsigned char>(cs[1])) &&
+         isalpha(static_cast<unsigned char>(cs[2])) &&
+         isdigit(static_cast<unsigned char>(cs[3]));
+}
+
+bool classAlert(const services::adsb::Aircraft& ac) {
+  if (!s_heli_enabled && !s_private_enabled) {
+    return false;
+  }
+  const TrafficClass c = trafficClass(ac);
+  return (s_heli_enabled && c == TrafficClass::Helicopter) ||
+         (s_private_enabled && c == TrafficClass::Private);
+}
+
+void persistBool(const char* key, bool value) {
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putBool(key, value);
+    prefs.end();
+  }
 }
 
 }  // namespace
@@ -317,6 +360,9 @@ void bootLoad() {
   s_mil_enabled = prefs.getBool(kMilKey, false);
   s_emrg_enabled = prefs.getBool(kEmrgKey, false);
   s_hide_non_alerted = prefs.getBool(kHideKey, false);
+  s_heli_enabled = prefs.getBool(kHeliKey, false);
+  s_private_enabled = prefs.getBool(kPrivateKey, false);
+  s_type_colors = prefs.getBool(kTypeColorsKey, kTypeColorsDefault);
   const String watch = prefs.getString(kWatchKey, "");
   strncpy(s_watch_blob, watch.c_str(), sizeof(s_watch_blob) - 1);
   s_watch_blob[sizeof(s_watch_blob) - 1] = '\0';
@@ -355,6 +401,9 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
 
   bool fired = false;
   bool fired_military = false;
+  bool fired_heli = false;
+  bool fired_private = false;
+  bool fired_other = false;
   for (size_t i = 0; i < count; ++i) {
     if (!shouldAlert(list[i])) {
       continue;
@@ -369,7 +418,16 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
     }
     markSeen(h);
     fired = true;
-    fired_military = fired_military || list[i].isMilitary();
+    const TrafficClass cls = trafficClass(list[i]);
+    if (s_mil_enabled && list[i].isMilitary()) {
+      fired_military = true;
+    } else if (s_heli_enabled && cls == TrafficClass::Helicopter) {
+      fired_heli = true;
+    } else if (s_private_enabled && cls == TrafficClass::Private) {
+      fired_private = true;
+    } else {
+      fired_other = true;  // watch list / emergency
+    }
     Serial.printf("[alert] %s type=%s reg=%s mil=%d emrg=%d watch=%d wtype=%d wreg=%d squawk=%s\n",
                   list[i].callsign, list[i].type, list[i].registration,
                   list[i].isMilitary() ? 1 : 0, list[i].isEmergencySquawk() ? 1 : 0,
@@ -378,8 +436,12 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
                   watchRegContains(list[i].registration) ? 1 : 0, list[i].squawk);
   }
   if (fired) {
+    // Priority when several fire at once: military, watch/emergency, helicopter, private.
     ui::alertFlashStart(fired_military ? ui::AlertFlashKind::Military
-                                      : ui::AlertFlashKind::Tracked);
+                        : fired_other  ? ui::AlertFlashKind::Tracked
+                        : fired_heli   ? ui::AlertFlashKind::Helicopter
+                        : fired_private ? ui::AlertFlashKind::Private
+                                        : ui::AlertFlashKind::Tracked);
 #if !FLIGHTSCNR_HAS_HAPTIC
     hardware::buzzerAlert();
 #endif
@@ -404,6 +466,9 @@ bool isHighlighted(const services::adsb::Aircraft& ac) {
   if (s_mil_enabled && ac.isMilitary()) {
     return true;
   }
+  if (classAlert(ac)) {
+    return true;
+  }
   if (s_emrg_enabled && ac.isEmergencySquawk()) {
     return true;
   }
@@ -421,6 +486,71 @@ bool isHighlighted(const services::adsb::Aircraft& ac) {
 
 bool pulsePhase() {
   return (millis() / kPulseCycleMs) % 2 == 0;
+}
+
+TrafficClass trafficClass(const services::adsb::Aircraft& ac) {
+  if (ac.isMilitary()) {
+    return TrafficClass::Military;
+  }
+  using services::adsb::AircraftCategory;
+  const AircraftCategory cat = ac.classify();
+  const uint8_t icon = ui::aircraft_icon::resolveCategory(ac);
+  if (cat == AircraftCategory::Helicopter || ui::aircraft_icon::isHelicopterIcon(icon)) {
+    return TrafficClass::Helicopter;
+  }
+  if (looksLikeAirlineFlight(ac.callsign)) {
+    return TrafficClass::Airline;
+  }
+  if (cat == AircraftCategory::LightAircraft || cat == AircraftCategory::SmallAircraft ||
+      cat == AircraftCategory::Glider || cat == AircraftCategory::LighterThanAir ||
+      ui::aircraft_icon::isGeneralAviationIcon(icon)) {
+    return TrafficClass::Private;
+  }
+  return TrafficClass::Airline;
+}
+
+bool typeColorsEnabled() { return s_type_colors; }
+bool helicopterAlertEnabled() { return s_heli_enabled; }
+bool privateAlertEnabled() { return s_private_enabled; }
+
+void toggleTypeColors() {
+  s_type_colors = !s_type_colors;
+  persistBool(kTypeColorsKey, s_type_colors);
+}
+void toggleMilitaryAlert() {
+  s_mil_enabled = !s_mil_enabled;
+  persistBool(kMilKey, s_mil_enabled);
+  clearSeen();
+}
+void toggleEmergencyAlert() {
+  s_emrg_enabled = !s_emrg_enabled;
+  persistBool(kEmrgKey, s_emrg_enabled);
+  clearSeen();
+}
+void toggleHelicopterAlert() {
+  s_heli_enabled = !s_heli_enabled;
+  persistBool(kHeliKey, s_heli_enabled);
+  clearSeen();
+}
+void togglePrivateAlert() {
+  s_private_enabled = !s_private_enabled;
+  persistBool(kPrivateKey, s_private_enabled);
+  clearSeen();
+}
+
+void saveClassAlertsFromForm(const char* heli_checkbox, const char* private_checkbox,
+                             const char* type_colors_checkbox) {
+  s_heli_enabled = heli_checkbox != nullptr && heli_checkbox[0] == 'T';
+  s_private_enabled = private_checkbox != nullptr && private_checkbox[0] == 'T';
+  s_type_colors = type_colors_checkbox != nullptr && type_colors_checkbox[0] == 'T';
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putBool(kHeliKey, s_heli_enabled);
+    prefs.putBool(kPrivateKey, s_private_enabled);
+    prefs.putBool(kTypeColorsKey, s_type_colors);
+    prefs.end();
+  }
+  clearSeen();
 }
 
 bool militaryAlertEnabled() { return s_mil_enabled; }

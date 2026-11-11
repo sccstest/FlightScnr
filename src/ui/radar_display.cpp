@@ -41,6 +41,9 @@ uint16_t kColorTagAltitudeAscend = 0x07FF;
 uint16_t kColorTagAltitudeDescend = 0xF81F;
 uint16_t kColorAlertMilitary = 0xFBE0;    // orange
 uint16_t kColorAlertEmergency = 0xF800;   // red
+uint16_t kColorTypeMilitary = 0xF800;
+uint16_t kColorTypeHelicopter = 0x055F;
+uint16_t kColorTypePrivate = 0xFFFF;
 
 }  // namespace radar
 
@@ -176,6 +179,14 @@ void initPalette() {
     radar::kColorTagType = tft.color565(120, 70, 0);
     radar::kColorTagAltitudeAscend = tft.color565(0, 110, 140);
     radar::kColorTagAltitudeDescend = tft.color565(150, 0, 120);
+    // Type colors on pale maps: darker versions of the same hues.
+    radar::kColorTypeMilitary = tft.color565(205, 0, 0);
+    radar::kColorTypeHelicopter = tft.color565(0, 80, 210);
+    radar::kColorTypePrivate = tft.color565(25, 25, 25);
+    if (services::alert::typeColorsEnabled()) {
+      // Crimson is too close to the military red; airliners go deep amber instead.
+      radar::kColorAircraft = tft.color565(165, 80, 0);
+    }
   } else {
     radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
     radar::kColorGrid = tft.color565(accent.grid_r, accent.grid_g, accent.grid_b);
@@ -189,6 +200,9 @@ void initPalette() {
     radar::kColorTagAltitudeDescend = tft.color565(radar::kTagAltDescendR,
                                                    radar::kTagAltDescendG,
                                                    radar::kTagAltDescendB);
+    radar::kColorTypeMilitary = tft.color565(255, 50, 40);
+    radar::kColorTypeHelicopter = tft.color565(64, 170, 255);
+    radar::kColorTypePrivate = tft.color565(235, 235, 235);
   }
   // Sweep matches rings / crosshairs (same accent as the static grid).
   radar::kColorSweep = radar::kColorGrid;
@@ -275,10 +289,29 @@ bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
   return true;
 }
 
+/** Icon color: amber airliners by default; with type colors on, military red,
+ *  helicopters blue and private/GA white (darker versions on light maps). */
+uint16_t aircraftBaseColor(const services::adsb::Aircraft& ac) {
+  if (!services::alert::typeColorsEnabled()) {
+    return radar::kColorAircraft;
+  }
+  switch (services::alert::trafficClass(ac)) {
+    case services::alert::TrafficClass::Military:
+      return radar::kColorTypeMilitary;
+    case services::alert::TrafficClass::Helicopter:
+      return radar::kColorTypeHelicopter;
+    case services::alert::TrafficClass::Private:
+      return radar::kColorTypePrivate;
+    default:
+      return radar::kColorAircraft;
+  }
+}
+
 void drawBeyondRingMarker(int x, int y, float heading_deg,
                           const services::adsb::Aircraft* aircraft) {
-  aircraft_symbol::drawCompact(*s_draw, x, y, heading_deg, radar::kColorAircraft,
-                               aircraft);
+  aircraft_symbol::drawCompact(
+      *s_draw, x, y, heading_deg,
+      aircraft != nullptr ? aircraftBaseColor(*aircraft) : radar::kColorAircraft, aircraft);
 }
 
 void applyTagStyle() { displayFontApply(*s_draw, s_tag_style); }
@@ -671,11 +704,13 @@ void drawAircraft() {
   sortDrawItemsFarFirst(items, draw_count);
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
-    uint16_t color = radar::kColorAircraft;
+    uint16_t color = aircraftBaseColor(planes[i]);
     if (services::alert::isHighlighted(planes[i])) {
       if (pulse_on) {
-        color = planes[i].isEmergencySquawk() ? radar::kColorAlertEmergency
-                                              : radar::kColorAlertMilitary;
+        // With type colors the pulse keeps the class color so it stays recognizable.
+        color = planes[i].isEmergencySquawk()       ? radar::kColorAlertEmergency
+                : services::alert::typeColorsEnabled() ? color
+                                                       : radar::kColorAlertMilitary;
       } else {
         color = radar::kColorGrid;
       }

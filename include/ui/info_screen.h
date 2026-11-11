@@ -4,13 +4,13 @@
 
 namespace ui {
 
-enum class InfoSettingsPage : uint8_t { Main, Display, Colors };
+enum class InfoSettingsPage : uint8_t { Main, Display, Colors, Alerts };
 
 void infoScreenResetToMain();
 InfoSettingsPage infoScreenPage();
 void infoScreenSetPage(InfoSettingsPage page);
 
-/** Settings / status screens (three pages). */
+/** Settings / status screens (four pages). */
 void infoScreenDraw();
 
 /** Rotate knob on display/colors page adjusts the highlighted row. */
@@ -37,5 +37,9 @@ void infoScreenCycleColorsFocus();
 
 /** Default page-3 selection when opening Colors. */
 void infoScreenResetColorsFocus();
+
+/** Page 4/4 "Alerts": type colors and military/emergency/helicopter/private alerts. */
+void infoScreenCycleAlertsFocus();
+void infoScreenResetAlertsFocus();
 
 }  // namespace ui

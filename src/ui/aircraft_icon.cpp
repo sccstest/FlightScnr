@@ -280,4 +280,19 @@ bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
   return true;
 }
 
+bool isHelicopterIcon(uint8_t category) {
+  using data::aircraft_icons::Category;
+  return category == static_cast<uint8_t>(Category::helicopter) ||
+         category == static_cast<uint8_t>(Category::military_helicopter);
+}
+
+bool isGeneralAviationIcon(uint8_t category) {
+  using data::aircraft_icons::Category;
+  return category == static_cast<uint8_t>(Category::small_prop_single) ||
+         category == static_cast<uint8_t>(Category::small_prop_twin) ||
+         category == static_cast<uint8_t>(Category::business_jet) ||
+         category == static_cast<uint8_t>(Category::glider) ||
+         category == static_cast<uint8_t>(Category::balloon);
+}
+
 }  // namespace ui::aircraft_icon

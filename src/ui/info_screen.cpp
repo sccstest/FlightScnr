@@ -64,6 +64,18 @@ enum class ColorsAdjustRow : uint8_t {
 
 ColorsAdjustRow s_colors_focus = ColorsAdjustRow::Sweep;
 
+// Page 4/4: quick-glance type colors and per-class alerts.
+enum class AlertsAdjustRow : uint8_t {
+  TypeColors,
+  Military,
+  Emergency,
+  Helicopters,
+  Private,
+  Count,
+};
+
+AlertsAdjustRow s_alerts_focus = AlertsAdjustRow::TypeColors;
+
 #if !FLIGHTSCNR_HAS_ENCODER
 // Touch-only boards (Waveshare 4C): remember where each option row was drawn so a
 // tap can select a row, and the selected row's left/right half can step its value.
@@ -319,7 +331,7 @@ void drawMainPage(uint16_t bg, uint16_t fg, uint16_t label_fg, uint16_t hint_fg)
   displayFontApply(tft, displayFontTitle());
   tft.setTextDatum(TextDatum::TopCenter);
   tft.setTextColor(fg, bg);
-  tft.drawString("Settings 1/3", kCenterX, y);
+  tft.drawString("Settings 1/4", kCenterX, y);
   y += title_h + kTitleGap;
 
   for (const InfoLine& line : main_lines) {
@@ -405,7 +417,7 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   displayFontApply(tft, displayFontTitle());
   tft.setTextDatum(TextDatum::TopCenter);
   tft.setTextColor(fg, bg);
-  tft.drawString("Settings 2/3", kCenterX, y);
+  tft.drawString("Settings 2/4", kCenterX, y);
   y += title_h + kTitleGap;
 
 #if !FLIGHTSCNR_HAS_ENCODER
@@ -501,7 +513,7 @@ void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   displayFontApply(tft, displayFontTitle());
   tft.setTextDatum(TextDatum::TopCenter);
   tft.setTextColor(fg, bg);
-  tft.drawString("Settings 3/3", kCenterX, y);  y += title_h + kTitleGap;
+  tft.drawString("Settings 3/4", kCenterX, y);  y += title_h + kTitleGap;
 
 #if !FLIGHTSCNR_HAS_ENCODER
   s_row_count = 0;
@@ -521,6 +533,108 @@ void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   }
 }
 
+void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
+  const uint16_t active_fg = settingsActiveFg();
+  auto onOff = [](bool v) { return v ? "on" : "off"; };
+  constexpr int kRows = static_cast<int>(AlertsAdjustRow::Count);
+  char rows[kRows][32];
+  snprintf(rows[0], sizeof(rows[0]), "Type colors: %s",
+           onOff(services::alert::typeColorsEnabled()));
+  snprintf(rows[1], sizeof(rows[1]), "Military: %s",
+           onOff(services::alert::militaryAlertEnabled()));
+  snprintf(rows[2], sizeof(rows[2]), "Emergency: %s",
+           onOff(services::alert::emergencyAlertEnabled()));
+  snprintf(rows[3], sizeof(rows[3]), "Helicopters: %s",
+           onOff(services::alert::helicopterAlertEnabled()));
+  snprintf(rows[4], sizeof(rows[4]), "Private planes: %s",
+           onOff(services::alert::privateAlertEnabled()));
+
+  char deco[kRows][48];
+  InfoLine option_lines[kRows];
+  for (int i = 0; i < kRows; ++i) {
+    const bool focused = static_cast<int>(s_alerts_focus) == i;
+    option_lines[i] = {focusDecorate(rows[i], focused, deco[i], 48), displayFontBody(),
+                       focused ? active_fg : label_fg};
+  }
+  // Legend for the type colors (same hues as the radar icons).
+  const char* legend = "Red mil / Blue heli / White private";
+
+  const int title_h = displayFontHeight(tft, displayFontTitle());
+  const int legend_h = displayFontHeight(tft, displayFontDetail());
+  const int options_h = measureBlockHeight(option_lines, kRows);
+  const int block_h = title_h + kTitleGap + options_h + kSectionGap + legend_h;
+
+  int y = kCenterY - block_h / 2;
+  if (y < kBezelInsetPx) {
+    y = kBezelInsetPx;
+  }
+
+  displayFontApply(tft, displayFontTitle());
+  tft.setTextDatum(TextDatum::TopCenter);
+  tft.setTextColor(fg, bg);
+  tft.drawString("Alerts 4/4", kCenterX, y);
+  y += title_h + kTitleGap;
+
+#if !FLIGHTSCNR_HAS_ENCODER
+  s_row_count = 0;
+#endif
+  for (const InfoLine& line : option_lines) {
+#if !FLIGHTSCNR_HAS_ENCODER
+    const int top = y;
+#endif
+    drawCenterLine(line.text, &y, line.style, line.color, bg);
+#if !FLIGHTSCNR_HAS_ENCODER
+    if (s_row_count < kMaxTouchRows) {
+      s_row_top[s_row_count] = top;
+      s_row_bottom[s_row_count] = y;
+      ++s_row_count;
+    }
+#endif
+  }
+  y += kSectionGap;
+  // Color key: each word drawn in its radar icon color (dark-radar palette).
+  (void)legend;
+  const char* words[] = {"Military", "Helicopter", "Private"};
+  const uint16_t colors[] = {tft.color565(255, 50, 40), tft.color565(64, 170, 255),
+                             tft.color565(235, 235, 235)};
+  displayFontApply(tft, displayFontDetail());
+  const int gap = ui::sc(14);
+  int total = 2 * gap;
+  for (const char* w : words) {
+    total += tft.textWidth(w);
+  }
+  int x = kCenterX - total / 2;
+  tft.setTextDatum(TextDatum::TopLeft);
+  for (int i = 0; i < 3; ++i) {
+    tft.setTextColor(colors[i], bg);
+    tft.drawString(words[i], x, y);
+    x += tft.textWidth(words[i]) + gap;
+  }
+  tft.setTextDatum(TextDatum::TopCenter);
+}
+
+void toggleAlertsRow(AlertsAdjustRow row) {
+  switch (row) {
+    case AlertsAdjustRow::TypeColors:
+      services::alert::toggleTypeColors();
+      break;
+    case AlertsAdjustRow::Military:
+      services::alert::toggleMilitaryAlert();
+      break;
+    case AlertsAdjustRow::Emergency:
+      services::alert::toggleEmergencyAlert();
+      break;
+    case AlertsAdjustRow::Helicopters:
+      services::alert::toggleHelicopterAlert();
+      break;
+    case AlertsAdjustRow::Private:
+      services::alert::togglePrivateAlert();
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 namespace ui {
@@ -529,7 +643,8 @@ void infoScreenResetToMain() { s_page = ui::InfoSettingsPage::Main; }
 
 int8_t infoScreenTouch(int16_t x, int16_t y) {
 #if !FLIGHTSCNR_HAS_ENCODER
-  if (s_page != InfoSettingsPage::Display && s_page != InfoSettingsPage::Colors) {
+  if (s_page != InfoSettingsPage::Display && s_page != InfoSettingsPage::Colors &&
+      s_page != InfoSettingsPage::Alerts) {
     return 0;
   }
   // Rows are drawn edge to edge; give each the gap below it so taps never fall through.
@@ -545,13 +660,16 @@ int8_t infoScreenTouch(int16_t x, int16_t y) {
   if (hit < 0) {
     return 0;
   }
-  const int focused = (s_page == InfoSettingsPage::Display) ? static_cast<int>(s_display_focus)
-                                                             : static_cast<int>(s_colors_focus);
+  const int focused = (s_page == InfoSettingsPage::Display)  ? static_cast<int>(s_display_focus)
+                      : (s_page == InfoSettingsPage::Colors) ? static_cast<int>(s_colors_focus)
+                                                             : static_cast<int>(s_alerts_focus);
   if (hit != focused) {
     if (s_page == InfoSettingsPage::Display) {
       s_display_focus = static_cast<DisplayAdjustRow>(hit);
-    } else {
+    } else if (s_page == InfoSettingsPage::Colors) {
       s_colors_focus = static_cast<ColorsAdjustRow>(hit);
+    } else {
+      s_alerts_focus = static_cast<AlertsAdjustRow>(hit);
     }
     return 0;
   }
@@ -593,6 +711,14 @@ bool infoScreenFacingFocused() {
 }
 
 void infoScreenResetColorsFocus() { s_colors_focus = ColorsAdjustRow::Sweep; }
+
+void infoScreenResetAlertsFocus() { s_alerts_focus = AlertsAdjustRow::TypeColors; }
+
+void infoScreenCycleAlertsFocus() {
+  const int next =
+      (static_cast<int>(s_alerts_focus) + 1) % static_cast<int>(AlertsAdjustRow::Count);
+  s_alerts_focus = static_cast<AlertsAdjustRow>(next);
+}
 
 void infoScreenCycleColorsFocus() {
   switch (s_colors_focus) {
@@ -644,8 +770,10 @@ void infoScreenDraw() {
     drawMainPage(bg, fg, label_fg, hint_fg);
   } else if (s_page == ui::InfoSettingsPage::Display) {
     drawDisplayPage(bg, fg, label_fg);
-  } else {
+  } else if (s_page == ui::InfoSettingsPage::Colors) {
     drawColorsPage(bg, fg, label_fg);
+  } else {
+    drawAlertsPage(bg, fg, label_fg);
   }
 
   tft.setTextDatum(TextDatum::TopLeft);
@@ -654,6 +782,13 @@ void infoScreenDraw() {
 
 void infoScreenHandleKnob(int8_t delta) {
   if (delta == 0) {
+    return;
+  }
+
+  if (s_page == ui::InfoSettingsPage::Alerts) {
+    // Every row is on/off: any dial step or side tap toggles it.
+    toggleAlertsRow(s_alerts_focus);
+    infoScreenDraw();
     return;
   }
 

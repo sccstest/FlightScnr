@@ -4,6 +4,32 @@
 
 namespace services::alert {
 
+/**
+ * Quick-glance traffic class (radar icon color and per-class alerts).
+ *  Military   — adsb.fi database military flag
+ *  Helicopter — ADS-B emitter category A7, or a helicopter icon type
+ *  Private    — light/small/glider/balloon or a single/twin prop / business-jet type,
+ *               unless the callsign is an airline flight number (e.g. AAL576)
+ *  Airline    — everything else (airliners, cargo, regional jets, unknown)
+ */
+enum class TrafficClass : uint8_t { Airline, Military, Helicopter, Private };
+TrafficClass trafficClass(const services::adsb::Aircraft& ac);
+
+/** Color radar icons by TrafficClass (default on for the 4C, off on the S3 boards). */
+bool typeColorsEnabled();
+bool helicopterAlertEnabled();
+bool privateAlertEnabled();
+
+/** On-device "Alerts" settings page toggles (persisted immediately). */
+void toggleTypeColors();
+void toggleMilitaryAlert();
+void toggleEmergencyAlert();
+void toggleHelicopterAlert();
+void togglePrivateAlert();
+/** Web settings form for the two new class alerts (checkbox "T" = on). */
+void saveClassAlertsFromForm(const char* heli_checkbox, const char* private_checkbox,
+                             const char* type_colors_checkbox);
+
 void bootLoad();
 
 /** Check aircraft list for new alert-worthy entries; fires buzzer if matched.
