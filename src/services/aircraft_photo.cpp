@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/aircraft_type_lookup.h"
 #include "hardware/plane_gfx.h"
 #include "services/adsb_client.h"
 #include "services/https_heap.h"
@@ -52,6 +53,7 @@ struct MetaEntry {
   char hex[7] = {};
   bool resolved = false;
   bool has_photo = false;
+  bool wiki_tried = false;
   char photographer[kMaxPhotographer] = {};
   char thumb_url[kMaxThumbUrl] = {};
   unsigned long resolved_ms = 0;
@@ -69,6 +71,7 @@ struct DecodedPhoto {
 
 char s_wanted_callsign[9] = {};
 char s_wanted_hex[7] = {};
+char s_wanted_type[5] = {};
 uint32_t s_generation = 0;
 
 char s_debounce_callsign[9] = {};
@@ -81,6 +84,7 @@ bool s_job_running = false;
 uint32_t s_job_generation = 0;
 char s_job_callsign[9] = {};
 char s_job_hex[7] = {};
+char s_job_type[5] = {};
 
 bool s_ready = false;
 bool s_ready_ok = false;
@@ -571,6 +575,155 @@ void finishJob(JobEnd end) {
   strncpy(s_ready_callsign, s_job_callsign, sizeof(s_ready_callsign) - 1);
 }
 
+/** Lowercase, letters/digits only ("A-320neo" -> "a320neo") for loose title matching. */
+void normalizeToken(const char* in, char* out, size_t out_len) {
+  size_t n = 0;
+  for (const char* p = in; *p != '\0' && n + 1 < out_len; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (isalnum(c)) {
+      out[n++] = static_cast<char>(tolower(c));
+    }
+  }
+  out[n] = '\0';
+}
+
+/**
+ * One Wikipedia search. Picks the best-ranked result that has a thumbnail AND whose
+ * title contains one of the model tokens (so "Glasair SH-4 GlaStar" never lands on
+ * the manufacturer page or an engine article).
+ */
+bool wikiSearch(const char* query_text, char tokens[][24], int token_count, MetaEntry* out) {
+  char query[160] = {};
+  size_t q = 0;
+  for (const char* p = query_text; *p != '\0' && q + 4 < sizeof(query); ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (isalnum(c) || c == '-' || c == '.') {
+      query[q++] = static_cast<char>(c);
+    } else {
+      snprintf(query + q, sizeof(query) - q, "%%%02X", c);
+      q += 3;
+    }
+  }
+  char url[384];
+  snprintf(url, sizeof(url),
+           "https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2"
+           "&generator=search&gsrlimit=5&gsrsearch=%s&prop=pageimages&piprop=thumbnail"
+           "&pithumbsize=%d",
+           query, kMaxPhotoW * 2);
+
+  services::https::SecureClient client;
+  client.setInsecure();
+  client.setTimeout(config::kAircraftPhotoTimeoutMs / 1000U);
+  HTTPClient http;
+  http.setReuse(false);
+  http.setTimeout(config::kAircraftPhotoTimeoutMs);
+  // Wikimedia asks API clients for a descriptive User-Agent.
+  http.setUserAgent(config::kPlanespottersUserAgent);
+  if (!http.begin(client, url)) {
+    return false;
+  }
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[photo] wiki HTTP %d for \"%s\"\n", code, query_text);
+    http.end();
+    return false;
+  }
+  const String payload = http.getString();
+  http.end();
+  if (payload.isEmpty() || payload.length() > 24576) {
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) {
+    return false;
+  }
+  JsonArray pages = doc["query"]["pages"].as<JsonArray>();
+  if (pages.isNull()) {
+    return false;
+  }
+  int best_index = 1 << 30;
+  const char* best_src = nullptr;
+  const char* best_title = nullptr;
+  for (JsonObject page : pages) {
+    const char* src = page["thumbnail"]["source"] | "";
+    const char* title = page["title"] | "";
+    const int index = page["index"] | 99;
+    if (src[0] == '\0' || index >= best_index) {
+      continue;
+    }
+    char norm_title[96];
+    normalizeToken(title, norm_title, sizeof(norm_title));
+    bool match = false;
+    for (int t = 0; t < token_count && !match; ++t) {
+      match = tokens[t][0] != '\0' && strstr(norm_title, tokens[t]) != nullptr;
+    }
+    if (match) {
+      best_index = index;
+      best_src = src;
+      best_title = title;
+    }
+  }
+  if (best_src == nullptr) {
+    return false;
+  }
+  out->has_photo = true;
+  strncpy(out->thumb_url, best_src, sizeof(out->thumb_url) - 1);
+  out->thumb_url[sizeof(out->thumb_url) - 1] = '\0';
+  strncpy(out->photographer, "Type photo - Wikipedia", sizeof(out->photographer) - 1);
+  Serial.printf("[photo] wiki type photo \"%s\" -> \"%s\"\n", query_text, best_title);
+  return true;
+}
+
+/**
+ * No Planespotters photo for this airframe: use a Wikipedia photo of the aircraft
+ * TYPE, credited "Type photo - Wikipedia". Model tokens are the words after the
+ * manufacturer that are >= 3 chars once normalized (e.g. "172", "r44", "glastar",
+ * "a320neo"). No confident match -> no photo (better than a wrong one).
+ */
+bool fetchWikipediaTypePhoto(const char* icao_type, MetaEntry* out) {
+  if (icao_type == nullptr || icao_type[0] == '\0' || out == nullptr) {
+    return false;
+  }
+  char name[64] = {};
+  if (!services::aircraft_type::lookupDescription(icao_type, name, sizeof(name)) ||
+      name[0] == '\0') {
+    return false;
+  }
+  char tokens[6][24] = {};
+  int token_count = 0;
+  const char* last_word = nullptr;
+  {
+    char copy[64];
+    strncpy(copy, name, sizeof(copy) - 1);
+    copy[sizeof(copy) - 1] = '\0';
+    int word = 0;
+    for (char* tok = strtok(copy, " /"); tok != nullptr && token_count < 6;
+         tok = strtok(nullptr, " /"), ++word) {
+      if (word == 0) {
+        continue;  // manufacturer
+      }
+      char norm[24];
+      normalizeToken(tok, norm, sizeof(norm));
+      if (strlen(norm) >= 3) {
+        strncpy(tokens[token_count++], norm, sizeof(tokens[0]) - 1);
+      }
+    }
+    const char* sp = strrchr(name, ' ');
+    last_word = (sp != nullptr) ? sp + 1 : nullptr;
+  }
+  if (token_count == 0) {
+    return false;
+  }
+  if (wikiSearch(name, tokens, token_count, out)) {
+    return true;
+  }
+  // e.g. "Glasair SH-4 GlaStar" only finds the maker; "GlaStar" finds the article.
+  if (last_word != nullptr && strlen(last_word) >= 3) {
+    return wikiSearch(last_word, tokens, token_count, out);
+  }
+  return false;
+}
+
 void photoJob() {
   s_job_running = true;
   s_job_queued = false;
@@ -633,6 +786,15 @@ void photoJob() {
     return;
   }
 
+  if ((!meta->has_photo || meta->thumb_url[0] == '\0') && s_job_type[0] != '\0' &&
+      !meta->wiki_tried) {
+    meta->wiki_tried = true;
+    if (fetchWikipediaTypePhoto(s_job_type, meta) &&
+        !selectionMatches(s_job_callsign, s_job_generation)) {
+      finishJob(JobEnd::SoftFail);
+      return;
+    }
+  }
   if (!meta->has_photo || meta->thumb_url[0] == '\0') {
     // Genuine empty Planespotters result — cache as resolved miss.
     if (meta == &local && selectionMatches(s_job_callsign, s_job_generation)) {
@@ -689,6 +851,7 @@ bool queuePhotoJob() {
   s_job_generation = s_generation;
   strncpy(s_job_callsign, s_wanted_callsign, sizeof(s_job_callsign) - 1);
   strncpy(s_job_hex, s_wanted_hex, sizeof(s_job_hex) - 1);
+  strncpy(s_job_type, s_wanted_type, sizeof(s_job_type) - 1);
   s_job_queued = true;
   if (!services::adsb::queueBackgroundJob(&photoJob)) {
     s_job_queued = false;
@@ -701,7 +864,14 @@ bool queuePhotoJob() {
 
 void init() {}
 
-void onFlightDetailSelected(const char* callsign, const char* hex, bool immediate) {
+void onFlightDetailSelected(const char* callsign, const char* hex, bool immediate,
+                            const char* icao_type) {
+  if (icao_type != nullptr) {
+    strncpy(s_wanted_type, icao_type, sizeof(s_wanted_type) - 1);
+    s_wanted_type[sizeof(s_wanted_type) - 1] = '\0';
+  } else {
+    s_wanted_type[0] = '\0';
+  }
   char norm_hex[7] = {};
   if (hex != nullptr) {
     strncpy(norm_hex, hex, sizeof(norm_hex) - 1);

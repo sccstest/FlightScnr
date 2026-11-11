@@ -582,7 +582,8 @@ void requestFlightDetailRouteEnrich(const bool immediate) {
   }
   if (callsign != nullptr) {
     services::route::onFlightDetailSelected(callsign, immediate);
-    services::photo::onFlightDetailSelected(callsign, hex, immediate);
+    services::photo::onFlightDetailSelected(callsign, hex, immediate,
+                                            ui::flightDetailSelectedType());
   }
 }
 
@@ -604,7 +605,7 @@ void tickFlightDetailRouteEnrich() {
       strcmp(ui_callsign, route_callsign) != 0) {
     services::route::onFlightDetailSelected(ui_callsign, false);
     services::photo::onFlightDetailSelected(ui_callsign, ui::flightDetailSelectedHex(),
-                                            false);
+                                            false, ui::flightDetailSelectedType());
   }
 
   if (services::photo::ready()) {

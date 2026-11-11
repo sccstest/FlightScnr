@@ -17,6 +17,7 @@
 #include "geo/flat_earth.h"
 #include "services/map_center.h"
 #include "services/route_lookup.h"
+#include "services/aircraft_alert.h"
 #include "services/airline_logo.h"
 #include "services/airline_lookup.h"
 #include "services/aircraft_photo.h"
@@ -32,6 +33,8 @@ void flightDetailDraw();
 namespace {
 
 constexpr int kBezelInsetPx = ui::sc(10);
+/** Route line when no route is known; non-airline traffic gets a clearer text. */
+const char* s_route_unknown_text = "Route unknown";
 constexpr int kTextPadPx = ui::sc(6);
 constexpr int kTitleGap = ui::sc(4);
 constexpr int kLogoGap = ui::sc(3);
@@ -751,7 +754,7 @@ void drawRouteLabels(const char* origin, const char* dest, int* y, uint16_t fg, 
 
   if ((origin == nullptr || origin[0] == '\0') &&
       (dest == nullptr || dest[0] == '\0')) {
-    drawCenterLine("Route unknown", y, style, fg, bg);
+    drawCenterLine(s_route_unknown_text, y, style, fg, bg);
     return;
   }
 
@@ -958,8 +961,26 @@ void populateFlightDetailStrings(const services::adsb::Aircraft& ac,
     strncpy(out->airline, ac.airline, sizeof(out->airline) - 1);
     out->airline[sizeof(out->airline) - 1] = '\0';
   } else {
-    strncpy(out->airline, "Airline unknown", sizeof(out->airline) - 1);
+    // Non-airline traffic never has an airline; say what it is instead.
+    switch (services::alert::trafficClass(ac)) {
+      case services::alert::TrafficClass::Private:
+        strncpy(out->airline, "Private aircraft", sizeof(out->airline) - 1);
+        break;
+      case services::alert::TrafficClass::Helicopter:
+        strncpy(out->airline, "Helicopter", sizeof(out->airline) - 1);
+        break;
+      case services::alert::TrafficClass::Military:
+        strncpy(out->airline, "Military aircraft", sizeof(out->airline) - 1);
+        break;
+      default:
+        strncpy(out->airline, "Airline unknown", sizeof(out->airline) - 1);
+        break;
+    }
   }
+  s_route_unknown_text = services::alert::trafficClass(ac) ==
+                                 services::alert::TrafficClass::Airline
+                             ? "Route unknown"
+                             : "No published route";
 
   resolveRouteLabels(ac, out->route_origin, sizeof(out->route_origin),
                      out->route_dest, sizeof(out->route_dest));
@@ -1299,6 +1320,14 @@ const char* flightDetailSelectedHex() {
     return nullptr;
   }
   return ac.hex;
+}
+
+const char* flightDetailSelectedType() {
+  static services::adsb::Aircraft ac;
+  if (!copySelectedAircraft(&ac) || ac.type[0] == '\0') {
+    return nullptr;
+  }
+  return ac.type;
 }
 
 void flightDetailDraw() {

@@ -31,6 +31,8 @@ const char* flightDetailSelectedCallsign();
 
 /** Mode-S hex of the selected aircraft (nullptr if unknown). */
 const char* flightDetailSelectedHex();
+/** ICAO type designator of the selected aircraft (e.g. B738), or nullptr. */
+const char* flightDetailSelectedType();
 
 /** Free the off-screen canvas (~300KB PSRAM) when leaving flight detail. */
 void flightDetailReleaseSprite();

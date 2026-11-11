@@ -13,7 +13,8 @@ void init();
  * immediate=true on open/tap; false on encoder steps (debounced).
  * hex may be empty — then no fetch is queued.
  */
-void onFlightDetailSelected(const char* callsign, const char* hex, bool immediate = false);
+void onFlightDetailSelected(const char* callsign, const char* hex, bool immediate = false,
+                            const char* icao_type = nullptr);
 
 /** Fire debounced photo fetch after encoder settles (main loop). */
 void tickDebounce(unsigned long now_ms);
