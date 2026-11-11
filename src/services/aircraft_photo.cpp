@@ -29,8 +29,16 @@ constexpr size_t kMaxThumbUrl = 196;
 constexpr size_t kMaxPhotographer = 40;
 constexpr size_t kMaxJpegBytes = 96 * 1024;
 constexpr size_t kMaxProxyUrl = 280;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 720 px panel: Planespotters' "thumbnail_large" is ~420 px wide, so this is real
+// detail (the proxy resizes, it doesn't invent pixels). 360 wide keeps the photo's
+// corners inside the round bezel when the detail block is centered.
+constexpr int kMaxPhotoW = 360;
+constexpr int kMaxPhotoH = 240;
+#else
 constexpr int kMaxPhotoW = 220;
 constexpr int kMaxPhotoH = 180;
+#endif
 constexpr size_t kMetaCacheSize = 24;
 constexpr unsigned long kMetaCacheTtlMs = 24UL * 60UL * 60UL * 1000UL;
 constexpr unsigned long kMetaNegativeTtlMs = 10UL * 60UL * 1000UL;

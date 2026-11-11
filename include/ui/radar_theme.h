@@ -51,7 +51,13 @@ constexpr int kAircraftInsideRingInsetPx = kAircraftIconRadiusPx + ui::sc(2);
 /** Beyond-ring traffic: compact aircraft icons on screen rim. */
 constexpr int kBeyondRingScreenMarginPx = ui::sc(3);
 /** Target cap height (px) for aircraft tags (bold, slightly above scale label). */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// Three-line tags at the straight 720/390 scale crowd each other and the ring
+// labels; ~20% smaller still reads easily on the 4" panel.
+constexpr int kAircraftTagLabelHeightPx = ui::sc(17);
+#else
 constexpr int kAircraftTagLabelHeightPx = ui::sc(21);
+#endif
 /**
  * Tag blocks stay inside this radius so text clears the round bezel. Clamping
  * to the square framebuffer instead would leave rim tags half off the glass.

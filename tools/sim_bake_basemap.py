@@ -170,6 +170,11 @@ def bake(style, lat, lon, miles, facing, key, contrast_pct, wash_pct) -> Image.I
         results = pool.map(lambda xy: (xy, fetch_tile(tile_url(style, z, xy[0], xy[1], key))),
                            jobs)
         for (x, y), img in results:
+            if isinstance(img, Image.Image) and np.asarray(img, dtype=np.float32).std() < 2.0:
+                # Flat "no data" tile (e.g. the FAA chart service over open water):
+                # leave the paper-colored background instead of a gray block.
+                errors.append("blank tile")
+                continue
             if isinstance(img, Image.Image):
                 mosaic.paste(img, ((x - x0) * 256, (y - y0) * 256))
                 got += 1

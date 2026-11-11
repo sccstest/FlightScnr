@@ -1058,6 +1058,24 @@ void computeFlightDetailLayout(const FlightDetailStrings& s, int logo_h, int pho
     layout->y_photo = top;
     layout->y_photo_credit = layout->y_photo + photo_h + kPhotoCreditGap;
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    // Large panel: photo + credit + text as one centered block (no empty middle).
+    y_start = layoutCenterY(art_h + kPhotoBelowGap + callsign_h + kLineGap + body_h +
+                            kSectionGap + body_h + kLineGap + detail_h + kLineGap +
+                            metrics_h + footer_h) +
+              art_h + kPhotoBelowGap;
+    refineTextMetrics(y_start, &pre_type_h, &type_block_h, &text_h);
+    {
+      int y_block = layoutCenterY(art_h + kPhotoBelowGap + text_h);
+      if (y_block < top) {
+        y_block = top;
+      }
+      layout->y_photo = y_block;
+      layout->y_photo_credit = y_block + photo_h + kPhotoCreditGap;
+      y_start = y_block + art_h + kPhotoBelowGap;
+    }
+    refineTextMetrics(y_start, &pre_type_h, &type_block_h, &text_h);
+#else
     y_start = layoutBottomY(callsign_h + kLineGap + body_h + kSectionGap + body_h +
                             kLineGap + detail_h + kLineGap + metrics_h + footer_h);
     refineTextMetrics(y_start, &pre_type_h, &type_block_h, &text_h);
@@ -1065,6 +1083,7 @@ void computeFlightDetailLayout(const FlightDetailStrings& s, int logo_h, int pho
     const int min_text_y = top + art_h + kPhotoBelowGap;
     y_start = y_bottom < min_text_y ? min_text_y : y_bottom;
     refineTextMetrics(y_start, &pre_type_h, &type_block_h, &text_h);
+#endif
   } else {
     // No photo yet: keep logo + text as one centered block (no empty mid gap).
     const int art_h = logo_h > 0 ? logo_h + kLogoGap : 0;

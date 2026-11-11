@@ -127,7 +127,11 @@ void initLabelMetrics() {
   const int cardinal_h = displayFontHeight(tft, s_cardinal_style);
   s_scale_style =
       pickTextSizeForHeight(cardinal_h - radar::kScaleBelowCardinalPx, 0, 3);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  s_tag_style = pickTextSizeForHeight(radar::kAircraftTagLabelHeightPx, 0, 4);
+#else
   s_tag_style = pickTextSizeForHeight(radar::kAircraftTagLabelHeightPx, 2, 4);
+#endif
 
   displayFontApply(tft, s_scale_style);
   s_scale_label_h = tft.fontHeight();
