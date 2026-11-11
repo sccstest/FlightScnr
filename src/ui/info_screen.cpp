@@ -671,7 +671,12 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   y += kSectionGap;
   // Color key: each word drawn in its radar icon color (dark-radar palette).
   (void)legend;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Ten rows push the key down to where the circle is narrow: keep it short.
+  const char* words[] = {"Military", "Heli", "Private"};
+#else
   const char* words[] = {"Military", "Helicopter", "Private"};
+#endif
   const uint16_t colors[] = {tft.color565(255, 50, 40), tft.color565(64, 170, 255),
                              tft.color565(235, 235, 235)};
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
