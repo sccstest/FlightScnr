@@ -19,6 +19,9 @@
 #include "ui/alert_flash.h"
 #include "ui/radar_display.h"
 #include "ui/radar_scale.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "services/notable_aircraft.h"
+#endif
 
 namespace services::alert {
 namespace {
@@ -35,6 +38,7 @@ constexpr char kPrivateKey[] = "alert_ga";
 constexpr char kTypeColorsKey[] = "type_colors";
 constexpr char kApproachKey[] = "alert_appr";
 constexpr char kOverheadKey[] = "alert_ovh";
+constexpr char kNotableKey[] = "alert_notbl";
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 constexpr bool kTypeColorsDefault = true;
@@ -56,6 +60,9 @@ bool s_private_enabled = config::kFactoryAlertPrivate;
 bool s_type_colors = kTypeColorsDefault;
 bool s_alert_on_approach = config::kFactoryAlertOnApproach;
 bool s_overhead_any = config::kFactoryAlertOverheadAny;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool s_notable_enabled = config::kFactoryAlertNotable;
+#endif
 
 char s_watch_blob[kWatchBlobLen] = "";
 char s_watch_callsigns[kWatchMax][kWatchCallsignLen];
@@ -389,6 +396,120 @@ bool overheadAnyMatch(const services::adsb::Aircraft& ac) {
   return approachingOverhead(ac);
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// --- "Go outside and look" notable-aircraft alarm --------------------------------
+// One entry per notable airframe seen recently; fired once per pass. A pass ends when
+// the aircraft has been missing from the feed for kNotablePassGapMs.
+constexpr size_t kNotableCapacity = 16;
+constexpr unsigned long kNotablePassGapMs = 3UL * 60UL * 1000UL;
+
+struct NotablePass {
+  uint32_t hash = 0;
+  unsigned long last_ms = 0;
+  bool used = false;
+  bool fired = false;
+};
+
+NotablePass s_notable[kNotableCapacity];
+
+/** Hex-only identity, so a callsign appearing mid-pass does not start a new pass. */
+uint32_t notableHash(const services::adsb::Aircraft& ac) {
+  return hashCallsign(ac.hex[0] != '\0' ? ac.hex : ac.callsign);
+}
+
+NotablePass* notablePassFor(uint32_t h, unsigned long now) {
+  NotablePass* oldest = &s_notable[0];
+  for (NotablePass& p : s_notable) {
+    if (p.used && p.hash == h) {
+      return &p;
+    }
+  }
+  for (NotablePass& p : s_notable) {
+    if (!p.used) {
+      oldest = &p;
+      break;
+    }
+    if (static_cast<long>(oldest->last_ms - p.last_ms) > 0) {
+      oldest = &p;
+    }
+  }
+  *oldest = NotablePass{};
+  oldest->used = true;
+  oldest->hash = h;
+  oldest->last_ms = now;
+  return oldest;
+}
+
+/** True when this aircraft already had its notable alarm during the current pass. */
+bool notableAnnounced(const services::adsb::Aircraft& ac) {
+  if (!s_notable_enabled) {
+    return false;
+  }
+  const uint32_t h = notableHash(ac);
+  for (const NotablePass& p : s_notable) {
+    if (p.used && p.fired && p.hash == h) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Returns true when it fired the notable ring + chime this poll. */
+bool checkNotable(const services::adsb::Aircraft* list, size_t count, bool* chime_played) {
+  *chime_played = false;
+  if (!s_notable_enabled) {
+    return false;
+  }
+  const unsigned long now = millis();
+  for (NotablePass& p : s_notable) {
+    if (p.used && now - p.last_ms > kNotablePassGapMs) {
+      p = NotablePass{};
+    }
+  }
+  bool fired = false;
+  for (size_t i = 0; i < count; ++i) {
+    services::notable::Match m;
+    if (!services::notable::match(list[i], &m)) {
+      continue;
+    }
+    NotablePass* pass = notablePassFor(notableHash(list[i]), now);
+    pass->last_ms = now;
+    if (pass->fired) {
+      continue;
+    }
+    // approachingOverhead() fills t/miss whenever the aircraft is closing, even when
+    // it is outside the (smaller) overhead radius; t stays -1 when moving away.
+    float t = -1.0f;
+    float miss = 0.0f;
+    approachingOverhead(list[i], &t, &miss);
+    const bool approaching = t >= 0.0f && t <= kNotableLeadSec && miss <= kNotableRadiusMi;
+    const bool appeared = m.rarity == services::notable::Rarity::VeryRare &&
+                          ui::radarDisplayIsInRange(list[i]);
+    if (!approaching && !appeared) {
+      continue;
+    }
+    pass->fired = true;
+    fired = true;
+    if (approaching) {
+      Serial.printf("[alert] NOTABLE %s (%s) type=%s approaching: closest %.1f mi in %.0f s\n",
+                    m.label, list[i].callsign, list[i].type, static_cast<double>(miss),
+                    static_cast<double>(t));
+    } else {
+      Serial.printf("[alert] NOTABLE %s (%s) type=%s appeared in range (very rare)\n",
+                    m.label, list[i].callsign, list[i].type);
+    }
+  }
+  if (fired) {
+    ui::alertFlashStart(ui::AlertFlashKind::Notable);
+#if !FLIGHTSCNR_HAS_HAPTIC
+    hardware::buzzerAlert(hardware::chime::Kind::Notable);
+    *chime_played = true;
+#endif
+  }
+  return fired;
+}
+#endif  // FLIGHTSCNR_BOARD_WAVESHARE_P4_4C
+
 void persistBool(const char* key, bool value) {
   Preferences prefs;
   if (prefs.begin(kStoreNs, false)) {
@@ -413,6 +534,9 @@ void bootLoad() {
   s_type_colors = prefs.getBool(kTypeColorsKey, kTypeColorsDefault);
   s_alert_on_approach = prefs.getBool(kApproachKey, config::kFactoryAlertOnApproach);
   s_overhead_any = prefs.getBool(kOverheadKey, config::kFactoryAlertOverheadAny);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  s_notable_enabled = prefs.getBool(kNotableKey, config::kFactoryAlertNotable);
+#endif
   const String watch = prefs.getString(kWatchKey, "");
   strncpy(s_watch_blob, watch.c_str(), sizeof(s_watch_blob) - 1);
   s_watch_blob[sizeof(s_watch_blob) - 1] = '\0';
@@ -434,6 +558,12 @@ void bootLoad() {
 }
 
 void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
+  // The notable alarm keeps its own once-per-pass memory, so it runs even when every
+  // other alert is off and survives range changes.
+  bool notable_chime = false;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  checkNotable(list, count, &notable_chime);
+#endif
   if (!alertsActive()) {
     return;
   }
@@ -469,6 +599,11 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
       continue;
     }
     markSeen(h);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (notableAnnounced(list[i]) && !(s_emrg_enabled && list[i].isEmergencySquawk())) {
+      continue;  // already got its "go look" alarm this pass: one alarm per aircraft
+    }
+#endif
     fired = true;
     const TrafficClass cls = trafficClass(list[i]);
     if (!isAlertTarget(list[i]) && !(s_emrg_enabled && list[i].isEmergencySquawk())) {
@@ -499,6 +634,9 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
                   watchlistContains(list[i].callsign) ? 1 : 0,
                   watchTypeContains(list[i].type) ? 1 : 0,
                   watchRegContains(list[i].registration) ? 1 : 0, list[i].squawk);
+  }
+  if (fired && notable_chime && !fired_emergency) {
+    fired = false;  // the notable ring + chime already announced this poll
   }
   if (fired) {
     // Priority when several fire at once: military, watch/emergency, helicopter, private.
@@ -542,6 +680,11 @@ void notifyRadarResumed() {
 }
 
 bool isHighlighted(const services::adsb::Aircraft& ac) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (s_notable_enabled && services::notable::match(ac, nullptr)) {
+    return true;
+  }
+#endif
   if (overheadAnyMatch(ac)) {
     return true;
   }
@@ -620,6 +763,36 @@ bool approachingOverhead(const services::adsb::Aircraft& ac, float* t_sec, float
   if (miss_mi != nullptr) *miss_mi = miss / kKmPerMi;
   return miss <= radius_km && t <= kOverheadLeadSec;
 }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool notableAlertEnabled() { return s_notable_enabled; }
+
+void toggleNotableAlert() {
+  s_notable_enabled = !s_notable_enabled;
+  persistBool(kNotableKey, s_notable_enabled);
+  for (NotablePass& p : s_notable) {
+    p = NotablePass{};
+  }
+  ui::radarDisplayInvalidateAircraft();
+}
+
+void saveNotableFromForm(const char* checkbox) {
+  const bool on = checkbox != nullptr && checkbox[0] == 'T';
+  if (on != s_notable_enabled) {
+    toggleNotableAlert();
+  }
+}
+
+const char* notableTag(const services::adsb::Aircraft& ac) {
+  services::notable::Match m;
+  return s_notable_enabled && services::notable::match(ac, &m) ? m.tag : nullptr;
+}
+
+const char* notableLabel(const services::adsb::Aircraft& ac) {
+  services::notable::Match m;
+  return s_notable_enabled && services::notable::match(ac, &m) ? m.label : nullptr;
+}
+#endif
 
 bool alertOnApproachEnabled() { return s_alert_on_approach; }
 bool overheadAnyEnabled() { return s_overhead_any; }

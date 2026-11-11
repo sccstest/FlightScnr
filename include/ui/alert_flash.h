@@ -10,6 +10,7 @@ enum class AlertFlashKind : uint8_t {
   Helicopter,
   Private,
   Overhead,
+  Notable,  // "go outside and look": magenta / gold alternating ring (4C)
 };
 
 /** Start a 10s blinking ring: red military, blue helicopter, white private,

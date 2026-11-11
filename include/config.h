@@ -112,6 +112,7 @@ constexpr bool kFactoryAlertPrivate = true;
 constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
 constexpr bool kFactoryAlertOverheadAny = true;
 constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
+constexpr bool kFactoryAlertNotable = true;     // 'go look' alarm for notable aircraft
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
 constexpr bool kFactoryRainOverlay = true;      // live NEXRAD rain over the radar (keyless IEM)
 constexpr bool kFactorySkyLaunchAlerts = true;  // Space Coast launch banner + chime
@@ -132,6 +133,7 @@ constexpr bool kFactoryAlertHelicopter = false;
 constexpr bool kFactoryAlertPrivate = false;
 constexpr bool kFactoryAlertOnApproach = false;
 constexpr bool kFactoryAlertOverheadAny = false;
+constexpr bool kFactoryAlertNotable = false;
 constexpr bool kFactoryBasemapVfr = false;
 #endif
 

@@ -42,6 +42,25 @@ void saveApproachFromForm(const char* approach_checkbox, const char* overhead_ch
 bool helicopterAlertEnabled();
 bool privateAlertEnabled();
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/**
+ * "Go outside and look" alarm for notable aircraft (services/notable_aircraft.h):
+ * fires once per pass when one will pass within kNotableRadiusMi in the next
+ * kNotableLeadSec, or (very rare types) as soon as it first shows up inside the ring.
+ * Plays the Notable chime (alert sound on/off and volume apply) and the magenta/gold ring.
+ */
+constexpr float kNotableRadiusMi = 4.0f;
+constexpr float kNotableLeadSec = 300.0f;
+bool notableAlertEnabled();
+void toggleNotableAlert();
+void saveNotableFromForm(const char* checkbox);
+/** Short radar-tag label (e.g. "Hurricane Hunter") when the alarm is on and ac is
+ *  notable; nullptr otherwise. */
+const char* notableTag(const services::adsb::Aircraft& ac);
+/** Detail-screen label (e.g. "NOAA Hurricane Hunter"), same rules. */
+const char* notableLabel(const services::adsb::Aircraft& ac);
+#endif
+
 /** On-device "Alerts" settings page toggles (persisted immediately). */
 void toggleTypeColors();
 void toggleMilitaryAlert();

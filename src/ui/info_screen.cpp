@@ -85,6 +85,7 @@ enum class AlertsAdjustRow : uint8_t {
   When,
   OverheadAny,
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  Notable,
   SkyLaunches,  // Space Coast rocket launch banner + chime
   SkyIss,       // visible ISS pass banner + chime
 #endif
@@ -618,9 +619,11 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   snprintf(rows[6], sizeof(rows[6]), "Overhead (any): %s",
            onOff(services::alert::overheadAnyEnabled()));
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  snprintf(rows[7], sizeof(rows[7]), "Rocket launches: %s",
+  snprintf(rows[static_cast<int>(AlertsAdjustRow::Notable)], sizeof(rows[0]),
+           "Notable planes: %s", onOff(services::alert::notableAlertEnabled()));
+  snprintf(rows[static_cast<int>(AlertsAdjustRow::SkyLaunches)], sizeof(rows[0]), "Rocket launches: %s",
            onOff(services::sky::launchesEnabled()));
-  snprintf(rows[8], sizeof(rows[8]), "ISS passes: %s", onOff(services::sky::issEnabled()));
+  snprintf(rows[static_cast<int>(AlertsAdjustRow::SkyIss)], sizeof(rows[0]), "ISS passes: %s", onOff(services::sky::issEnabled()));
 #endif
 
   char deco[kRows][48];
@@ -721,6 +724,9 @@ void toggleAlertsRow(AlertsAdjustRow row) {
       break;
     case AlertsAdjustRow::SkyIss:
       services::sky::toggleIss();
+      break;
+    case AlertsAdjustRow::Notable:
+      services::alert::toggleNotableAlert();
       break;
 #endif
     default:

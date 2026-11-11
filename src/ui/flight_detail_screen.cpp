@@ -957,7 +957,17 @@ void populateFlightDetailStrings(const services::adsb::Aircraft& ac,
     strncpy(out->callsign, "—", sizeof(out->callsign) - 1);
   }
 
-  if (ac.airline[0] != '\0') {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const char* notable = services::alert::notableLabel(ac);
+#else
+  const char* notable = nullptr;
+#endif
+  if (notable != nullptr) {
+    // Notable aircraft: the friendly category name ("NOAA Hurricane Hunter")
+    // takes the airline line; the operator is usually obvious from it.
+    strncpy(out->airline, notable, sizeof(out->airline) - 1);
+    out->airline[sizeof(out->airline) - 1] = '\0';
+  } else if (ac.airline[0] != '\0') {
     strncpy(out->airline, ac.airline, sizeof(out->airline) - 1);
     out->airline[sizeof(out->airline) - 1] = '\0';
   } else {
