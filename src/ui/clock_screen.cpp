@@ -26,7 +26,12 @@ constexpr int kSectionGap = ui::sc(8);
 constexpr int kTimeDateGap = ui::sc(14);
 /** On-screen size of the current-weather icon (downscaled from the native 96px
  *  forecast art) so the clock's time row stays inside the round display. */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// Native size of the 4C's hi-res weather art: drawn 1:1 instead of resampled.
+constexpr int kClockIconSize = 144;
+#else
 constexpr int kClockIconSize = ui::sc(92);
+#endif
 /** Shift the whole clock block up from the panel center so the bottom
  *  sunrise/sunset row clears the round display's clipped lower corners. */
 constexpr int kClockTopBiasPx = ui::sc(30);

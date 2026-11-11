@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import io
 import re
 import sys
@@ -42,15 +43,21 @@ except ImportError:
     sys.exit(1)
 
 # On-screen icon size (downscaled from the 144px @2x source).
-MAX_W = 96
-MAX_H = 96
+# The Waveshare 4C build uses a full-resolution copy
+# (include/data/weather_icons_lookup_hires.h): WEATHER_ICON_MAX=144 WEATHER_SUN_SIZE=48.
+MAX_W = int(os.environ.get("WEATHER_ICON_MAX", "96"))
+MAX_H = MAX_W
 
 # Sunrise/sunset glyphs are smaller; native @2x source is 48px.
-SUN_W = 40
-SUN_H = 40
+SUN_W = int(os.environ.get("WEATHER_SUN_SIZE", "40"))
+SUN_H = SUN_W
 
 # Device background the icons are composited onto (radar_theme kBg*: dark green).
 BG_R, BG_G, BG_B = 2, 15, 3
+# The clock and forecast screens that show these icons are black; the 4C's hi-res
+# set blends onto black so no dark-green box shows (WEATHER_ICON_BG=0,0,0).
+if os.environ.get("WEATHER_ICON_BG"):
+    BG_R, BG_G, BG_B = (int(v) for v in os.environ["WEATHER_ICON_BG"].split(","))
 
 # Official Tomorrow.io icon set (codeload zip avoids the GitHub API rate limit).
 REPO = "tomorrow-io-api/tomorrow-weather-codes"

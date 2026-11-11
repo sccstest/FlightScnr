@@ -3,7 +3,13 @@
 #include <AnimatedGIF.h>
 #include <Arduino.h>
 
+#include "hardware/pin_config.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 720 px panel: full-resolution 144 px weather art and 48 px sunrise/sunset glyphs.
+#include "data/weather_icons_lookup_hires.h"
+#else
 #include "data/weather_icons_lookup.h"
+#endif
 #include "hardware/plane_gfx.h"
 
 namespace services::weather_icon {

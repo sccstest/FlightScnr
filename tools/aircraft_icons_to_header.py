@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,9 @@ except ImportError:
     print("Pillow required: pip install Pillow")
     sys.exit(1)
 
-ICON_SIDE = 32
+# 32 px for the S3 boards. The Waveshare 4C build uses a 64 px copy
+# (include/data/aircraft_icons_lookup_hires.h): AIRCRAFT_ICON_SIDE=64.
+ICON_SIDE = int(os.environ.get("AIRCRAFT_ICON_SIDE", "32"))
 # Soft edges below this are treated as transparent at draw time too.
 ALPHA_FLOOR = 24
 

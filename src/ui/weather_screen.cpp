@@ -62,7 +62,12 @@ constexpr int kCreditY = 288;
 // 390 px design (T-Encoder Pro), scaled by ui::sc() on larger panels (Waveshare 4C).
 constexpr int kForecastColOffset = ui::sc(110);
 // Smaller icons leave room for the larger hi/lo temperature fonts.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// Native size of the 4C's hi-res weather art: drawn 1:1 instead of resampled.
+constexpr int kForecastIconSize = 144;
+#else
 constexpr int kForecastIconSize = ui::sc(72);
+#endif
 constexpr int kTitleY = ui::sc(48);
 constexpr int kLabelY = ui::sc(104);
 constexpr int kIconY = ui::sc(128);

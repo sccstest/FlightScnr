@@ -7,7 +7,13 @@
 #include <cmath>
 #include <cstring>
 
+#include "hardware/pin_config.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 720 px panel: 64 px masks so icons drawn at ~52 px are downsampled, not upscaled.
+#include "data/aircraft_icons_lookup_hires.h"
+#else
 #include "data/aircraft_icons_lookup.h"
+#endif
 #include "hardware/plane_gfx.h"
 #include "services/adsb_client.h"
 
