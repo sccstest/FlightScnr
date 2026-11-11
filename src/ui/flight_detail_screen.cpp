@@ -917,7 +917,7 @@ struct FlightDetailStrings {
   char type[data::icao_types::kMaxNameLen + 1];
   char alt[28];
   char speed[24];
-  char index_line[16];
+  char index_line[24];
 };
 
 struct FlightDetailLayout {
@@ -1000,8 +1000,14 @@ void populateFlightDetailStrings(const services::adsb::Aircraft& ac,
   formatTypeLine(ac, out->type, sizeof(out->type));
   formatAltSpeedLine(ac, out->alt, sizeof(out->alt));
   out->speed[0] = '\0';
+#if !FLIGHTSCNR_HAS_ENCODER
+  // Touch-only (4C): arrows hint that the left / right half steps back / forward.
+  snprintf(out->index_line, sizeof(out->index_line), s_order_count > 1 ? "<   %u / %u   >" : "%u / %u",
+           static_cast<unsigned>(s_sel + 1), static_cast<unsigned>(s_order_count));
+#else
   snprintf(out->index_line, sizeof(out->index_line), "%u / %u",
            static_cast<unsigned>(s_sel + 1), static_cast<unsigned>(s_order_count));
+#endif
 }
 
 void resolveAirlineIcao(const services::adsb::Aircraft& ac, char* out, size_t out_len) {

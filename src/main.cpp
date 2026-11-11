@@ -1606,9 +1606,15 @@ void handleInput() {
   if (g_screen == AppScreen::FlightDetail) {
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
     // No knob button — tap advances to the next aircraft (same as encoder +1).
-    if (inputConsumeScreenTap(nullptr, nullptr)) {
+    // Touch-only boards (4C): the left half steps back, the right half forward.
+    int16_t tap_x = 0;
+    if (inputConsumeScreenTap(&tap_x, nullptr)) {
       noteSecondaryActivity();
+#if !FLIGHTSCNR_HAS_ENCODER
+      onFlightDetailStep(tap_x < config::kDisplayWidth / 2 ? -1 : 1);
+#else
       onFlightDetailStep(1);
+#endif
       hardware::buzzerClick();
       return;
     }
