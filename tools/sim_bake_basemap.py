@@ -55,6 +55,7 @@ FILL = {"dark": (2, 15, 3), "light": (240, 240, 240), "voyager": (242, 239, 230)
         "vfr": (248, 248, 242)}
 USER_AGENT = "FlightScnr-sim-basemap/1.0 (+https://github.com/yashmulgaonkar/FlightScnr)"
 EARTH_R_KM = 6371.0088
+LABELS = False  # --labels
 
 
 # --- simulator NVS (sim/src/sim_storage.cpp format: "ns\tkey\tvalue", escaped) ---
@@ -119,8 +120,11 @@ def tile_url(style: str, z: int, x: int, y: int, key: str | None) -> str:
     if style == "vfr":
         return ("https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/"
                 f"VFR_Sectional/MapServer/tile/{z}/{y}/{x}")
-    path = {"light": "rastertiles/light_nolabels",
-            "voyager": "rastertiles/voyager_nolabels"}.get(style, "rastertiles/dark_nolabels")
+    if style == "voyager" and LABELS:
+        path = "rastertiles/voyager"  # with town / road names (they rotate with facing)
+    else:
+        path = {"light": "rastertiles/light_nolabels",
+                "voyager": "rastertiles/voyager_nolabels"}.get(style, "rastertiles/dark_nolabels")
     url = f"https://a.basemaps.cartocdn.com/{path}/{z}/{x}/{y}.png"
     if key:
         url += "?key=" + urllib.parse.quote(key)
@@ -225,7 +229,11 @@ def main() -> int:
     ap.add_argument("--lat", type=float, help="radar center latitude (also saved for the sim)")
     ap.add_argument("--lon", type=float, help="radar center longitude")
     ap.add_argument("--off", action="store_true", help="turn the basemap off")
+    ap.add_argument("--labels", action="store_true",
+                    help="voyager only: keep town and road names on the map")
     args = ap.parse_args()
+    global LABELS
+    LABELS = args.labels
 
     nvs_path = args.data / "nvs.txt"
     nvs = load_nvs(nvs_path)

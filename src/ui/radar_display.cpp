@@ -545,8 +545,53 @@ label_layout::Geometry labelGeometry() {
  * signature), so both the drawing path and the dirty-rect path call it and see
  * identical boxes — the tag has to be erased from where it was actually drawn.
  */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+size_t visibleAircraftCount();
+
+// Busy sky: smaller tag text so more tags fit before the layout starts hiding them.
+// Level 0 = normal, 1 = smaller, 2 = smallest. Hysteresis keeps a count hovering
+// at a threshold from flipping the size every poll.
+constexpr size_t kTagDenserAbove[] = {8, 14};  // go to level 1 / 2 above these
+constexpr size_t kTagRoomierAt[] = {6, 11};    // back to level 0 / 1 at or below these
+UiTextStyle s_tag_styles[3];
+bool s_tag_styles_ready = false;
+uint8_t s_tag_level = 0;
+
+void updateTagDensity() {
+  if (!s_tag_styles_ready) {
+    s_tag_styles[0] = s_tag_style;
+    s_tag_styles[1] = pickTextSizeForHeight(0, 0, 0);  // smallest preset (15 pt)
+    s_tag_styles[2] = displayFontTagCrowded();          // 12 pt
+    s_tag_styles_ready = true;
+    Serial.printf("[radar] tag text heights: %d / %d / %d px\n",
+                  displayFontHeight(tft, s_tag_styles[0]), displayFontHeight(tft, s_tag_styles[1]),
+                  displayFontHeight(tft, s_tag_styles[2]));
+  }
+  const size_t n = visibleAircraftCount();
+  uint8_t level = s_tag_level;
+  while (level < 2 && n > kTagDenserAbove[level]) {
+    ++level;
+  }
+  while (level > 0 && n <= kTagRoomierAt[level - 1]) {
+    --level;
+  }
+  if (level == s_tag_level) {
+    return;
+  }
+  Serial.printf("[radar] %u planes: tag text level %u -> %u\n", static_cast<unsigned>(n),
+                static_cast<unsigned>(s_tag_level), static_cast<unsigned>(level));
+  s_tag_level = level;
+  s_tag_style = s_tag_styles[level];
+  // Every tag changes size: repaint the whole aircraft layer, not just moved markers.
+  radarDisplayInvalidateAircraft();
+}
+#endif
+
 void resolveAircraftLabels() {
   initLabelMetrics();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  updateTagDensity();
+#endif
 
   const label_layout::Geometry geom = labelGeometry();
   if (ui::displayPrefsHideBlipDetails()) {
@@ -1210,6 +1255,21 @@ void drawRingScaleLabels(int cx, int cy, int outer_radius) {
 /** Rings / spokes / labels per the Rings setting; "off" leaves only a home marker. */
 void drawGridForMode(int cx, int cy, int grid_r) {
   const radar::GridMode mode = radar::gridMode();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (mode != radar::GridMode::Off) {
+    drawRings(cx, cy, grid_r);
+    drawGridSpokes(cx, cy, grid_r, radar::kColorGrid);
+  }
+  // "You are here" dot like a phone map: blue with a white rim, and a thin dark
+  // edge so the rim still reads on white map areas.
+  {
+    const int r = ui::sc(7);
+    const int rim = ui::sc(2);
+    s_draw->fillCircle(cx, cy, r + 1, s_draw->color565(70, 70, 70));
+    s_draw->fillCircle(cx, cy, r, s_draw->color565(255, 255, 255));
+    s_draw->fillCircle(cx, cy, r - rim, s_draw->color565(26, 115, 232));
+  }
+#else
   if (mode != radar::GridMode::Off) {
     drawRings(cx, cy, grid_r);
     drawGridSpokes(cx, cy, grid_r, radar::kColorGrid);
@@ -1220,6 +1280,7 @@ void drawGridForMode(int cx, int cy, int grid_r) {
     s_draw->fillRect(cx - arm, cy - t / 2, 2 * arm + 1, t, radar::kColorGrid);
     s_draw->fillRect(cx - t / 2, cy - arm, t, 2 * arm + 1, radar::kColorGrid);
   }
+#endif
   drawCardinalLabels();
   if (mode == radar::GridMode::Full) {
     drawRingScaleLabels(cx, cy, grid_r);

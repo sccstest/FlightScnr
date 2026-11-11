@@ -16,6 +16,7 @@
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 // 720 px panel: every preset is the 390 px design size x 720/390 (see ui/ui_scale.h).
+#include "fonts/MontserratBold12pt4aa.h"  // crowded-sky radar tags only
 #include "fonts/MontserratBold15pt4aa.h"
 #include "fonts/MontserratBold17pt4aa.h"
 #include "fonts/MontserratBold20pt4aa.h"
@@ -74,6 +75,10 @@ UiTextStyle displayFontCardinal() { return UiTextStyle{&FS_FONT_12}; }
 UiTextStyle displayFontScale() { return UiTextStyle{&FS_FONT_9}; }
 
 UiTextStyle displayFontTag() { return UiTextStyle{&FS_FONT_11}; }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+UiTextStyle displayFontTagCrowded() { return UiTextStyle{&MontserratBold12pt4aa}; }
+#endif
 
 UiTextStyle displayFontClockTime() { return UiTextStyle{&FS_FONT_36}; }
 

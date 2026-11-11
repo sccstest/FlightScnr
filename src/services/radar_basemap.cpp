@@ -418,7 +418,9 @@ Meta storedMeta() { return s_meta; }
 
 Style storedStyle() {
   if (s_meta.valid) return s_meta.style;
-  return config::kFactoryBasemapVfr ? Style::Vfr : Style::Dark;
+  return config::kFactoryBasemapStyle <= static_cast<uint8_t>(Style::Voyager)
+             ? static_cast<Style>(config::kFactoryBasemapStyle)
+             : Style::Dark;
 }
 
 bool wantsDisplay() {

@@ -114,7 +114,10 @@ constexpr bool kFactoryAlertOverheadAny = true;
 constexpr bool kFactoryHideAirliners = false;   // radar shows airliners and cargo jets
 constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
 constexpr bool kFactoryAlertNotable = true;     // 'go look' alarm for notable aircraft
-constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
+// Settings page preselects this map style (services::basemap::Style: 0 dark, 1 light,
+// 2 FAA VFR, 3 CARTO Voyager). Voyager is the Google-Maps-like look; it needs a free
+// CARTO key entered on the settings page for the one-time bake.
+constexpr uint8_t kFactoryBasemapStyle = 3;
 constexpr bool kFactoryRainOverlay = true;      // live NEXRAD rain over the radar (keyless IEM)
 constexpr bool kFactorySkyLaunchAlerts = true;  // Space Coast launch banner + chime
 constexpr bool kFactorySkyIssAlerts = true;     // visible ISS pass banner + chime
@@ -136,7 +139,7 @@ constexpr bool kFactoryAlertOnApproach = false;
 constexpr bool kFactoryAlertOverheadAny = false;
 constexpr bool kFactoryHideAirliners = false;
 constexpr bool kFactoryAlertNotable = false;
-constexpr bool kFactoryBasemapVfr = false;
+constexpr uint8_t kFactoryBasemapStyle = 0;  // dark
 #endif
 
 /** ADS-B poll interval (adsb.fi public limit ~1 req/s).

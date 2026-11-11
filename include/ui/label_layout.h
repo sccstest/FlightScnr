@@ -45,8 +45,15 @@ constexpr int kSwitchMarginPct = 8;
  * higher-priority tags. Step back up to a better tier only below
  * kUnhideCoveragePct, so a tag hovering on either boundary cannot flicker.
  */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// The 4C shows a wider area with many more tags: hide sooner rather than stack
+// text that can't be read (radar_display also shrinks the font when it's busy).
+constexpr int kHideCoveragePct = 12;
+constexpr int kUnhideCoveragePct = 4;
+#else
 constexpr int kHideCoveragePct = 35;
 constexpr int kUnhideCoveragePct = 15;
+#endif
 
 /** Coverage allowed when choosing `candidate_tier` given the tier from last poll. */
 constexpr int coverageLimitPct(uint8_t previous_tier, uint8_t candidate_tier) {
