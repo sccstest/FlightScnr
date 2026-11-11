@@ -19,6 +19,7 @@ constexpr char kRangeMiKey[] = "range_mi";
 constexpr char kDistUnitKey[] = "dist_unit";
 constexpr char kDistMiKey[] = "dist_mi";
 constexpr char kRoseKey[] = "rose_en";
+constexpr char kGridModeKey[] = "grid_mode";
 constexpr char kFacingKey[] = "facing_deg";
 
 constexpr char kLegacyScaleKey[] = "rangeIdx";
@@ -284,6 +285,54 @@ void saveDistanceUnitsFromForm(const char* unit_value,
 }
 
 bool showCompassRose() { return s_compass_rose; }
+
+namespace {
+GridMode s_grid_mode = GridMode::Full;
+bool s_grid_mode_loaded = false;
+
+void loadGridMode() {
+  if (s_grid_mode_loaded) {
+    return;
+  }
+  s_grid_mode_loaded = true;
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, true)) {
+    const uint8_t v = prefs.getUChar(kGridModeKey, 0);
+    s_grid_mode = v <= 2 ? static_cast<GridMode>(v) : GridMode::Full;
+    prefs.end();
+  }
+}
+}  // namespace
+
+GridMode gridMode() {
+  loadGridMode();
+  return s_grid_mode;
+}
+
+void gridModeStep(int8_t delta) {
+  loadGridMode();
+  int v = static_cast<int>(s_grid_mode) + (delta >= 0 ? 1 : -1);
+  v = (v + 3) % 3;
+  s_grid_mode = static_cast<GridMode>(v);
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putUChar(kGridModeKey, static_cast<uint8_t>(v));
+    prefs.end();
+  }
+  settingsStateBump();
+  Serial.printf("Radar grid: %s\n", gridModeLabel());
+}
+
+const char* gridModeLabel() {
+  switch (gridMode()) {
+    case GridMode::NoLabels:
+      return "no labels";
+    case GridMode::Off:
+      return "off";
+    default:
+      return "full";
+  }
+}
 
 void toggleCompassRose() {
   s_compass_rose = !s_compass_rose;

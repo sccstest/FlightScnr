@@ -17,6 +17,28 @@ TrafficClass trafficClass(const services::adsb::Aircraft& ac);
 
 /** Color radar icons by TrafficClass (default on for the 4C, off on the S3 boards). */
 bool typeColorsEnabled();
+
+/**
+ * Predicted closest approach to the radar center (home): true when the aircraft will
+ * pass within kOverheadRadiusMi in the next kOverheadLeadSec, or is overhead now and
+ * still closing. Straight-line from current track and ground speed. Optional outputs:
+ * seconds until closest approach and the predicted miss distance in miles.
+ */
+constexpr float kOverheadRadiusMi = 2.0f;
+constexpr float kOverheadLeadSec = 180.0f;
+/** "Overhead (any)" only counts aircraft at or below this (you can see / hear them). */
+constexpr int kOverheadMaxAltFt = 10000;
+bool approachingOverhead(const services::adsb::Aircraft& ac, float* t_sec = nullptr,
+                         float* miss_mi = nullptr);
+
+/** Class/watch alerts fire when the aircraft is approaching overhead instead of when
+ *  it enters the radar ring (emergency squawks always fire immediately). */
+bool alertOnApproachEnabled();
+/** Alert for any low aircraft about to pass overhead (yellow ring). */
+bool overheadAnyEnabled();
+void toggleAlertOnApproach();
+void toggleOverheadAny();
+void saveApproachFromForm(const char* approach_checkbox, const char* overhead_checkbox);
 bool helicopterAlertEnabled();
 bool privateAlertEnabled();
 

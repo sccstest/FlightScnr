@@ -956,6 +956,25 @@ void drawRingScaleLabels(int cx, int cy, int outer_radius) {
   }
 }
 
+/** Rings / spokes / labels per the Rings setting; "off" leaves only a home marker. */
+void drawGridForMode(int cx, int cy, int grid_r) {
+  const radar::GridMode mode = radar::gridMode();
+  if (mode != radar::GridMode::Off) {
+    drawRings(cx, cy, grid_r);
+    drawGridSpokes(cx, cy, grid_r, radar::kColorGrid);
+  } else {
+    // Small + at the radar center (home), two strokes thick.
+    const int arm = ui::sc(9);
+    const int t = ui::sc(2);
+    s_draw->fillRect(cx - arm, cy - t / 2, 2 * arm + 1, t, radar::kColorGrid);
+    s_draw->fillRect(cx - t / 2, cy - arm, t, 2 * arm + 1, radar::kColorGrid);
+  }
+  drawCardinalLabels();
+  if (mode == radar::GridMode::Full) {
+    drawRingScaleLabels(cx, cy, grid_r);
+  }
+}
+
 template <typename GfxRef>
 void drawStaticGrid(GfxRef& gfx) {
   initLabelMetrics();
@@ -965,10 +984,7 @@ void drawStaticGrid(GfxRef& gfx) {
   const int grid_r = radar::kGridOuterRadius;
 
   gfx.fillScreen(radar::kColorBackground);
-  drawRings(cx, cy, grid_r);
-  drawGridSpokes(cx, cy, grid_r, radar::kColorGrid);
-  drawCardinalLabels();
-  drawRingScaleLabels(cx, cy, grid_r);
+  drawGridForMode(cx, cy, grid_r);
   gfx.setTextDatum(TextDatum::TopLeft);
 }
 
@@ -993,10 +1009,7 @@ bool rebuildBackgroundSprite() {
     const int cx = radar::kCenterX;
     const int cy = radar::kCenterY;
     const int grid_r = radar::kGridOuterRadius;
-    drawRings(cx, cy, grid_r);
-    drawGridSpokes(cx, cy, grid_r, radar::kColorGrid);
-    drawCardinalLabels();
-    drawRingScaleLabels(cx, cy, grid_r);
+    drawGridForMode(cx, cy, grid_r);
     s_bg.gfx().setTextDatum(TextDatum::TopLeft);
     s_basemap_bg_stale = false;
   } else {

@@ -43,6 +43,7 @@ enum class DisplayAdjustRow : uint8_t {
   Units,
   Range,
   Compass,
+  Rings,
   Facing,
 };
 
@@ -71,6 +72,8 @@ enum class AlertsAdjustRow : uint8_t {
   Emergency,
   Helicopters,
   Private,
+  When,
+  OverheadAny,
   Count,
 };
 
@@ -393,7 +396,9 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[5][48];
+  char deco[6][48];
+  char rings_line[28];
+  snprintf(rings_line, sizeof(rings_line), "Rings: %s", ui::radar::gridModeLabel());
   const InfoLine option_lines[] = {
       {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
        displayFontBody(), bright_fg},
@@ -403,6 +408,9 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
        displayFontBody(), range_fg},
       {focusDecorate(compass_line, s_display_focus == DisplayAdjustRow::Compass, deco[3], 48),
        displayFontBody(), compass_fg},
+      {focusDecorate(rings_line, s_display_focus == DisplayAdjustRow::Rings, deco[5], 48),
+       displayFontBody(),
+       s_display_focus == DisplayAdjustRow::Rings ? active_fg : label_fg},
       {focusDecorate(facing_line, s_display_focus == DisplayAdjustRow::Facing, deco[4], 48),
        displayFontBody(), facing_fg},
   };
@@ -548,6 +556,10 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
            onOff(services::alert::helicopterAlertEnabled()));
   snprintf(rows[4], sizeof(rows[4]), "Private planes: %s",
            onOff(services::alert::privateAlertEnabled()));
+  snprintf(rows[5], sizeof(rows[5]), "Alert when: %s",
+           services::alert::alertOnApproachEnabled() ? "overhead" : "entering");
+  snprintf(rows[6], sizeof(rows[6]), "Overhead (any): %s",
+           onOff(services::alert::overheadAnyEnabled()));
 
   char deco[kRows][48];
   InfoLine option_lines[kRows];
@@ -630,6 +642,12 @@ void toggleAlertsRow(AlertsAdjustRow row) {
     case AlertsAdjustRow::Private:
       services::alert::togglePrivateAlert();
       break;
+    case AlertsAdjustRow::When:
+      services::alert::toggleAlertOnApproach();
+      break;
+    case AlertsAdjustRow::OverheadAny:
+      services::alert::toggleOverheadAny();
+      break;
     default:
       break;
   }
@@ -697,6 +715,9 @@ void infoScreenCycleDisplayFocus() {
       s_display_focus = DisplayAdjustRow::Compass;
       break;
     case DisplayAdjustRow::Compass:
+      s_display_focus = DisplayAdjustRow::Rings;
+      break;
+    case DisplayAdjustRow::Rings:
       s_display_focus = DisplayAdjustRow::Facing;
       break;
     default:
@@ -842,6 +863,9 @@ void infoScreenHandleKnob(int8_t delta) {
       break;
     case DisplayAdjustRow::Compass:
       ui::radar::toggleCompassRose();
+      break;
+    case DisplayAdjustRow::Rings:
+      ui::radar::gridModeStep(delta);
       break;
     case DisplayAdjustRow::Facing:
       // Dial enters orientation adjust from main.cpp; no-op here.

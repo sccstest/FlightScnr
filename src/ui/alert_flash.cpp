@@ -55,6 +55,7 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
   constexpr uint16_t kMilitaryRed = 0xD882;
   constexpr uint16_t kHelicopterBlue = 0x455F;  // ~(64,170,255)
   constexpr uint16_t kPrivateWhite = 0xE73C;    // ~(230,230,230)
+  constexpr uint16_t kOverheadYellow = 0xFEA0;  // ~(255,212,0)
   constexpr uint16_t kTrackedGreen = 0x0666;
   uint16_t ring_color = kTrackedGreen;
   switch (s_kind) {
@@ -66,6 +67,9 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
       break;
     case AlertFlashKind::Private:
       ring_color = kPrivateWhite;
+      break;
+    case AlertFlashKind::Overhead:
+      ring_color = kOverheadYellow;
       break;
     default:
       break;
@@ -109,6 +113,7 @@ void alertFlashStart(AlertFlashKind kind) {
                 s_kind == AlertFlashKind::Military     ? "red military"
                 : s_kind == AlertFlashKind::Helicopter ? "blue helicopter"
                 : s_kind == AlertFlashKind::Private    ? "white private"
+                : s_kind == AlertFlashKind::Overhead   ? "yellow overhead"
                                                        : "green tracked",
                 static_cast<unsigned long>(kAlertFlashMs), kRingThicknessPx);
   // Bake into the next radar content rebuild + blit — keeps SPI off the hot path.

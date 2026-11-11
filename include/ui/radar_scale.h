@@ -48,6 +48,13 @@ void cycleDistanceUnits();
 void saveDistanceUnitsFromForm(const char* unit_value, const char* legacy_miles_checkbox);
 
 bool showCompassRose();
+
+/** Radar grid: Full = rings, spokes and distance labels; NoLabels = rings and spokes;
+ *  Off = clean map with only a small home marker at the center. */
+enum class GridMode : uint8_t { Full = 0, NoLabels = 1, Off = 2 };
+GridMode gridMode();
+void gridModeStep(int8_t delta);
+const char* gridModeLabel();
 void toggleCompassRose();
 void saveCompassRoseFromForm(const char* checkbox_value);
 

@@ -3,12 +3,16 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "hardware/buzzer.h"
 #include "hardware/pin_config.h"
 #include "services/watch_reg_parse.h"
 #include "services/watch_type_parse.h"
+#include "geo/flat_earth.h"
+#include "services/map_center.h"
 #include "ui/aircraft_icon.h"
 #include "ui/alert_flash.h"
 #include "ui/radar_display.h"
@@ -27,6 +31,8 @@ constexpr char kWatchRegKey[] = "alert_wreg";
 constexpr char kHeliKey[] = "alert_heli";
 constexpr char kPrivateKey[] = "alert_ga";
 constexpr char kTypeColorsKey[] = "type_colors";
+constexpr char kApproachKey[] = "alert_appr";
+constexpr char kOverheadKey[] = "alert_ovh";
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 constexpr bool kTypeColorsDefault = true;
@@ -46,6 +52,8 @@ bool s_hide_non_alerted = false;
 bool s_heli_enabled = false;
 bool s_private_enabled = false;
 bool s_type_colors = kTypeColorsDefault;
+bool s_alert_on_approach = false;
+bool s_overhead_any = false;
 
 char s_watch_blob[kWatchBlobLen] = "";
 char s_watch_callsigns[kWatchMax][kWatchCallsignLen];
@@ -69,6 +77,7 @@ size_t s_seen_write = 0;
 uint8_t s_seen_range_mi = 0;
 
 bool classAlert(const services::adsb::Aircraft& ac);  // helicopter / private alerts
+bool overheadAnyMatch(const services::adsb::Aircraft& ac);
 
 uint32_t hashCallsign(const char* cs) {
   uint32_t h = 2166136261u;
@@ -297,7 +306,19 @@ void applyWatchRegBlob(const char* blob) {
                       sizeof(s_watch_reg_blob));
 }
 
+bool isAlertTarget(const services::adsb::Aircraft& ac);
+
 bool shouldAlert(const services::adsb::Aircraft& ac) {
+  if (s_emrg_enabled && ac.isEmergencySquawk()) {
+    return true;  // emergencies never wait for an approach
+  }
+  if (isAlertTarget(ac) && (!s_alert_on_approach || approachingOverhead(ac))) {
+    return true;
+  }
+  return overheadAnyMatch(ac);
+}
+
+bool isAlertTarget(const services::adsb::Aircraft& ac) {
   if (s_mil_enabled && ac.isMilitary()) {
     return true;
   }
@@ -321,6 +342,7 @@ bool shouldAlert(const services::adsb::Aircraft& ac) {
 
 bool alertsActive() {
   return s_mil_enabled || s_emrg_enabled || s_heli_enabled || s_private_enabled ||
+         s_overhead_any ||
          s_watch_count > 0 || s_watch_type_count > 0 || s_watch_reg_count > 0;
 }
 
@@ -339,6 +361,30 @@ bool classAlert(const services::adsb::Aircraft& ac) {
   const TrafficClass c = trafficClass(ac);
   return (s_heli_enabled && c == TrafficClass::Helicopter) ||
          (s_private_enabled && c == TrafficClass::Private);
+}
+
+int altitudeFeet(const services::adsb::Aircraft& ac, bool* on_ground) {
+  *on_ground = false;
+  if (ac.alt[0] == 'g' || ac.alt[0] == 'G') {
+    *on_ground = true;
+    return 0;
+  }
+  if (ac.alt[0] == '\0') {
+    return -1;
+  }
+  return atoi(ac.alt);
+}
+
+bool overheadAnyMatch(const services::adsb::Aircraft& ac) {
+  if (!s_overhead_any) {
+    return false;
+  }
+  bool ground = false;
+  const int ft = altitudeFeet(ac, &ground);
+  if (ground || ft < 0 || ft > kOverheadMaxAltFt) {
+    return false;
+  }
+  return approachingOverhead(ac);
 }
 
 void persistBool(const char* key, bool value) {
@@ -363,6 +409,8 @@ void bootLoad() {
   s_heli_enabled = prefs.getBool(kHeliKey, false);
   s_private_enabled = prefs.getBool(kPrivateKey, false);
   s_type_colors = prefs.getBool(kTypeColorsKey, kTypeColorsDefault);
+  s_alert_on_approach = prefs.getBool(kApproachKey, false);
+  s_overhead_any = prefs.getBool(kOverheadKey, false);
   const String watch = prefs.getString(kWatchKey, "");
   strncpy(s_watch_blob, watch.c_str(), sizeof(s_watch_blob) - 1);
   s_watch_blob[sizeof(s_watch_blob) - 1] = '\0';
@@ -404,6 +452,7 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
   bool fired_heli = false;
   bool fired_private = false;
   bool fired_other = false;
+  bool fired_overhead = false;
   for (size_t i = 0; i < count; ++i) {
     if (!shouldAlert(list[i])) {
       continue;
@@ -419,7 +468,9 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
     markSeen(h);
     fired = true;
     const TrafficClass cls = trafficClass(list[i]);
-    if (s_mil_enabled && list[i].isMilitary()) {
+    if (!isAlertTarget(list[i]) && !(s_emrg_enabled && list[i].isEmergencySquawk())) {
+      fired_overhead = true;  // only matched as "overhead (any)"
+    } else if (s_mil_enabled && list[i].isMilitary()) {
       fired_military = true;
     } else if (s_heli_enabled && cls == TrafficClass::Helicopter) {
       fired_heli = true;
@@ -427,6 +478,14 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
       fired_private = true;
     } else {
       fired_other = true;  // watch list / emergency
+    }
+    {
+      float t = 0.0f;
+      float miss = 0.0f;
+      if (approachingOverhead(list[i], &t, &miss)) {
+        Serial.printf("[alert] %s approaching: closest %.1f mi in %.0f s\n", list[i].callsign,
+                      static_cast<double>(miss), static_cast<double>(t));
+      }
     }
     Serial.printf("[alert] %s type=%s reg=%s mil=%d emrg=%d watch=%d wtype=%d wreg=%d squawk=%s\n",
                   list[i].callsign, list[i].type, list[i].registration,
@@ -441,7 +500,8 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
                         : fired_other  ? ui::AlertFlashKind::Tracked
                         : fired_heli   ? ui::AlertFlashKind::Helicopter
                         : fired_private ? ui::AlertFlashKind::Private
-                                        : ui::AlertFlashKind::Tracked);
+                        : fired_overhead ? ui::AlertFlashKind::Overhead
+                                         : ui::AlertFlashKind::Tracked);
 #if !FLIGHTSCNR_HAS_HAPTIC
     hardware::buzzerAlert();
 #endif
@@ -463,6 +523,9 @@ void notifyRadarResumed() {
 }
 
 bool isHighlighted(const services::adsb::Aircraft& ac) {
+  if (overheadAnyMatch(ac)) {
+    return true;
+  }
   if (s_mil_enabled && ac.isMilitary()) {
     return true;
   }
@@ -507,6 +570,63 @@ TrafficClass trafficClass(const services::adsb::Aircraft& ac) {
     return TrafficClass::Private;
   }
   return TrafficClass::Airline;
+}
+
+bool approachingOverhead(const services::adsb::Aircraft& ac, float* t_sec, float* miss_mi) {
+  float east = 0.0f;
+  float north = 0.0f;
+  float dist = 0.0f;
+  geo::localOffsetKm(services::map_center::latitude(), services::map_center::longitude(),
+                     ac.lat, ac.lon, &east, &north, &dist);
+  constexpr float kKmPerMi = 1.609344f;
+  const float radius_km = kOverheadRadiusMi * kKmPerMi;
+  // Ground speed knots -> km/s along the ground track (0 deg = north).
+  const float v = ac.gs_knots * 1.852f / 3600.0f;
+  if (v < 0.005f) {  // ~10 kt: hovering / stationary
+    if (t_sec != nullptr) *t_sec = 0.0f;
+    if (miss_mi != nullptr) *miss_mi = dist / kKmPerMi;
+    return dist <= radius_km;
+  }
+  const float rad = ac.track_deg * 0.01745329252f;
+  const float vx = sinf(rad) * v;
+  const float vy = cosf(rad) * v;
+  const float t = -(east * vx + north * vy) / (v * v);  // seconds to closest approach
+  if (t < 0.0f) {
+    return false;  // moving away from home
+  }
+  const float cx = east + vx * t;
+  const float cy = north + vy * t;
+  const float miss = sqrtf(cx * cx + cy * cy);
+  if (t_sec != nullptr) *t_sec = t;
+  if (miss_mi != nullptr) *miss_mi = miss / kKmPerMi;
+  return miss <= radius_km && t <= kOverheadLeadSec;
+}
+
+bool alertOnApproachEnabled() { return s_alert_on_approach; }
+bool overheadAnyEnabled() { return s_overhead_any; }
+
+void toggleAlertOnApproach() {
+  s_alert_on_approach = !s_alert_on_approach;
+  persistBool(kApproachKey, s_alert_on_approach);
+  clearSeen();
+}
+
+void toggleOverheadAny() {
+  s_overhead_any = !s_overhead_any;
+  persistBool(kOverheadKey, s_overhead_any);
+  clearSeen();
+}
+
+void saveApproachFromForm(const char* approach_checkbox, const char* overhead_checkbox) {
+  s_alert_on_approach = approach_checkbox != nullptr && approach_checkbox[0] == 'T';
+  s_overhead_any = overhead_checkbox != nullptr && overhead_checkbox[0] == 'T';
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putBool(kApproachKey, s_alert_on_approach);
+    prefs.putBool(kOverheadKey, s_overhead_any);
+    prefs.end();
+  }
+  clearSeen();
 }
 
 bool typeColorsEnabled() { return s_type_colors; }

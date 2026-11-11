@@ -953,6 +953,12 @@ void handleSettingsPage() {
   appendToggle(page, kSettingsPageCap, &used, "alert_ga",
                "Alert on private / general aviation planes",
                services::alert::privateAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_appr",
+               "Alert when an aircraft is about to pass overhead (within 2 mi, next 3 min) instead of when it enters the radar",
+               services::alert::alertOnApproachEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_ovh",
+               "Overhead alert for any aircraft below 10,000 ft",
+               services::alert::overheadAnyEnabled());
   appendToggle(page, kSettingsPageCap, &used, "type_colors",
                "Color radar icons by type (red military, blue helicopter, white private)",
                services::alert::typeColorsEnabled());
@@ -1566,6 +1572,8 @@ void handleSave() {
                                 watch_type_arg_present,
                                 watch_reg_arg_present ? watch_reg_form : nullptr,
                                 watch_reg_arg_present);
+  services::alert::saveApproachFromForm(s_server->arg("alert_appr").c_str(),
+                                        s_server->arg("alert_ovh").c_str());
   services::alert::saveClassAlertsFromForm(s_server->arg("alert_heli").c_str(),
                                            s_server->arg("alert_ga").c_str(),
                                            s_server->arg("type_colors").c_str());
