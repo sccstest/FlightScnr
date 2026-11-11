@@ -90,7 +90,13 @@ void uploadAbort();
 /** Delete /basemap.jpg and clear meta/cache. */
 bool clear();
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 720x720 bakes (VFR charts especially) run well past the 390 px boards' budget;
+// the 4C has 32 MB of PSRAM and a 6.75 MB LittleFS partition.
+constexpr size_t kMaxJpegBytes = 768 * 1024;
+#else
 constexpr size_t kMaxJpegBytes = 180 * 1024;
+#endif
 constexpr int kPixelSize = config::kDisplayWidth;
 
 }  // namespace services::basemap

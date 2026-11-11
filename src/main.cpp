@@ -1461,9 +1461,16 @@ void handleInput() {
       hardware::buzzerClick();
     }
     // Two-finger pinch (4C): spread = zoom in = smaller range preset.
+    // Unlike the dial, a pinch stops at the ends instead of wrapping 2 mi <-> 30 mi.
     const int8_t pinch = inputConsumePinchStep();
     if (pinch != 0) {
-      onRangeStep(static_cast<int8_t>(-pinch));
+      const uint8_t mi = ui::radar::scaleActiveMiles();
+      const bool at_min = mi <= ui::radar::kRangeMileOptions[0];
+      const bool at_max =
+          mi >= ui::radar::kRangeMileOptions[ui::radar::kRangeMileOptionCount - 1];
+      if ((pinch > 0 && !at_min) || (pinch < 0 && !at_max)) {
+        onRangeStep(pinch > 0 ? -1 : 1);
+      }
     }
     return;
   }

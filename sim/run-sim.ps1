@@ -5,6 +5,14 @@
 #   .\sim\run-sim.ps1 -Scale 0.8 -NoBuild
 #   .\sim\run-sim.ps1 -Extra '--tap','8:360:677','--shot','20','--exit-after','25'
 #
+# Map under the radar (baked by tools\sim_bake_basemap.py before launch):
+#   .\sim\run-sim.ps1 -Map vfr                       # FAA VFR chart (US, no key)
+#   .\sim\run-sim.ps1 -Map dark -MapMiles 10         # CARTO dark; also light / voyager
+#   .\sim\run-sim.ps1 -Map dark -CartoKey <key>      # if CARTO starts requiring a key
+#   .\sim\run-sim.ps1 -Map off
+# The map covers the current range (or -MapMiles); zooming out past it, or moving
+# the center, hides it until you bake again.
+#
 # Mouse = finger (click = tap, drag = swipe). F12 = screenshot, Esc = quit.
 # Settings and caches are kept in .\sim_data\ (delete it to start fresh).
 param(
@@ -12,6 +20,10 @@ param(
   [double]$Lon = [double]::NaN,
   [double]$Scale = 1.0,
   [switch]$NoBuild,
+  [ValidateSet('', 'vfr', 'dark', 'light', 'voyager', 'off')]
+  [string]$Map = '',
+  [int]$MapMiles = 0,
+  [string]$CartoKey = '',
   [string[]]$Extra = @()
 )
 
@@ -32,6 +44,26 @@ if (-not $NoBuild) {
   $pio = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\pio.exe'
   if (-not (Test-Path $pio)) { $pio = 'pio' }
   & $pio run -e sim
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if ($Map) {
+  # The simulator rewrites sim_data\nvs.txt while running; bake with it closed.
+  $running = Get-Process program -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -like '*\.pio\build\sim\program.exe' }
+  if ($running) {
+    Write-Host 'Closing the running simulator to update its map...'
+    $running | Stop-Process -Force
+    Start-Sleep -Milliseconds 500
+  }
+  $bake = @((Join-Path $root 'tools\sim_bake_basemap.py'))
+  if ($Map -eq 'off') { $bake += '--off' } else { $bake += @('--style', $Map) }
+  if ($MapMiles -gt 0) { $bake += @('--miles', "$MapMiles") }
+  if ($CartoKey) { $bake += @('--carto-key', $CartoKey) }
+  if (-not [double]::IsNaN($Lat) -and -not [double]::IsNaN($Lon)) {
+    $bake += @('--lat', "$Lat", '--lon', "$Lon")
+  }
+  & python @bake
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
