@@ -120,6 +120,8 @@ Once the unit is on your network, open the web settings page (`http://flightscnr
 
 The device also checks GitHub for a newer release **on every boot** and again after **24 hours of uptime**. If one is available, the **About** screen shows a short “Update available” note (install remains on the web portal).
 
+The Waveshare ESP32-P4 4C port updates from the **sccstest/FlightScnr** fork's releases instead (`FlightScnr-waveshare-p4-4c-app.bin`, or `-v1-app.bin` for pre-rev3 chips). See [docs/p4-ota-releases.md](docs/p4-ota-releases.md) for cutting a release.
+
 **Merged binary:** `pio run -t merge -e tencoder-pro` (or `-e waveshare-knob-18`) → `.pio/build/<env>/firmware-merged.bin`
 
 Builds auto-download [tar1090-db](https://github.com/wiedehopf/tar1090-db) and [Airports](https://github.com/mwgg/Airports) lookups. Wrong T-Encoder panel saved? Erase flash and re-detect, or override with `-D FLIGHTSCNR_PANEL_DXQ` / `-D FLIGHTSCNR_PANEL_TFD12` in `platformio.ini`.

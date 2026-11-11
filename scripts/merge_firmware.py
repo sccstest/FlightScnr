@@ -17,6 +17,14 @@ def merge_firmware(source, target, env):
     merged = join(build_dir, "firmware-merged.bin")
     mcu = env.BoardConfig().get("build.mcu", "esp32c3")
     flash_size = env.BoardConfig().get("upload.flash_size", "4MB")
+    # Second-stage bootloader offset differs per chip (same table as the
+    # pioarduino builder): the ESP32-P4 boots it from 0x2000, the S3 from 0x0.
+    if mcu in ("esp32", "esp32s2"):
+        bootloader_offset = "0x1000"
+    elif mcu in ("esp32c5", "esp32p4"):
+        bootloader_offset = "0x2000"
+    else:
+        bootloader_offset = "0x0"
 
     bootloader = join(build_dir, "bootloader.bin")
     partitions = join(build_dir, "partitions.bin")
@@ -45,7 +53,7 @@ def merge_firmware(source, target, env):
         "80m",
         "--flash_size",
         flash_size,
-        "0x0",
+        bootloader_offset,
         bootloader,
         "0x8000",
         partitions,
