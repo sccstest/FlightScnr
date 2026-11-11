@@ -522,9 +522,15 @@ bool metaMatchesLive() {
 }
 
 bool heapOkToDecode() {
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // S3: the decode competes with TLS for internal heap and stalled the loop.
+  // The 4C decodes into PSRAM in a fraction of a second, and with a bake per
+  // zoom level it decodes on every zoom step: waiting for an idle HTTPS slot
+  // (ADS-B polls nearly back to back) left the radar blank after zooming.
   if (services::https::busy()) {
     return false;
   }
+#endif
   return ESP.getFreeHeap() >= kMinFreeHeapToDecode &&
          ESP.getMaxAllocHeap() >= kMinContigHeapToDecode;
 }

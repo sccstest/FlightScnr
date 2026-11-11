@@ -1882,7 +1882,11 @@ void radarDisplayRefreshSweep() {
   if (s_basemap_bg_stale) {
     const bool can_try =
         !services::basemap::wantsDisplay() || services::basemap::cacheReady() ||
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        (ESP.getFreeHeap() >= 22000 &&  // 4C decodes into PSRAM; no HTTPS wait
+#else
         (!services::https::busy() && ESP.getFreeHeap() >= 22000 &&
+#endif
          ESP.getMaxAllocHeap() >= 10000);
     if (can_try) {
       Serial.printf("[basemap] applying stale bg https=%d heap=%u max_blk=%u\n",
