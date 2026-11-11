@@ -88,6 +88,12 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 - `--exit-after SEC` closes the simulator.
 - `--data DIR` uses a different settings/cache folder.
 
+- `--offline` makes Wi-Fi report disconnected and every HTTP request fail, for the
+  whole run (or set `FLIGHTSCNR_SIM_OFFLINE=1`).
+- `--wifi-down A[:B]` drops Wi-Fi from A to B seconds. Leave out B to keep it down.
+- `--feed-down A[:B]` keeps Wi-Fi up but fails every HTTP request from A to B seconds.
+  Use these to check the radar's "No Wi-Fi" and "Flight data offline" badges.
+
 All of these can be repeated. Example: tap the disclaimer's Accept at 8 s, screenshot
 the radar at 20 s, tap the middle at 34 s, screenshot at 38 s.
 
