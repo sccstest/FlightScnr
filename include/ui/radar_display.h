@@ -24,6 +24,8 @@ void radarDisplayShowSoundToast(bool sound_on);
 /** Expire the toast and repaint the muted icon when Alert Sound changes. Call from loop. */
 void radarDisplayTickSoundOverlay();
 #endif
+/** Repaint this screen rect on the next radar frame (overlays such as the sky banner). */
+void radarDisplayInvalidateRect(int x, int y, int w, int h);
 
 /** Draw the static sonar/radar grid (black disc, green overlay, labels). */
 void radarDisplayDraw();

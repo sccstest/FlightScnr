@@ -69,7 +69,8 @@ through the PC's speakers via SDL audio.
   emergency chimes at the current volume.
 - Settings page 3: **Alert Sound** on/off and **Chime Volume** A–E (both play a preview).
 - `--chime SEC:NAME` plays one from a script (`tracked`, `military`, `helicopter`,
-  `private`, `overhead`, `emergency`, `click`).
+  `private`, `overhead`, `emergency`, `click`, `rocket`, `satellite`). The last two
+  are the sky-events chimes (rocket launch, ISS pass).
 - `program.exe --dump-chimes DIR` writes every chime as `chime-<name>.wav` and exits.
 - If Windows has no audio output, the simulator runs silently.
 
@@ -116,6 +117,14 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 - `--wifi-down A[:B]` drops Wi-Fi from A to B seconds. Leave out B to keep it down.
 - `--feed-down A[:B]` keeps Wi-Fi up but fails every HTTP request from A to B seconds.
   Use these to check the radar's "No Wi-Fi" and "Flight data offline" badges.
+
+- `--sky-fake-launch SEC:MIN` adds a fake Falcon 9 launch (Go, SLC-40) at SEC seconds,
+  with liftoff MIN minutes later. `9.2` shows the "Look east" banner and plays the
+  T-10 chime right away; `0.2` shows liftoff. More than 10 shows the plain countdown.
+- `--sky-fake-iss SEC:MIN` adds a fake ISS pass (NW to SE, 58 deg high, 6 min) starting
+  MIN minutes after SEC. `1.5` gives the 2-minute warning and chime; `0` is a pass in
+  progress, with the ISS marker on the radar edge.
+  Tap the top banner (around 360,95) to open the launch / pass details.
 
 All of these can be repeated. Example: tap the disclaimer's Accept at 8 s, screenshot
 the radar at 20 s, tap the middle at 34 s, screenshot at 38 s.

@@ -30,6 +30,9 @@
 #include "ui/radar_accent.h"
 #include "ui/radar_scale.h"
 #include "ui/radar_theme.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "ui/sky_banner.h"
+#endif
 
 #include "hardware/gfx_log.h"
 #include "ui/ui_scale.h"
@@ -961,6 +964,7 @@ void drawAircraft() {
   drawLinkBadge();
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   drawSoundOverlay();
+  ui::sky::drawRadarOverlay(*s_draw);  // sky events banner (top band) + ISS marker
 #endif
 }
 
@@ -2083,6 +2087,15 @@ void radarDisplayTickSoundOverlay() {
   }
 }
 #endif
+void radarDisplayInvalidateRect(int x, int y, int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const IntRect r{x, y, w, h};
+  s_aircraft_dirty_rect =
+      rectEmpty(s_aircraft_dirty_rect) ? r : unionRect(s_aircraft_dirty_rect, r);
+  s_aircraft_dirty = true;
+}
 
 size_t radarDisplayInRangeAircraftCount() { return inRangeAircraftCount(); }
 

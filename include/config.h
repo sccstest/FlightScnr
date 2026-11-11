@@ -114,6 +114,8 @@ constexpr bool kFactoryAlertOverheadAny = true;
 constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
 constexpr bool kFactoryRainOverlay = true;      // live NEXRAD rain over the radar (keyless IEM)
+constexpr bool kFactorySkyLaunchAlerts = true;  // Space Coast launch banner + chime
+constexpr bool kFactorySkyIssAlerts = true;     // visible ISS pass banner + chime
 #else
 constexpr double kFactoryLatitude = 37.61977;
 constexpr double kFactoryLongitude = -122.37227;
@@ -320,7 +322,7 @@ constexpr uint32_t kMinFreeHeapForWeather = 18000;
 constexpr uint32_t kMinContiguousHeapForWeather = 6000;
 /** Default unit system when the user has not overridden it (true = °F/imperial). */
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-constexpr bool kWeatherUseImperialDefault = true;   // gift unit: �F
+constexpr bool kWeatherUseImperialDefault = true;   // gift unit: °F
 #else
 constexpr bool kWeatherUseImperialDefault = false;
 #endif
