@@ -18,6 +18,9 @@ constexpr char kClockTimeoutKey[] = "clock_to";
 constexpr char kSweepLineKey[] = "sweep_en";
 constexpr char kHideBlipDetailsKey[] = "hide_btag";
 constexpr char kIdleClockKey[] = "idle_clk";
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+constexpr char kOverheadSignKey[] = "ovh_sign";
+#endif
 
 constexpr uint8_t kDefaultDetailTimeoutSec = 10;
 constexpr uint8_t kDefaultClockTimeoutSec = 10;
@@ -29,6 +32,9 @@ uint8_t s_clock_weather_timeout_sec = kDefaultClockTimeoutSec;
 bool s_sweep_line_enabled = config::kFactorySweepLine;
 bool s_hide_blip_details = false;
 bool s_auto_idle_clock_enabled = config::kFactoryAutoIdleClock;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool s_overhead_sign_enabled = config::kFactoryOverheadSign;
+#endif
 
 constexpr uint8_t kTimeoutOptions[] = {0, 10, 20, 30};
 constexpr size_t kTimeoutOptionCount = sizeof(kTimeoutOptions) / sizeof(kTimeoutOptions[0]);
@@ -103,6 +109,17 @@ void persistHideBlipDetails() {
   settingsStateBump();
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+void persistOverheadSign() {
+  Preferences prefs;
+  if (prefs.begin(kStoreNs, false)) {
+    prefs.putBool(kOverheadSignKey, s_overhead_sign_enabled);
+    prefs.end();
+  }
+  settingsStateBump();
+}
+#endif
+
 void persistAutoIdleClock() {
   Preferences prefs;
   if (prefs.begin(kStoreNs, false)) {
@@ -146,6 +163,9 @@ void displayPrefsBootLoad() {
   s_sweep_line_enabled = prefs.getBool(kSweepLineKey, config::kFactorySweepLine);
   s_hide_blip_details = prefs.getBool(kHideBlipDetailsKey, false);
   s_auto_idle_clock_enabled = prefs.getBool(kIdleClockKey, config::kFactoryAutoIdleClock);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  s_overhead_sign_enabled = prefs.getBool(kOverheadSignKey, config::kFactoryOverheadSign);
+#endif
   prefs.end();
 }
 
@@ -310,5 +330,27 @@ void displayPrefsSaveAutoIdleClockFromForm(const char* checkbox_value) {
   persistAutoIdleClock();
   Serial.printf("Idle clock: %s\n", s_auto_idle_clock_enabled ? "on" : "off");
 }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool displayPrefsOverheadSignEnabled() { return s_overhead_sign_enabled; }
+
+void displayPrefsToggleOverheadSign() {
+  s_overhead_sign_enabled = !s_overhead_sign_enabled;
+  persistOverheadSign();
+  radarDisplayInvalidateAircraft();
+  Serial.printf("Overhead sign: %s\n", s_overhead_sign_enabled ? "on" : "off");
+}
+
+void displayPrefsSaveOverheadSignFromForm(const char* checkbox_value) {
+  const bool next = formCheckboxOn(checkbox_value);
+  if (next == s_overhead_sign_enabled) {
+    return;
+  }
+  s_overhead_sign_enabled = next;
+  persistOverheadSign();
+  radarDisplayInvalidateAircraft();
+  Serial.printf("Overhead sign: %s\n", s_overhead_sign_enabled ? "on" : "off");
+}
+#endif
 
 }  // namespace ui

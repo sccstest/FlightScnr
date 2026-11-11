@@ -20,6 +20,9 @@
 #include "ui/aircraft_symbol.h"
 #include "ui/alert_flash.h"
 #include "ui/label_layout.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "ui/overhead_sign.h"
+#endif
 #include "ui/radar_accent.h"
 #include "ui/radar_scale.h"
 #include "ui/radar_theme.h"
@@ -812,6 +815,16 @@ void drawAircraft() {
       drawAircraftTagPlaced(*placement, planes[i]);
     }
   }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Over the planes and tags, under the link badge. The sign needs the target
+  // buffer for its see-through backing; direct-to-panel fallbacks get a solid one.
+  overheadSignUpdate();
+  if (s_draw == &s_content.gfx()) {
+    overheadSignDraw(*s_draw, s_content.bufferMut(), s_content.width(), s_content.height());
+  } else {
+    overheadSignDraw(*s_draw, nullptr, 0, 0);
+  }
+#endif
   drawLinkBadge();
 }
 
@@ -1788,8 +1801,16 @@ void radarDisplayRefreshAircraft() {
 
   const size_t curr_count = collectAircraftMarkers(s_current_aircraft_markers,
                                                     services::adsb::kMaxAircraft);
-  const IntRect dirty =
+  IntRect dirty =
       unionChangedMarkerBounds(s_current_aircraft_markers, curr_count);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Repaint the sign's band only when its text, logo or visibility changed.
+  if (overheadSignUpdate()) {
+    IntRect band;
+    overheadSignBounds(&band.x, &band.y, &band.w, &band.h);
+    dirty = rectEmpty(dirty) ? band : unionRect(dirty, band);
+  }
+#endif
   if (rectEmpty(dirty)) {
     return;
   }

@@ -111,6 +111,7 @@ constexpr bool kFactoryAlertHelicopter = true;
 constexpr bool kFactoryAlertPrivate = true;
 constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
 constexpr bool kFactoryAlertOverheadAny = true;
+constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
 #else
 constexpr double kFactoryLatitude = 37.61977;

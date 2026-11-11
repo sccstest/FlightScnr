@@ -23,6 +23,11 @@ void flightDetailSelectClosest();
 /** Select aircraft nearest screen tap (radar coordinates). */
 void flightDetailSelectAtScreen(int16_t x, int16_t y);
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** Select the aircraft with this Mode-S hex (overhead sign tap). False -> closest. */
+bool flightDetailSelectHex(const char* hex);
+#endif
+
 /** Cycle selection (+1 / -1). Returns false if no aircraft. */
 bool flightDetailCycle(int delta);
 

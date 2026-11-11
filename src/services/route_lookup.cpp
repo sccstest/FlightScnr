@@ -2315,6 +2315,20 @@ void init() {
 
 void clearRamCache() { memset(s_cache, 0, sizeof(s_cache)); }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool peekRamRoute(const char* callsign, RouteInfo* out) {
+  if (callsign == nullptr || callsign[0] == '\0' || out == nullptr) {
+    return false;
+  }
+  const int idx = findCache(callsign);
+  if (idx < 0) {
+    return false;
+  }
+  *out = s_cache[idx].route;
+  return routeHasData(*out);
+}
+#endif
+
 void tickCacheFlush(unsigned long now_ms) {
   route_cache::tick(now_ms, readRamCacheSlot, kCacheSize, nowSec(),
                     config::kRouteLookupCacheTtlSec);

@@ -542,6 +542,10 @@ void handleSettingsPage() {
                ui::displayPrefsSweepLineEnabled());
   appendToggle(page, kSettingsPageCap, &used, "hide_blip_details",
                "Hide aircraft blip details", ui::displayPrefsHideBlipDetails());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "overhead_sign",
+               "Overhead sign (closest plane banner)", ui::displayPrefsOverheadSignEnabled());
+#endif
 
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
@@ -1417,6 +1421,9 @@ void handleSettingsPage() {
       "setVal('facing_deg',j.facing_deg);"
       "setVal('show_sweep',j.show_sweep);"
       "setVal('hide_blip_details',j.hide_blip_details);"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      "setVal('overhead_sign',j.overhead_sign);"
+#endif
       "setVal('use_basemap',j.use_basemap);"
       "setVal('basemap_style',j.basemap_style);"
       "setVal('bm_contrast_dark',j.bm_contrast_dark);"
@@ -1534,6 +1541,9 @@ void handleSave() {
   services::weather::saveUnitsFromForm(s_server->arg("weather_units").c_str());
   ui::displayPrefsSaveClockWeatherTimeoutFromForm(s_server->arg("clock_timeout").c_str());
   ui::displayPrefsSaveHideBlipDetailsFromForm(s_server->arg("hide_blip_details").c_str());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  ui::displayPrefsSaveOverheadSignFromForm(s_server->arg("overhead_sign").c_str());
+#endif
   ui::displayPrefsSaveAutoIdleClockFromForm(s_server->arg("idle_clock").c_str());
   services::basemap::saveEnabledFromForm(s_server->arg("use_basemap").c_str());
   services::basemap::saveBakeAdjustFromForm(s_server->arg("bm_contrast_dark").c_str(),
@@ -2202,6 +2212,17 @@ void handleSettingsApi() {
     return;
   }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  {
+    const int n = snprintf(s_api_buf + used, kApiCap - used, "\"overhead_sign\":%s,",
+                           ui::displayPrefsOverheadSignEnabled() ? "true" : "false");
+    if (n <= 0 || static_cast<size_t>(n) >= kApiCap - used) {
+      s_server->send(500, "text/plain", "json overflow");
+      return;
+    }
+    used += static_cast<size_t>(n);
+  }
+#endif
   const int tail_n = snprintf(
       s_api_buf + used, kApiCap - used,
       "\"use_airlabs\":%s,"

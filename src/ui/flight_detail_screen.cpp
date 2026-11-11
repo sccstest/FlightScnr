@@ -1278,6 +1278,24 @@ void flightDetailSelectAtScreen(int16_t x, int16_t y) {
   s_snapshot.valid = false;
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool flightDetailSelectHex(const char* hex) {
+  rebuildOrderByDistance();
+  s_sel = 0;
+  s_snapshot.valid = false;
+  if (hex == nullptr || hex[0] == '\0') {
+    return false;
+  }
+  for (size_t i = 0; i < s_order_count; ++i) {
+    if (orderEntryInBounds(i) && strcmp(s_planes[s_order[i]].hex, hex) == 0) {
+      s_sel = i;
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
 bool flightDetailCycle(int delta) {
   resyncOrderPreservingSelection();
   s_snapshot.valid = false;
