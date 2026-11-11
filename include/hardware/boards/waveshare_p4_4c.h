@@ -13,7 +13,15 @@
  * - No rotary encoder or knob button: all navigation is touch.
  */
 
+/* Rev3 and pre-rev3 P4 binaries are not interchangeable, so each env has its
+ * own board name: OTA fetches FlightScnr-<name>-app.bin and the WebFlasher
+ * board marker uses it too. platformio.ini sets FLIGHTSCNR_P4_PRE_REV3 for
+ * the waveshare-p4-4c-v1 env. */
+#if defined(FLIGHTSCNR_P4_PRE_REV3) && FLIGHTSCNR_P4_PRE_REV3
+#define FLIGHTSCNR_BOARD_NAME "waveshare-p4-4c-v1"
+#else
 #define FLIGHTSCNR_BOARD_NAME "waveshare-p4-4c"
+#endif
 #define FLIGHTSCNR_BOARD_WAVESHARE_P4_4C 1
 
 /* The P4 port lives in a fork; upstream releases have no P4 image. */

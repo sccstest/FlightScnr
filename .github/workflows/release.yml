@@ -19,7 +19,8 @@ permissions:
   id-token: write
 
 jobs:
-  release:
+  tag:
+    name: Determine release tag
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') ||
@@ -27,7 +28,9 @@ jobs:
       !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
     outputs:
-      skipped: ${{ steps.tag.outputs.skip }}
+      skip: ${{ steps.tag.outputs.skip }}
+      tag: ${{ steps.tag.outputs.tag }}
+      name: ${{ steps.tag.outputs.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,10 +39,19 @@ jobs:
 
       - name: Determine release tag
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             new_tag="${GITHUB_REF#refs/tags/}"
             echo "Using pushed tag: $new_tag"
+            # The pushed tag always exists locally, so only skip when a release
+            # for it has already been published.
+            if gh release view "$new_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $new_tag already exists; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           else
             RELEASE_TZ=America/Los_Angeles
             today_prefix="$(TZ=${RELEASE_TZ} date +%Y).$(TZ=${RELEASE_TZ} date +%-m).$(TZ=${RELEASE_TZ} date +%-d)"
@@ -53,41 +65,46 @@ jobs:
             done
             new_tag="${today_prefix}.$((latest_count + 1))"
             echo "Auto tag for ${today_prefix}: ${latest_count} -> ${new_tag}"
+            if git rev-parse "$new_tag" >/dev/null 2>&1; then
+              echo "Tag $new_tag already exists; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
-          release_name="Release ${new_tag}"
-          if git rev-parse "$new_tag" >/dev/null 2>&1; then
-            echo "Tag $new_tag already exists; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
-            echo "name=$release_name" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
+          echo "name=Release ${new_tag}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+  # ESP32-S3 boards: espressif32 6.5.0 / Arduino 2.x.
+  build-s3:
+    name: Build ESP32-S3 boards
+    needs: tag
+    if: needs.tag.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        if: steps.tag.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Cache PlatformIO
-        if: steps.tag.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio
             tools/.cache
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'lib_deps/**/*') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-s3-${{ runner.os }}-${{ hashFiles('platformio.ini', 'lib_deps/**/*') }}
+          restore-keys: pio-s3-${{ runner.os }}-
 
       - name: Install PlatformIO
-        if: steps.tag.outputs.skip != 'true'
         run: pip install platformio
 
       - name: Build firmware
-        if: steps.tag.outputs.skip != 'true'
         env:
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_TAG: ${{ needs.tag.outputs.tag }}
         run: |
           export PLATFORMIO_BUILD_FLAGS="-D FLIGHTSCNR_FIRMWARE_VERSION=\\\"${RELEASE_TAG}\\\""
           pio run -e tencoder-pro
@@ -95,8 +112,7 @@ jobs:
           pio run -e waveshare-knob-18
           pio run -t merge -e waveshare-knob-18
 
-      - name: Package release artifacts
-        if: steps.tag.outputs.skip != 'true'
+      - name: Package artifacts
         run: |
           TENCODER_BUILD=".pio/build/tencoder-pro"
           WAVESHARE_BUILD=".pio/build/waveshare-knob-18"
@@ -108,32 +124,140 @@ jobs:
           cp "$WAVESHARE_BUILD/firmware.bin" "$OUT/FlightScnr-waveshare-knob-18-app.bin"
           cp "$TENCODER_BUILD/bootloader.bin" "$OUT/bootloader.bin"
           cp "$TENCODER_BUILD/partitions.bin" "$OUT/partitions.bin"
-          (
-            cd "$OUT"
-            sha256sum *.bin > SHA256SUMS.txt
-          )
-          cat "$OUT/SHA256SUMS.txt"
+          ls -la "$OUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-s3
+          path: release
+          retention-days: 3
+
+  # Waveshare ESP32-P4-WIFI6-Touch-LCD-4C: pioarduino 55.03.311 / Arduino 3.3.11
+  # (pinned in platformio.ini [p4]). Kept apart from the S3 job because the two
+  # install different framework-arduinoespressif32 packages into one core dir.
+  build-p4:
+    name: Build ${{ matrix.env }}
+    needs: tag
+    if: needs.tag.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        # waveshare-p4-4c = ESP32-P4 rev 3.x, waveshare-p4-4c-v1 = pre-rev3.
+        # Each env's board name equals the env name, so OTA on the device asks
+        # for FlightScnr-<env>-app.bin.
+        env: [waveshare-p4-4c, waveshare-p4-4c-v1]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            tools/.cache
+          key: pio-p4-${{ matrix.env }}-${{ runner.os }}-${{ hashFiles('platformio.ini', 'lib_deps/**/*') }}
+          restore-keys: |
+            pio-p4-${{ matrix.env }}-${{ runner.os }}-
+            pio-p4-
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        env:
+          RELEASE_TAG: ${{ needs.tag.outputs.tag }}
+          PIO_ENV: ${{ matrix.env }}
+        run: |
+          export PLATFORMIO_BUILD_FLAGS="-D FLIGHTSCNR_FIRMWARE_VERSION=\\\"${RELEASE_TAG}\\\""
+          pio run -e "$PIO_ENV"
+          pio run -t merge -e "$PIO_ENV"
+
+      - name: Package artifacts
+        env:
+          PIO_ENV: ${{ matrix.env }}
+        run: |
+          BUILD=".pio/build/${PIO_ENV}"
+          OUT="release"
+          mkdir -p "$OUT"
+          # The device refuses an OTA image larger than its 12.5 MB app slot
+          # (default_32MB.csv); fail here instead of publishing one.
+          app_size="$(stat -c%s "$BUILD/firmware.bin")"
+          echo "App image: ${app_size} bytes (slot 13107200)"
+          test "$app_size" -le 13107200
+          # The board name baked into the image must match the asset name OTA looks for.
+          marker="$(LC_ALL=C grep -aoE 'FSBRDMK:[a-z0-9-]+' "$BUILD/firmware.bin" | sort -u)"
+          echo "Board marker: ${marker}"
+          test "$marker" = "FSBRDMK:${PIO_ENV}"
+          cp "$BUILD/firmware.bin" "$OUT/FlightScnr-${PIO_ENV}-app.bin"
+          cp "$BUILD/firmware-merged.bin" "$OUT/FlightScnr-${PIO_ENV}-merged.bin"
+          ls -la "$OUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: release
+          retention-days: 3
+
+  release:
+    name: Publish release
+    needs: [tag, build-s3, build-p4]
+    runs-on: ubuntu-latest
+    env:
+      # The WebFlasher (GitHub Pages) is S3-only and is hosted by upstream.
+      # Forks skip it unless the repository variable DEPLOY_WEBFLASHER is 'true'.
+      WEBFLASHER: ${{ github.repository == 'yashmulgaonkar/FlightScnr' || vars.DEPLOY_WEBFLASHER == 'true' }}
+    outputs:
+      webflasher: ${{ github.repository == 'yashmulgaonkar/FlightScnr' || vars.DEPLOY_WEBFLASHER == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download firmware
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          path: release
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd release
+          sha256sum *.bin > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Create GitHub release
-        if: steps.tag.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.name }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             release/FlightScnr-tencoder-pro-merged.bin
             release/FlightScnr-tencoder-pro-app.bin
             release/FlightScnr-waveshare-knob-18-merged.bin
             release/FlightScnr-waveshare-knob-18-app.bin
+            release/FlightScnr-waveshare-p4-4c-merged.bin
+            release/FlightScnr-waveshare-p4-4c-app.bin
+            release/FlightScnr-waveshare-p4-4c-v1-merged.bin
+            release/FlightScnr-waveshare-p4-4c-v1-app.bin
             release/bootloader.bin
             release/partitions.bin
             release/SHA256SUMS.txt
           body: |
-            Firmware for **LilyGO T-Encoder Pro** and **Waveshare ESP32-S3 Knob Touch LCD 1.8** (ESP32-S3, 16 MB flash).
+            Firmware for **LilyGO T-Encoder Pro** and **Waveshare ESP32-S3 Knob Touch LCD 1.8** (ESP32-S3, 16 MB flash), and the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C** (ESP32-P4, 32 MB flash).
 
-            ### Web install (recommended)
+            ### Web install (recommended, ESP32-S3 boards)
             Open the [FlightScnr WebFlasher](https://yashmulgaonkar.github.io/FlightScnr/) in **Chrome** or **Edge**, connect USB, confirm the auto-detected board (or select it manually), and click **Install**. A full install flashes the factory image at **0x0** and clears Wi-Fi and saved settings.
 
             ### Manual flash
@@ -147,23 +271,33 @@ jobs:
             esptool.py --chip esp32s3 write_flash 0x10000 FlightScnr-<board>-app.bin
             ```
 
+            **Waveshare 4C (ESP32-P4)** is not in the WebFlasher. Check the chip revision first (`esptool --chip esp32p4 chip-id`): rev 3.x boards take `waveshare-p4-4c`, older (v1.x) boards take `waveshare-p4-4c-v1`. The two are not interchangeable. Full install:
+            ```bash
+            esptool --chip esp32p4 write_flash 0x0 FlightScnr-waveshare-p4-4c-merged.bin
+            ```
+            After that the 4C updates over Wi-Fi from this repository's releases (web settings page → **Firmware update** → **Install latest**, then press reset).
+
             | File | Use |
             | --- | --- |
             | `FlightScnr-tencoder-pro-merged.bin` | Full factory image — flash at **0x0** (WebFlasher **Install**) |
             | `FlightScnr-tencoder-pro-app.bin` | App-only update — flash at **0x10000** (advanced) |
-            | `FlightScnr-waveshare-knob-18-merged.bin` | Waveshare full factory image — flash at **0x0** |
-            | `FlightScnr-waveshare-knob-18-app.bin` | Waveshare app-only update — flash at **0x10000** |
-            | `bootloader.bin` / `partitions.bin` | Individual components (advanced) |
+            | `FlightScnr-waveshare-knob-18-merged.bin` | Waveshare Knob full factory image — flash at **0x0** |
+            | `FlightScnr-waveshare-knob-18-app.bin` | Waveshare Knob app-only update — flash at **0x10000** |
+            | `FlightScnr-waveshare-p4-4c-merged.bin` | Waveshare 4C (ESP32-P4 rev 3.x) full image — flash at **0x0** |
+            | `FlightScnr-waveshare-p4-4c-app.bin` | Waveshare 4C (rev 3.x) app / OTA image — flash at **0x10000** |
+            | `FlightScnr-waveshare-p4-4c-v1-merged.bin` | Waveshare 4C (pre-rev3, v1.x) full image — flash at **0x0** |
+            | `FlightScnr-waveshare-p4-4c-v1-app.bin` | Waveshare 4C (pre-rev3) app / OTA image — flash at **0x10000** |
+            | `bootloader.bin` / `partitions.bin` | T-Encoder components (advanced) |
             | `SHA256SUMS.txt` | Checksums |
 
-            **Note:** T-Encoder: push the screen in (BOOT) while connecting if the port does not appear. Waveshare: use its CH343 USB serial port and select the board manually if Auto is uncertain.
+            **Note:** T-Encoder: push the screen in (BOOT) while connecting if the port does not appear. Waveshare Knob: use its CH343 USB serial port and select the board manually if Auto is uncertain.
 
       - name: Bundle WebFlasher site
-        if: steps.tag.outputs.skip != 'true'
+        if: env.WEBFLASHER == 'true'
         env:
           BOARDS: tencoder-pro waveshare-knob-18
-          RELEASE_NAME: ${{ steps.tag.outputs.name }}
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_NAME: ${{ needs.tag.outputs.name }}
+          RELEASE_TAG: ${{ needs.tag.outputs.tag }}
           RELEASE_DIR: release
           ARCHIVE_COUNT: "12"
         run: |
@@ -172,7 +306,7 @@ jobs:
           .github/scripts/bundle-webflasher-firmware.sh
 
       - name: Upload WebFlasher site artifact
-        if: steps.tag.outputs.skip != 'true'
+        if: env.WEBFLASHER == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: webflasher-pages
@@ -182,7 +316,7 @@ jobs:
   deploy-webflasher:
     name: Deploy WebFlasher
     needs: release
-    if: needs.release.outputs.skipped != 'true'
+    if: needs.release.outputs.webflasher == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
