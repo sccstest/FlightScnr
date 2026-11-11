@@ -35,6 +35,7 @@
 #include "services/off_hours.h"
 #include "services/wifi_setup.h"
 #include "services/radar_basemap.h"
+#include "services/rain_radar.h"
 #include "services/ota_github.h"
 #include "ui/display_prefs.h"
 #include "ui/radar_accent.h"
@@ -623,6 +624,11 @@ void handleSettingsPage() {
   }
   appendToggle(page, kSettingsPageCap, &used, "use_basemap", "Show basemap on radar",
                services::basemap::enabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "use_rain",
+               "Live rain radar overlay (NOAA NEXRAD via Iowa Environmental Mesonet)",
+               services::rain::enabled());
+#endif
   {
     char carto_js[services::apikeys::kMaxSingleKeyLen + 8];
     size_t carto_js_len = 0;
@@ -1418,6 +1424,9 @@ void handleSettingsPage() {
       "setVal('show_sweep',j.show_sweep);"
       "setVal('hide_blip_details',j.hide_blip_details);"
       "setVal('use_basemap',j.use_basemap);"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      "setVal('use_rain',j.use_rain);"
+#endif
       "setVal('basemap_style',j.basemap_style);"
       "setVal('bm_contrast_dark',j.bm_contrast_dark);"
       "setVal('bm_contrast_light',j.bm_contrast_light);"
@@ -1536,6 +1545,9 @@ void handleSave() {
   ui::displayPrefsSaveHideBlipDetailsFromForm(s_server->arg("hide_blip_details").c_str());
   ui::displayPrefsSaveAutoIdleClockFromForm(s_server->arg("idle_clock").c_str());
   services::basemap::saveEnabledFromForm(s_server->arg("use_basemap").c_str());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::rain::saveEnabledFromForm(s_server->arg("use_rain").c_str());
+#endif
   services::basemap::saveBakeAdjustFromForm(s_server->arg("bm_contrast_dark").c_str(),
                                             s_server->arg("bm_contrast_light").c_str(),
                                             s_server->arg("bm_wash_vfr").c_str());
@@ -2201,6 +2213,17 @@ void handleSettingsApi() {
     s_server->send(500, "text/plain", "json overflow");
     return;
   }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  {
+    const int rain_n = snprintf(s_api_buf + used, kApiCap - used, "\"use_rain\":%s,",
+                                services::rain::enabled() ? "true" : "false");
+    if (rain_n <= 0 || static_cast<size_t>(rain_n) >= kApiCap - used) {
+      s_server->send(500, "text/plain", "json overflow");
+      return;
+    }
+    used += static_cast<size_t>(rain_n);
+  }
+#endif
 
   const int tail_n = snprintf(
       s_api_buf + used, kApiCap - used,

@@ -25,6 +25,7 @@
 #include "services/tz_lookup.h"
 #include "services/map_center.h"
 #include "services/radar_basemap.h"
+#include "services/rain_radar.h"
 #include "services/route_lookup.h"
 #include "services/aircraft_photo.h"
 #include "services/settings_web.h"
@@ -2185,6 +2186,9 @@ static void startOnlineServices() {
   services::tzlookup::requestForMapCenter();
   services::route::init();
   services::basemap::init();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::rain::init();
+#endif
   services::adsb::fetchInit();
   services::weather::bootSanityCheck();
   settingsSetSavedCallback(applySettingsLive);
@@ -2301,6 +2305,10 @@ void loop() {
   tickAutoIdleClock();
   tickClockDisplay();
   tickWeather();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::rain::tick(g_screen == AppScreen::Radar && g_radar_visible,
+                       WiFi.status() == WL_CONNECTED);
+#endif
   services::tzlookup::tick();
   settingsWebPoll();
   services::ota_github::pollIfDue();

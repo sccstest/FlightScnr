@@ -17,6 +17,7 @@
 #include "services/api_keys.h"
 #include "services/device_identity.h"
 #include "services/map_center.h"
+#include "services/rain_radar.h"
 #include "services/wifi_setup.h"
 #include "ui/display_prefs.h"
 #include "ui/radar_accent.h"
@@ -45,6 +46,9 @@ enum class DisplayAdjustRow : uint8_t {
   Compass,
   Rings,
   Facing,
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  Rain,
+#endif
 };
 
 DisplayAdjustRow s_display_focus = DisplayAdjustRow::Brightness;
@@ -423,9 +427,13 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[6][48];
+  char deco[7][48];
   char rings_line[28];
   snprintf(rings_line, sizeof(rings_line), "Rings: %s", ui::radar::gridModeLabel());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  char rain_line[24];
+  snprintf(rain_line, sizeof(rain_line), "Rain: %s", services::rain::enabled() ? "On" : "Off");
+#endif
   const InfoLine option_lines[] = {
       {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
        displayFontBody(), bright_fg},
@@ -440,6 +448,10 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
        s_display_focus == DisplayAdjustRow::Rings ? active_fg : label_fg},
       {focusDecorate(facing_line, s_display_focus == DisplayAdjustRow::Facing, deco[4], 48),
        displayFontBody(), facing_fg},
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      {focusDecorate(rain_line, s_display_focus == DisplayAdjustRow::Rain, deco[6], 48),
+       displayFontBody(), s_display_focus == DisplayAdjustRow::Rain ? active_fg : label_fg},
+#endif
   };
   const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
   const int block_h = title_h + kTitleGap + options_h;
@@ -747,6 +759,11 @@ void infoScreenCycleDisplayFocus() {
     case DisplayAdjustRow::Rings:
       s_display_focus = DisplayAdjustRow::Facing;
       break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case DisplayAdjustRow::Facing:
+      s_display_focus = DisplayAdjustRow::Rain;
+      break;
+#endif
     default:
       s_display_focus = DisplayAdjustRow::Brightness;
       break;
@@ -940,6 +957,11 @@ void infoScreenHandleKnob(int8_t delta) {
     case DisplayAdjustRow::Facing:
       // Dial enters orientation adjust from main.cpp; no-op here.
       return;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case DisplayAdjustRow::Rain:
+      services::rain::toggleEnabled();
+      break;
+#endif
   }
   infoScreenDraw();
 }
