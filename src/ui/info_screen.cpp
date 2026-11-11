@@ -44,6 +44,9 @@ enum class DisplayAdjustRow : uint8_t {
   Range,
   Compass,
   Rings,
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  OverheadSign,  // touch rows map by index: keep in draw order
+#endif
   Facing,
 };
 
@@ -423,9 +426,14 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[6][48];
+  char deco[7][48];
   char rings_line[28];
   snprintf(rings_line, sizeof(rings_line), "Rings: %s", ui::radar::gridModeLabel());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  char sign_line[28];
+  snprintf(sign_line, sizeof(sign_line), "Overhead Sign: %s",
+           ui::displayPrefsOverheadSignEnabled() ? "on" : "off");
+#endif
   const InfoLine option_lines[] = {
       {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
        displayFontBody(), bright_fg},
@@ -438,6 +446,11 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       {focusDecorate(rings_line, s_display_focus == DisplayAdjustRow::Rings, deco[5], 48),
        displayFontBody(),
        s_display_focus == DisplayAdjustRow::Rings ? active_fg : label_fg},
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      {focusDecorate(sign_line, s_display_focus == DisplayAdjustRow::OverheadSign, deco[6], 48),
+       displayFontBody(),
+       s_display_focus == DisplayAdjustRow::OverheadSign ? active_fg : label_fg},
+#endif
       {focusDecorate(facing_line, s_display_focus == DisplayAdjustRow::Facing, deco[4], 48),
        displayFontBody(), facing_fg},
   };
@@ -745,6 +758,11 @@ void infoScreenCycleDisplayFocus() {
       s_display_focus = DisplayAdjustRow::Rings;
       break;
     case DisplayAdjustRow::Rings:
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      s_display_focus = DisplayAdjustRow::OverheadSign;
+      break;
+    case DisplayAdjustRow::OverheadSign:
+#endif
       s_display_focus = DisplayAdjustRow::Facing;
       break;
     default:
@@ -937,6 +955,11 @@ void infoScreenHandleKnob(int8_t delta) {
     case DisplayAdjustRow::Rings:
       ui::radar::gridModeStep(delta);
       break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case DisplayAdjustRow::OverheadSign:
+      ui::displayPrefsToggleOverheadSign();
+      break;
+#endif
     case DisplayAdjustRow::Facing:
       // Dial enters orientation adjust from main.cpp; no-op here.
       return;

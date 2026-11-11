@@ -171,6 +171,19 @@ bool drawLogo(PlaneGfx& tft, const char* icao, int16_t center_x, int16_t y,
   return true;
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool decodeLogoPixels(const char* icao, const uint16_t** pixels, int* w, int* h) {
+  const data::airline_logos::LogoBlob* blob = findLogoBlob(icao);
+  if (blob == nullptr || !decodeGifToFrame(blob)) {
+    return false;
+  }
+  *pixels = s_frame;
+  *w = s_frame_w;
+  *h = s_frame_h;
+  return true;
+}
+#endif
+
 void releaseLogoBuffer() {
   if (s_frame != nullptr) {
     free(s_frame);

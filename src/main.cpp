@@ -45,6 +45,9 @@
 #include "ui/boot_screens.h"
 #include "ui/flight_detail_screen.h"
 #include "ui/info_screen.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "ui/overhead_sign.h"
+#endif
 #include "ui/radar_accent.h"
 #include "ui/radar_display.h"
 #include "ui/radar_scale.h"
@@ -1018,7 +1021,16 @@ void openClockSettingsFromClock() {
 
 void openFlightDetailFromRadar(int16_t tap_x, int16_t tap_y, bool from_screen_tap) {
   if (from_screen_tap) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    // A tap on the overhead sign opens the plane it names.
+    char sign_hex[7];
+    if (!ui::overheadSignHitTest(tap_x, tap_y, sign_hex, sizeof(sign_hex)) ||
+        !ui::flightDetailSelectHex(sign_hex)) {
+      ui::flightDetailSelectAtScreen(tap_x, tap_y);
+    }
+#else
     ui::flightDetailSelectAtScreen(tap_x, tap_y);
+#endif
   } else {
     ui::flightDetailSelectClosest();
   }

@@ -110,4 +110,12 @@ void clearRamCache();
 
 const char* sourceTag(ApiSource s);
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+struct RouteInfo;
+/** Read-only RAM route-cache lookup (overhead sign): no API call, no flash access,
+ *  no cache write. Radar polls skip enrichAircraft, so this is how the sign sees
+ *  routes the detail screen already fetched. */
+bool peekRamRoute(const char* callsign, RouteInfo* out);
+#endif
+
 }  // namespace services::route

@@ -32,4 +32,11 @@ bool displayPrefsAutoIdleClockEnabled();
 void displayPrefsToggleAutoIdleClock();
 void displayPrefsSaveAutoIdleClockFromForm(const char* checkbox_value);
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** "Overhead sign": banner for the closest aircraft in the radar's bottom band. */
+bool displayPrefsOverheadSignEnabled();
+void displayPrefsToggleOverheadSign();
+void displayPrefsSaveOverheadSignFromForm(const char* checkbox_value);
+#endif
+
 }  // namespace ui
