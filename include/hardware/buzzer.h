@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "hardware/chime_synth.h"
 #include "hardware/pin_config.h"
 
 namespace hardware {
@@ -13,7 +14,8 @@ void buzzerInit();
 void buzzerBootLoad();
 
 bool buzzerEnabled();
-/** Current tone step A (quietest) through E (loudest). Piezo boards only. */
+/** Current tone step A (quietest) through E (loudest). Piezo boards: beep tone; speaker
+ *  boards: chime volume. On speaker boards buzzerEnabled() is "alert sound on". */
 char buzzerToneLetter();
 
 void buzzerSetEnabled(bool enabled);
@@ -23,8 +25,14 @@ void buzzerToneStep(int8_t delta);
 /** Start a short non-blocking click if beeps/vibration are enabled. */
 void buzzerClick();
 
-/** Play alert feedback (piezo boards only — haptic boards use screen flash). */
-void buzzerAlert();
+/**
+ * Play alert feedback: a triple beep on piezo boards, the matching chime on speaker
+ * boards (FLIGHTSCNR_HAS_SPEAKER). Haptic boards use the screen flash only.
+ */
+void buzzerAlert(chime::Kind kind = chime::Kind::Tracked);
+
+/** Speaker boards: play a chime at the current volume, even if alert sound is off (tests). */
+void buzzerPlayChime(chime::Kind kind);
 
 /** Stop an in-progress beep; call from loop. */
 void buzzerPoll();
