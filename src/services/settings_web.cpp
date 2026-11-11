@@ -27,6 +27,9 @@
 #include "services/route_lookup.h"
 #include "services/settings_apply.h"
 #include "services/settings_state.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "services/sky_events.h"
+#endif
 #include "services/tz_lookup.h"
 #include "services/weather.h"
 #include "services/aircraft_alert.h"
@@ -979,6 +982,14 @@ void handleSettingsPage() {
   appendToggle(page, kSettingsPageCap, &used, "alert_hide",
                "Hide non-alerted aircraft on radar",
                services::alert::hideNonAlertedEnabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "sky_launch",
+               "Rocket launches from Cape Canaveral / KSC: countdown banner and chime (T-10 min, liftoff)",
+               services::sky::launchesEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "sky_iss",
+               "Visible ISS passes: banner and chime 2 min before",
+               services::sky::issEnabled());
+#endif
   const int watch_n = snprintf(
       page + used, kSettingsPageCap - used,
       "<label for=\"alert_watch\">Alert on ICAO flight numbers</label>"
@@ -1438,6 +1449,10 @@ void handleSettingsPage() {
       "setVal('alert_mil',j.alert_mil);"
       "setVal('alert_emrg',j.alert_emrg);"
       "setVal('alert_hide',j.alert_hide);"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      "setVal('sky_launch',j.sky_launch);"
+      "setVal('sky_iss',j.sky_iss);"
+#endif
       "setVal('alert_watch',j.alert_watch);"
       "setVal('alert_watch_type',j.alert_watch_type);"
       "setVal('alert_watch_reg',j.alert_watch_reg);"
@@ -1591,6 +1606,10 @@ void handleSave() {
   services::alert::saveClassAlertsFromForm(s_server->arg("alert_heli").c_str(),
                                            s_server->arg("alert_ga").c_str(),
                                            s_server->arg("type_colors").c_str());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::sky::saveFromForm(s_server->arg("sky_launch").c_str(),
+                              s_server->arg("sky_iss").c_str());
+#endif
 
   Serial.printf("Settings web save (lat/lon %s)\n", loc_ok ? "ok" : "invalid");
 
@@ -2202,6 +2221,19 @@ void handleSettingsApi() {
     return;
   }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  {
+    const int sky_n = snprintf(s_api_buf + used, kApiCap - used,
+                               "\"sky_launch\":%s,\"sky_iss\":%s,",
+                               services::sky::launchesEnabled() ? "true" : "false",
+                               services::sky::issEnabled() ? "true" : "false");
+    if (sky_n <= 0 || static_cast<size_t>(sky_n) >= kApiCap - used) {
+      s_server->send(500, "text/plain", "json overflow");
+      return;
+    }
+    used += static_cast<size_t>(sky_n);
+  }
+#endif
   const int tail_n = snprintf(
       s_api_buf + used, kApiCap - used,
       "\"use_airlabs\":%s,"

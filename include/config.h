@@ -112,6 +112,8 @@ constexpr bool kFactoryAlertPrivate = true;
 constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
 constexpr bool kFactoryAlertOverheadAny = true;
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
+constexpr bool kFactorySkyLaunchAlerts = true;  // Space Coast launch banner + chime
+constexpr bool kFactorySkyIssAlerts = true;     // visible ISS pass banner + chime
 #else
 constexpr double kFactoryLatitude = 37.61977;
 constexpr double kFactoryLongitude = -122.37227;

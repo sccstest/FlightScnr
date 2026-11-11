@@ -17,6 +17,9 @@
 #include "services/api_keys.h"
 #include "services/device_identity.h"
 #include "services/map_center.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "services/sky_events.h"
+#endif
 #include "services/wifi_setup.h"
 #include "ui/display_prefs.h"
 #include "ui/radar_accent.h"
@@ -74,6 +77,10 @@ enum class AlertsAdjustRow : uint8_t {
   Private,
   When,
   OverheadAny,
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  SkyLaunches,  // Space Coast rocket launch banner + chime
+  SkyIss,       // visible ISS pass banner + chime
+#endif
   Count,
 };
 
@@ -587,6 +594,11 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
            services::alert::alertOnApproachEnabled() ? "overhead" : "entering");
   snprintf(rows[6], sizeof(rows[6]), "Overhead (any): %s",
            onOff(services::alert::overheadAnyEnabled()));
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  snprintf(rows[7], sizeof(rows[7]), "Rocket launches: %s",
+           onOff(services::sky::launchesEnabled()));
+  snprintf(rows[8], sizeof(rows[8]), "ISS passes: %s", onOff(services::sky::issEnabled()));
+#endif
 
   char deco[kRows][48];
   InfoLine option_lines[kRows];
@@ -636,7 +648,12 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   const char* words[] = {"Military", "Helicopter", "Private"};
   const uint16_t colors[] = {tft.color565(255, 50, 40), tft.color565(64, 170, 255),
                              tft.color565(235, 235, 235)};
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Two more rows (sky events) push the key lower, where the circle is narrower.
+  displayFontApply(tft, displayFontScale());
+#else
   displayFontApply(tft, displayFontDetail());
+#endif
   const int gap = ui::sc(14);
   int total = 2 * gap;
   for (const char* w : words) {
@@ -675,6 +692,14 @@ void toggleAlertsRow(AlertsAdjustRow row) {
     case AlertsAdjustRow::OverheadAny:
       services::alert::toggleOverheadAny();
       break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case AlertsAdjustRow::SkyLaunches:
+      services::sky::toggleLaunches();
+      break;
+    case AlertsAdjustRow::SkyIss:
+      services::sky::toggleIss();
+      break;
+#endif
     default:
       break;
   }

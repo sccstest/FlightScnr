@@ -102,6 +102,23 @@ constexpr Note kClick[] = {
     {0.00f, 1800.0f, 1800.0f, 0, 0.6f, 0, 0.006f, Timbre::Soft},
 };
 
+// Rocket launch (T-10 min and liftoff): a rising whoosh, then a short bright fanfare.
+constexpr Note kRocket[] = {
+    {0.00f, A4, A5, 0.50f, 0.45f, 0.48f, 0.06f, Timbre::Soft},
+    {0.55f, C6, C6, 0, 0.75f, 0.08f, 0.10f, Timbre::Horn},
+    {0.75f, C6, C6, 0, 0.75f, 0.08f, 0.10f, Timbre::Horn},
+    {0.95f, E6, E6, 0, 0.85f, 0.22f, 0.25f, Timbre::Horn},
+};
+
+// ISS pass: three quick satellite "beeps", then a soft two-note bell.
+constexpr Note kSatellite[] = {
+    {0.00f, E6, E6, 0, 0.60f, 0.07f, 0.03f, Timbre::Soft},
+    {0.18f, E6, E6, 0, 0.60f, 0.07f, 0.03f, Timbre::Soft},
+    {0.36f, E6, E6, 0, 0.60f, 0.07f, 0.03f, Timbre::Soft},
+    {0.62f, A5, A5, 0, 0.85f, 0, 0.45f, Timbre::Bell},
+    {0.62f, E6, E6, 0, 0.45f, 0, 0.45f, Timbre::Bell},
+};
+
 #define FS_PATTERN(arr, secs) Pattern{arr, sizeof(arr) / sizeof(arr[0]), secs}
 
 Pattern patternFor(Kind kind) {
@@ -113,6 +130,8 @@ Pattern patternFor(Kind kind) {
     case Kind::Overhead:   return FS_PATTERN(kOverhead, 1.35f);
     case Kind::Emergency:  return FS_PATTERN(kEmergency, 1.50f);
     case Kind::Click:      return FS_PATTERN(kClick, 0.03f);
+    case Kind::Rocket:     return FS_PATTERN(kRocket, 1.50f);
+    case Kind::Satellite:  return FS_PATTERN(kSatellite, 1.40f);
   }
   return FS_PATTERN(kTracked, 1.20f);
 }
@@ -248,6 +267,8 @@ const char* name(Kind kind) {
     case Kind::Overhead:   return "overhead";
     case Kind::Emergency:  return "emergency";
     case Kind::Click:      return "click";
+    case Kind::Rocket:     return "rocket";
+    case Kind::Satellite:  return "satellite";
   }
   return "?";
 }

@@ -19,9 +19,11 @@ enum class Kind : uint8_t {
   Overhead,    // upward swoosh into a bright bell
   Emergency,   // urgent alternating hi-lo (squawk 7500/7600/7700)
   Click,       // very short UI tick
+  Rocket,      // sky events: rising whoosh into a short fanfare (launch T-10 / liftoff)
+  Satellite,   // sky events: three quick "beeps" and a bell (ISS pass starting)
 };
 
-constexpr size_t kKindCount = 7;
+constexpr size_t kKindCount = 9;
 constexpr uint32_t kSampleRate = 16000;
 /** Longest chime is 1.5 s; buffers of this many samples hold any of them. */
 constexpr size_t kMaxSamples = kSampleRate * 3 / 2;

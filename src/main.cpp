@@ -50,6 +50,10 @@
 #include "ui/radar_scale.h"
 #include "ui/radar_theme.h"
 #include "ui/weather_screen.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "services/sky_events.h"
+#include "ui/sky_banner.h"
+#endif
 
 namespace {
 
@@ -63,6 +67,9 @@ enum class AppScreen : uint8_t {
   Weather,
   Orientation,
   Disclaimer,
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  SkyEvent,  // rocket launch / ISS pass detail (tap the top banner)
+#endif
 };
 
 AppScreen g_screen = AppScreen::Radar;
@@ -154,6 +161,10 @@ const char* screenName(AppScreen screen) {
       return "orient";
     case AppScreen::Disclaimer:
       return "disclaimer";
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case AppScreen::SkyEvent:
+      return "sky";
+#endif
     default:
       return "?";
   }
@@ -852,6 +863,11 @@ void applySettingsLive() {
       }
       showDisclaimer();
       break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case AppScreen::SkyEvent:
+      ui::sky::detailDraw();
+      break;
+#endif
   }
   Serial.println("[settings] applied live");
 }
@@ -999,6 +1015,18 @@ void openDetailsFromRadar() {
   Serial.println("Screen: details");
   logNavContext("details");
 }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+void openSkyEventFromRadar() {
+  ui::flightDetailReleaseSprite();
+  g_screen = AppScreen::SkyEvent;
+  g_radar_visible = false;
+  noteSecondaryActivity();
+  ui::sky::detailDraw();
+  Serial.println("Screen: sky event");
+  logNavContext("sky");
+}
+#endif
 
 void openWeatherFromClock() {
   g_screen = AppScreen::Weather;
@@ -1217,6 +1245,11 @@ void handleNavigation() {
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings) {
     returnToRadar(false, true);
     navigated = true;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  } else if (g_screen == AppScreen::SkyEvent) {
+    returnToRadar(false, true);
+    navigated = true;
+#endif
   }
 
   if (navigated) {
@@ -1311,6 +1344,15 @@ void tickSecondaryScreenTimeout() {
     }
     return;
   }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (g_screen == AppScreen::SkyEvent) {
+    // Long enough to read the launch / pass details.
+    if (millis() - g_secondary_activity_ms >= 30000UL) {
+      returnToRadar(true);
+    }
+    return;
+  }
+#endif
   if (millis() - g_secondary_activity_ms >= config::kSecondaryScreenTimeoutMs) {
     if (g_screen == AppScreen::ClockSettings) {
       returnToClockFromIdleTimeout();
@@ -1491,6 +1533,13 @@ void handleInput() {
     int16_t tx = 0;
     int16_t ty = 0;
     if (inputConsumeScreenTap(&tx, &ty)) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      if (ui::sky::bannerHit(tx, ty)) {
+        hardware::buzzerClick();
+        openSkyEventFromRadar();
+        return;
+      }
+#endif
       openFlightDetailFromRadar(tx, ty, true);
       return;
     }
@@ -1517,6 +1566,17 @@ void handleInput() {
     }
     return;
   }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (g_screen == AppScreen::SkyEvent) {
+    if (inputConsumeScreenTap(nullptr, nullptr) || inputConsumeKnobTap()) {
+      hardware::buzzerClick();
+      returnToRadar(false, true);
+    }
+    (void)inputConsumeEncoderDelta();
+    return;
+  }
+#endif
 
   if (g_screen == AppScreen::FlightDetail) {
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
@@ -2250,6 +2310,9 @@ void setup() {
   services::offhours::bootLoad();
   services::alert::bootLoad();
   services::disclaimer::bootLoad();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::sky::bootLoad();
+#endif
   services::ota_github::init();
 
   if (wifiSetupConnect()) {
@@ -2306,6 +2369,13 @@ void loop() {
   services::ota_github::pollIfDue();
   services::route::tickCacheFlush(millis());
   tickFlightDetailRouteEnrich();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::sky::tick();
+  ui::sky::tick(g_screen == AppScreen::Radar && g_radar_visible);
+  if (g_screen == AppScreen::SkyEvent) {
+    ui::sky::detailTick();
+  }
+#endif
   tickDiagLog();
   tickRadarSweepHeartbeat();
   tickRadarStallWatchdog();
@@ -2357,6 +2427,10 @@ void loop() {
           showDisclaimer();
         } else if (g_screen == AppScreen::Weather) {
           showWeather();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        } else if (g_screen == AppScreen::SkyEvent) {
+          ui::sky::detailDraw();
+#endif
         } else {
           showSettings();
         }
