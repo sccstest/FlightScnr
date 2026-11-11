@@ -101,6 +101,9 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 - `--tap SEC:X:Y` and `--swipe SEC:X1:Y1:X2:Y2` script a finger, in panel pixels.
 - `--shot SEC` saves `sim_data/shot-<SEC>s.png`.
 - `--exit-after SEC` closes the simulator.
+- `--hidden` runs without a visible window (screenshots still work), so a stray
+  click can't land on a scripted test. Real mouse presses are logged as
+  `[sim] mouse down X,Y`.
 - `--data DIR` uses a different settings/cache folder.
 
 - `--offline` makes Wi-Fi report disconnected and every HTTP request fail, for the

@@ -314,6 +314,12 @@ int main(int argc, char** argv) {
     printf("[sim] radar center set to %.5f, %.5f\n", lat, lon);
   }
   const double scale = argDouble(argc, argv, "--scale", 1.0);
+  // --hidden: no visible window (scripted runs: screenshots read the framebuffer,
+  // and nobody can click the window by accident).
+  bool hidden = false;
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--hidden") == 0) hidden = true;
+  }
   std::vector<ScriptEvent> script = parseScript(argc, argv);
   const double exit_after = argDouble(argc, argv, "--exit-after", -1);
 
@@ -331,7 +337,8 @@ int main(int argc, char** argv) {
   const int win = static_cast<int>(panel * scale);
   SDL_Window* window =
       SDL_CreateWindow("FlightScnr simulator — Waveshare 4C (720x720)", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, win, win, SDL_WINDOW_SHOWN);
+                       SDL_WINDOWPOS_CENTERED, win, win,
+                       hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN);
   SDL_Renderer* ren = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (ren == nullptr) ren = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
@@ -392,7 +399,11 @@ int main(int argc, char** argv) {
           }
           break;
         case SDL_MOUSEBUTTONDOWN:
-          if (e.button.button == SDL_BUTTON_LEFT) sim::setTouch(true, e.button.x, e.button.y);
+          if (e.button.button == SDL_BUTTON_LEFT) {
+            // Logged so a real click is never mistaken for a firmware bug in test runs.
+            printf("[sim] mouse down %d,%d\n", e.button.x, e.button.y);
+            sim::setTouch(true, e.button.x, e.button.y);
+          }
           break;
         case SDL_MOUSEBUTTONUP:
           if (e.button.button == SDL_BUTTON_LEFT) sim::setTouch(false, e.button.x, e.button.y);
