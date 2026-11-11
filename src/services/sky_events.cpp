@@ -183,6 +183,34 @@ bool statusLooksGo(uint8_t id) { return id == 1 || id == 6 || id == 8; }
 
 // --- HTTPS ---------------------------------------------------------------------------
 
+/** Body sink for HTTPClient::writeToStream (which de-chunks, unlike the raw stream).
+ *  Refuses bytes past a size cap or a time budget, which makes writeToStream stop:
+ *  getSize() is -1 for chunked replies, so a Content-Length check alone never fires. */
+class CappedBody : public Stream {
+ public:
+  CappedBody(String* out, size_t cap, unsigned long budget_ms)
+      : out_(out), cap_(cap), budget_ms_(budget_ms), start_ms_(millis()) {}
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* buf, size_t n) override {
+    if (out_->length() + n > cap_ || millis() - start_ms_ > budget_ms_) {
+      refused_ = true;
+      return 0;
+    }
+    return out_->concat(reinterpret_cast<const char*>(buf), static_cast<unsigned int>(n)) ? n : 0;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  bool refused() const { return refused_; }
+
+ private:
+  String* out_;
+  size_t cap_;
+  unsigned long budget_ms_;
+  unsigned long start_ms_;
+  bool refused_ = false;
+};
+
 /** GET url into body. Returns the HTTP code (or a negative client error). */
 int httpsGet(const char* url, String* body) {
   services::https::ScopedLock tls(kHttpTimeoutMs + 4000);
@@ -212,7 +240,18 @@ int httpsGet(const char* url, String* body) {
       services::https::drainTlsHeapAfterSession();
       return -102;
     }
-    *body = http.getString();  // de-chunks (LL2 replies are chunked)
+    // LL2 replies are chunked: read through writeToStream (de-chunks) into a capped sink.
+    CappedBody sink(body, kMaxBodyBytes, 2 * kHttpTimeoutMs);
+    const int got = http.writeToStream(&sink);
+    if (got < 0) {
+      Serial.printf("[sky] body read failed (%d)%s\n", got,
+                    sink.refused() ? ": too large or too slow" : "");
+      *body = String();
+      http.end();
+      client.stop();
+      services::https::drainTlsHeapAfterSession();
+      return sink.refused() ? -102 : got;
+    }
   }
   http.end();
   client.stop();

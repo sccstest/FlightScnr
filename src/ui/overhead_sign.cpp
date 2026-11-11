@@ -616,7 +616,8 @@ bool overheadSignUpdate() {
       formatDistance(d, next.dist, sizeof(next.dist));
       if (strnlen(airline_icao, 4) == 3) {
         copyStr(next.logo_icao, sizeof(next.logo_icao), airline_icao);
-      } else if (isalpha(static_cast<unsigned char>(ac->callsign[0])) &&
+      } else if (strcasecmp(ac->callsign, ac->hex) != 0 &&
+                 isalpha(static_cast<unsigned char>(ac->callsign[0])) &&
                  isalpha(static_cast<unsigned char>(ac->callsign[1])) &&
                  isalpha(static_cast<unsigned char>(ac->callsign[2])) &&
                  isdigit(static_cast<unsigned char>(ac->callsign[3]))) {

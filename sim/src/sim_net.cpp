@@ -457,6 +457,22 @@ String HTTPClient::getString() {
   return s;
 }
 
+int HTTPClient::writeToStream(Stream* stream) {
+  if (client_ == nullptr || stream == nullptr) return HTTPC_ERROR_NO_STREAM;
+  int total = 0;
+  uint8_t buf[1024];
+  for (;;) {
+    const int n = client_->available();
+    if (n <= 0) break;
+    const size_t want = static_cast<size_t>(n) < sizeof(buf) ? static_cast<size_t>(n) : sizeof(buf);
+    const size_t got = client_->readBytes(buf, want);
+    if (got == 0) break;
+    if (stream->write(buf, got) != got) return HTTPC_ERROR_STREAM_WRITE;
+    total += static_cast<int>(got);
+  }
+  return total;
+}
+
 String HTTPClient::errorToString(int error) {
   switch (error) {
     case HTTPC_ERROR_CONNECTION_REFUSED: return "connection refused";

@@ -314,6 +314,9 @@ bool httpGet(const String& url, Payload* out, size_t max_bytes) {
   services::https::SecureClient client;
   client.setInsecure();
   client.setTimeout(kTimeoutMs / 1000U);
+  // Without this a stalled TLS handshake waits the library default (minutes) while
+  // holding the shared fetch worker, and the ADS-B feed stops meanwhile.
+  client.setHandshakeTimeout(kTimeoutMs / 1000U);
   HTTPClient http;
   http.setReuse(false);
   http.useHTTP10(true);
@@ -332,10 +335,10 @@ bool httpGet(const String& url, Payload* out, size_t max_bytes) {
   }
   WiFiClient* stream = http.getStreamPtr();
   bool ok = stream != nullptr;
-  const unsigned long deadline = millis() + kTimeoutMs;
+  const unsigned long read_start = millis();
   uint8_t buf[1024];
   while (ok && (http.connected() || stream->available() > 0)) {
-    if (millis() > deadline) {
+    if (millis() - read_start > kTimeoutMs) {  // wrap-safe
       Serial.println("[rain] read timeout");
       ok = false;
       break;
@@ -570,6 +573,7 @@ bool enabled() { return s_enabled; }
 void setEnabled(bool on) {
   if (on == s_enabled) return;
   s_enabled = on;
+  s_retry_after_ms = 0;  // a back-off from before it was switched off is stale
   persistEnabled();
   requestRedraw();
 }
@@ -608,7 +612,12 @@ void tick(bool radar_visible, bool wifi_up) {
   }
 
   if (!s_enabled || !radar_visible || !wifi_up || s_pending || s_ready) return;
-  if (s_retry_after_ms != 0 && now < s_retry_after_ms) return;
+  // Signed difference: an absolute millis() deadline compared with < breaks when
+  // millis() wraps (every 49.7 days of uptime).
+  if (s_retry_after_ms != 0) {
+    if (static_cast<long>(now - s_retry_after_ms) < 0) return;
+    s_retry_after_ms = 0;  // passed: don't leave a stale deadline to wrap around later
+  }
   const View view = currentView();
   const bool view_moved = s_has_live && !viewsMatch(view, s_live_view);
   const bool due = !s_has_live || now - s_live_fetched_ms >= kRefreshMs ||

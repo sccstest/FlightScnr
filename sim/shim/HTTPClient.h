@@ -71,6 +71,9 @@ class HTTPClient {
   WiFiClient* getStreamPtr() { return client_; }
   WiFiClient& getStream() { return *client_; }
   String getString();
+  /** Writes the (already de-chunked) body to stream; negative when the stream refuses.
+   *  Like the core, returns HTTPC_ERROR_STREAM_WRITE (-10) on a short write. */
+  int writeToStream(Stream* stream);
   static String errorToString(int error);
 
  private:

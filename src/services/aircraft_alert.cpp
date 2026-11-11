@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 
 #include "hardware/buzzer.h"
 #include "hardware/pin_config.h"
@@ -363,6 +364,16 @@ bool looksLikeAirlineFlight(const char* cs) {
          isalpha(static_cast<unsigned char>(cs[1])) &&
          isalpha(static_cast<unsigned char>(cs[2])) &&
          isdigit(static_cast<unsigned char>(cs[3]));
+}
+
+/** Airline flight number in the feed's flight ID. With no flight ID the callsign
+ *  holds the hex address (adsb_client fillTagFields), and hex like "ACE4F1" would
+ *  otherwise pass for "ACE" + digit. */
+bool airlineCallsign(const services::adsb::Aircraft& ac) {
+  if (ac.hex[0] != '\0' && strcasecmp(ac.callsign, ac.hex) == 0) {
+    return false;
+  }
+  return looksLikeAirlineFlight(ac.callsign);
 }
 
 bool classAlert(const services::adsb::Aircraft& ac) {
@@ -729,7 +740,7 @@ TrafficClass trafficClass(const services::adsb::Aircraft& ac) {
   if (cat == AircraftCategory::Helicopter || ui::aircraft_icon::isHelicopterIcon(icon)) {
     return TrafficClass::Helicopter;
   }
-  if (looksLikeAirlineFlight(ac.callsign)) {
+  if (airlineCallsign(ac)) {
     return TrafficClass::Airline;
   }
   if (cat == AircraftCategory::LightAircraft || cat == AircraftCategory::SmallAircraft ||
@@ -816,8 +827,15 @@ void toggleOverheadAny() {
 }
 
 void saveApproachFromForm(const char* approach_checkbox, const char* overhead_checkbox) {
-  s_alert_on_approach = approach_checkbox != nullptr && approach_checkbox[0] == 'T';
-  s_overhead_any = overhead_checkbox != nullptr && overhead_checkbox[0] == 'T';
+  const bool approach = approach_checkbox != nullptr && approach_checkbox[0] == 'T';
+  const bool overhead = overhead_checkbox != nullptr && overhead_checkbox[0] == 'T';
+  // Every web save calls this: only forget the announced aircraft when something
+  // changed, or each unrelated save would re-chime everything on screen.
+  if (approach == s_alert_on_approach && overhead == s_overhead_any) {
+    return;
+  }
+  s_alert_on_approach = approach;
+  s_overhead_any = overhead;
   Preferences prefs;
   if (prefs.begin(kStoreNs, false)) {
     prefs.putBool(kApproachKey, s_alert_on_approach);
@@ -882,9 +900,16 @@ void togglePrivateAlert() {
 
 void saveClassAlertsFromForm(const char* heli_checkbox, const char* private_checkbox,
                              const char* type_colors_checkbox) {
-  s_heli_enabled = heli_checkbox != nullptr && heli_checkbox[0] == 'T';
-  s_private_enabled = private_checkbox != nullptr && private_checkbox[0] == 'T';
-  s_type_colors = type_colors_checkbox != nullptr && type_colors_checkbox[0] == 'T';
+  const bool heli = heli_checkbox != nullptr && heli_checkbox[0] == 'T';
+  const bool priv = private_checkbox != nullptr && private_checkbox[0] == 'T';
+  const bool colors = type_colors_checkbox != nullptr && type_colors_checkbox[0] == 'T';
+  if (heli == s_heli_enabled && priv == s_private_enabled && colors == s_type_colors) {
+    return;  // unrelated web save: keep the announced aircraft (no re-chime)
+  }
+  const bool alerts_changed = heli != s_heli_enabled || priv != s_private_enabled;
+  s_heli_enabled = heli;
+  s_private_enabled = priv;
+  s_type_colors = colors;
   Preferences prefs;
   if (prefs.begin(kStoreNs, false)) {
     prefs.putBool(kHeliKey, s_heli_enabled);
@@ -892,7 +917,9 @@ void saveClassAlertsFromForm(const char* heli_checkbox, const char* private_chec
     prefs.putBool(kTypeColorsKey, s_type_colors);
     prefs.end();
   }
-  clearSeen();
+  if (alerts_changed) {
+    clearSeen();
+  }
 }
 
 bool militaryAlertEnabled() { return s_mil_enabled; }
