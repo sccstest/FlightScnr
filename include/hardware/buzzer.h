@@ -19,6 +19,11 @@ bool buzzerEnabled();
 char buzzerToneLetter();
 
 void buzzerSetEnabled(bool enabled);
+#if FLIGHTSCNR_HAS_SPEAKER
+/** One-touch mute: flip Alert Sound and save it like the settings page does. Unmuting
+ *  plays a short confirm chirp; muting is silent. Returns the new state (true = on). */
+bool buzzerToggleAlertSound();
+#endif
 /** Step beep tone A–E (no-op on haptic / Waveshare boards). */
 void buzzerToneStep(int8_t delta);
 

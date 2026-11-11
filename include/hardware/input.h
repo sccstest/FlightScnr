@@ -42,6 +42,14 @@ SwipeGesture inputConsumeSwipe();
  */
 int8_t inputConsumePinchStep();
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/**
+ * True once after a one-finger long-press (held still ~0.9 s). Fires while the finger
+ * is still down; that touch then produces no tap or swipe. Position in display coords.
+ */
+bool inputConsumeLongPress(int16_t* x, int16_t* y);
+#endif
+
 /** Poll for knob long-press (Wi-Fi reset). May reboot the device. */
 void inputPollLongPress();
 

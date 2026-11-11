@@ -3,11 +3,13 @@
 //
 //   program.exe [--lat 27.95 --lon -82.46] [--scale 0.8] [--data DIR]
 //               [--tap SEC:X:Y]... [--swipe SEC:X1:Y1:X2:Y2]... [--shot SEC]...
+//               [--longpress SEC:X:Y]...
 //               [--pinch SEC:spread|squeeze]...
 //               [--chime SEC:NAME]... [--exit-after SEC]
 //   program.exe --dump-chimes DIR      (write every alert chime as a WAV, then exit)
 //
-// --tap / --swipe script a finger at a time after start (panel pixels, 0-719);
+// --tap / --swipe / --longpress script a finger at a time after start (panel pixels,
+// 0-719); --longpress holds the finger still for 1.2 s (the 4C mute toggle).
 // --shot saves sim_data/shot-<SEC>s.png. All three can be repeated.
 // --chime plays an alert chime (tracked, military, helicopter, private, overhead,
 // emergency, click) at the current volume, like the F1-F6 keys.
@@ -223,6 +225,10 @@ std::vector<ScriptEvent> parseScript(int argc, char** argv) {
     if (strcmp(argv[i], "--tap") == 0 && sscanf(v, "%lf:%d:%d", &t, &x1, &y1) == 3) {
       ev.push_back({t, ScriptEvent::Down, x1, y1});
       ev.push_back({t + 0.12, ScriptEvent::Up, x1, y1});
+    } else if (strcmp(argv[i], "--longpress") == 0 &&
+               sscanf(v, "%lf:%d:%d", &t, &x1, &y1) == 3) {
+      ev.push_back({t, ScriptEvent::Down, x1, y1});
+      ev.push_back({t + 1.2, ScriptEvent::Up, x1, y1});
     } else if (strcmp(argv[i], "--swipe") == 0 &&
                sscanf(v, "%lf:%d:%d:%d:%d", &t, &x1, &y1, &x2, &y2) == 5) {
       ev.push_back({t, ScriptEvent::Down, x1, y1});

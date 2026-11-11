@@ -8,6 +8,9 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "hardware/display_font.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+#include "hardware/buzzer.h"
+#endif
 #include "hardware/panel.h"
 #include "ui/display_prefs.h"
 #include "services/adsb_client.h"
@@ -728,6 +731,135 @@ void drawLinkBadge() {
   s_draw->drawString(text, dot_cx + dot_r + dot_gap, y + r);
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// --- One-touch mute (4C long-press) ----------------------------------------
+// A small speaker-with-slash at the left edge while Alert Sound is off, and a
+// brief centered "Sound off" / "Sound on" toast after each long-press. Both are
+// drawn over the aircraft layer, like the link badge, so every frame keeps them.
+
+constexpr unsigned long kSoundToastMs = 1500;
+unsigned long s_sound_toast_until_ms = 0;
+bool s_sound_toast_on = false;
+bool s_sound_toast_drawn = false;
+bool s_mute_icon_drawn = false;
+
+int muteIconCenterX() { return ui::sc(20); }
+int muteIconRadius() { return ui::sc(12); }
+
+IntRect muteIconRect() {
+  const int r = muteIconRadius() + ui::sc(2);
+  return IntRect{muteIconCenterX() - r, radar::kCenterY - r, 2 * r + 1, 2 * r + 1};
+}
+
+IntRect soundToastRect() {
+  const int w = ui::sc(150);
+  const int h = ui::sc(40);
+  return IntRect{radar::kCenterX - w / 2, radar::kCenterY - h / 2, w, h};
+}
+
+/** Solid thick segment as a quad (two triangles); crisp at any angle. */
+void fillThickSegment(int x0, int y0, int x1, int y1, float half_w, uint16_t color) {
+  const float dx = static_cast<float>(x1 - x0);
+  const float dy = static_cast<float>(y1 - y0);
+  const float len = sqrtf(dx * dx + dy * dy);
+  if (len < 1.0f) {
+    return;
+  }
+  const int nx = static_cast<int>(lroundf(-dy / len * half_w));
+  const int ny = static_cast<int>(lroundf(dx / len * half_w));
+  s_draw->fillTriangle(x0 + nx, y0 + ny, x1 + nx, y1 + ny, x1 - nx, y1 - ny, color);
+  s_draw->fillTriangle(x0 + nx, y0 + ny, x1 - nx, y1 - ny, x0 - nx, y0 - ny, color);
+}
+
+/** Speaker (box + flared cone) about 2.4 * s wide, centered at (cx, cy).
+ *  muted: a small x right of the cone; otherwise two sound waves. */
+void drawSpeakerGlyph(int cx, int cy, int s, uint16_t ink, bool muted) {
+  const int body_w = s * 5 / 8;
+  const int body_h = s * 7 / 8;
+  const int cone_w = s * 6 / 8;
+  const int cone_h = s * 15 / 8;
+  // Centered as a whole; with waves the speaker sits a bit left to make room.
+  const int total_w = body_w + cone_w + s;
+  const int left = cx - total_w / 2;
+  const int bx1 = left + body_w;
+  const int cx1 = bx1 + cone_w;
+  s_draw->fillRect(left, cy - body_h / 2, body_w, body_h, ink);
+  s_draw->fillTriangle(bx1 - 1, cy - body_h / 2, cx1, cy - cone_h / 2, cx1, cy + cone_h / 2, ink);
+  s_draw->fillTriangle(bx1 - 1, cy - body_h / 2, cx1, cy + cone_h / 2, bx1 - 1, cy + body_h / 2,
+                       ink);
+  if (muted) {
+    const int d = s / 2;
+    const int xc = cx1 + s / 2 + ui::sc(1);
+    const float hw = static_cast<float>(ui::sc(1)) + 0.3f;
+    fillThickSegment(xc - d, cy - d, xc + d, cy + d, hw, ink);
+    fillThickSegment(xc - d, cy + d, xc + d, cy - d, hw, ink);
+  } else {
+    // Two sound waves right of the cone (0 deg = 3 o'clock; split so no wrap past 360).
+    const int ax = cx1 - ui::sc(1);
+    const int t = ui::sc(2);
+    const int radii[] = {s / 2 + t, s + t};
+    for (int ro : radii) {
+      s_draw->fillArc(ax, cy, ro, ro - t, 315.0f, 359.9f, ink);
+      s_draw->fillArc(ax, cy, ro, ro - t, 0.0f, 45.0f, ink);
+    }
+  }
+}
+
+void drawMuteIcon() {
+  if (hardware::buzzerEnabled()) {
+    return;
+  }
+  const int cx = muteIconCenterX();
+  const int cy = radar::kCenterY;
+  const int r = muteIconRadius();
+  // Dim dark disc so the glyph reads on the radar and on light map styles alike.
+  const uint16_t disc = s_draw->color565(25, 25, 25);
+  const uint16_t ink = s_draw->color565(200, 200, 200);
+  s_draw->fillCircle(cx, cy, r + ui::sc(1), s_draw->color565(90, 90, 90));
+  s_draw->fillCircle(cx, cy, r, disc);
+  drawSpeakerGlyph(cx, cy, ui::sc(7), ink, true);
+}
+
+void drawSoundToast() {
+  if (s_sound_toast_until_ms == 0) {
+    return;
+  }
+  const IntRect rect = soundToastRect();
+  const int r = rect.h / 2;
+  const uint16_t fill = s_draw->color565(20, 20, 20);
+  const uint16_t edge = s_draw->color565(120, 120, 120);
+  const uint16_t ink = s_draw->color565(255, 255, 255);
+  const int o = ui::sc(1);
+  s_draw->fillCircle(rect.x + r, rect.y + r, r, edge);
+  s_draw->fillCircle(rect.x + rect.w - r - 1, rect.y + r, r, edge);
+  s_draw->fillRect(rect.x + r, rect.y, rect.w - 2 * r, rect.h, edge);
+  s_draw->fillCircle(rect.x + r, rect.y + r, r - o, fill);
+  s_draw->fillCircle(rect.x + rect.w - r - 1, rect.y + r, r - o, fill);
+  s_draw->fillRect(rect.x + r, rect.y + o, rect.w - 2 * r, rect.h - 2 * o, fill);
+
+  const char* text = s_sound_toast_on ? "Sound on" : "Sound off";
+  const UiTextStyle style = displayFontBody();
+  displayFontApply(*s_draw, style);
+  const int glyph = ui::sc(9);
+  const int gap = ui::sc(8);
+  const int text_w = s_draw->textWidth(text);
+  const int total = glyph * 2 + gap + text_w;
+  const int x0 = radar::kCenterX - total / 2;
+  const int cy = rect.y + r;
+  drawSpeakerGlyph(x0 + glyph, cy, glyph * 2 / 3, ink, !s_sound_toast_on);
+  s_draw->setTextColor(ink);
+  s_draw->setTextDatum(TextDatum::MiddleLeft);
+  s_draw->drawString(text, x0 + glyph * 2 + gap, cy);
+}
+
+void drawSoundOverlay() {
+  drawMuteIcon();
+  s_mute_icon_drawn = !hardware::buzzerEnabled();
+  drawSoundToast();
+  s_sound_toast_drawn = s_sound_toast_until_ms != 0;
+}
+#endif  // FLIGHTSCNR_BOARD_WAVESHARE_P4_4C
+
 void drawAircraft() {
   initLabelMetrics();
   resolveAircraftLabels();
@@ -813,6 +945,9 @@ void drawAircraft() {
     }
   }
   drawLinkBadge();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  drawSoundOverlay();
+#endif
 }
 
 void drawCardinalLabel(const char* text, int x, int y, TextDatum datum) {
@@ -1861,6 +1996,39 @@ void radarDisplaySetLinkStatus(RadarLinkStatus status) {
 }
 
 RadarLinkStatus radarDisplayLinkStatus() { return s_link_status; }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+namespace {
+void markRadarRectDirty(const IntRect& r) {
+  s_aircraft_dirty_rect = rectEmpty(s_aircraft_dirty_rect) ? r : unionRect(s_aircraft_dirty_rect, r);
+  s_aircraft_dirty = true;
+}
+}  // namespace
+
+void radarDisplayShowSoundToast(bool sound_on) {
+  s_sound_toast_on = sound_on;
+  s_sound_toast_until_ms = millis() + kSoundToastMs;
+  if (s_sound_toast_until_ms == 0) {
+    s_sound_toast_until_ms = 1;
+  }
+  markRadarRectDirty(soundToastRect());
+  markRadarRectDirty(muteIconRect());
+}
+
+void radarDisplayTickSoundOverlay() {
+  if (s_sound_toast_until_ms != 0 &&
+      static_cast<long>(millis() - s_sound_toast_until_ms) >= 0) {
+    s_sound_toast_until_ms = 0;
+  }
+  if (s_sound_toast_drawn != (s_sound_toast_until_ms != 0)) {
+    markRadarRectDirty(soundToastRect());
+  }
+  // Alert Sound can also change on settings page 3 or the web page.
+  if (s_mute_icon_drawn != !hardware::buzzerEnabled()) {
+    markRadarRectDirty(muteIconRect());
+  }
+}
+#endif
 
 size_t radarDisplayInRangeAircraftCount() { return inRangeAircraftCount(); }
 

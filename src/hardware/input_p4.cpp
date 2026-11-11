@@ -19,6 +19,8 @@ volatile int16_t s_tap_x = -1;
 volatile int16_t s_tap_y = -1;
 volatile SwipeGesture s_swipe_pending = SwipeNone;
 volatile int8_t s_pinch_pending = 0;
+volatile int16_t s_long_x = -1;
+volatile int16_t s_long_y = -1;
 
 uint8_t s_gt_addr = 0;
 bool s_touch_ready = false;
@@ -29,6 +31,14 @@ int16_t s_touch_start_y = 0;
 int16_t s_touch_last_x = 0;
 int16_t s_touch_last_y = 0;
 unsigned long s_last_poll_ms = 0;
+
+// Long-press: one finger held still for kLongPressMs. It fires while the finger is
+// still down (so the user gets feedback without lifting) and then ends tracking, so
+// the release is neither a tap nor a swipe. Moving more than kLongPressSlopPx first
+// turns the touch back into an ordinary tap/swipe candidate for good.
+constexpr unsigned long kLongPressMs = 900;
+unsigned long s_touch_down_ms = 0;
+bool s_touch_moved = false;
 
 // Two-finger pinch: one step each time the finger spacing grows or shrinks by
 // kPinchStepRatio from where the last step fired. A pinch never also counts as a
@@ -43,6 +53,8 @@ constexpr unsigned long kPostPinchTapLockMs = 400;
 
 // S3 boards use 70 px on a 360–390 px screen; keep the same physical swipe length.
 constexpr int kSwipeMinPx = 70 * LCD_WIDTH / 360;
+// Finger jitter allowed during a long-press (~3 mm on the 4C).
+constexpr int kLongPressSlopPx = kSwipeMinPx / 4;
 constexpr unsigned long kPollIntervalMs = 15;
 
 constexpr uint16_t kGtRegStatus = 0x814E;
@@ -136,6 +148,8 @@ void trackPinch(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
     portENTER_CRITICAL(&s_input_mux);
     s_tap_x = -1;
     s_tap_y = -1;
+    s_long_x = -1;
+    s_long_y = -1;
     s_swipe_pending = SwipeNone;
     portEXIT_CRITICAL(&s_input_mux);
     return;
@@ -225,15 +239,42 @@ void pollTouchGt911() {
     s_touch_last_x = x;
     s_touch_last_y = y;
     s_touch_tracking = true;
+    s_touch_down_ms = millis();
+    s_touch_moved = false;
     hardware::buzzerClick();
   } else if (down && s_touch_tracking) {
     s_touch_last_x = x;
     s_touch_last_y = y;
+    if (std::abs(x - s_touch_start_x) > kLongPressSlopPx ||
+        std::abs(y - s_touch_start_y) > kLongPressSlopPx) {
+      s_touch_moved = true;
+    }
   } else if (!down && s_touch_was_down && s_touch_tracking) {
     finishTouchGesture();
     s_touch_tracking = false;
   }
   s_touch_was_down = down;
+}
+
+/** Fire a long-press once the finger has been held still long enough. Runs every poll,
+ *  not only on fresh touch frames, so a perfectly still finger still counts. */
+void checkLongPress() {
+  if (!s_touch_tracking || !s_touch_was_down || s_touch_moved || s_pinching) {
+    return;
+  }
+  if (millis() - s_touch_down_ms < kLongPressMs) {
+    return;
+  }
+  // A touch that started right after a pinch is a leftover finger, not a gesture.
+  if (s_pinch_end_ms != 0 && s_touch_down_ms - s_pinch_end_ms < kPostPinchTapLockMs) {
+    s_touch_tracking = false;
+    return;
+  }
+  s_touch_tracking = false;  // the release is not a tap or swipe
+  portENTER_CRITICAL(&s_input_mux);
+  s_long_x = s_touch_start_x;
+  s_long_y = s_touch_start_y;
+  portEXIT_CRITICAL(&s_input_mux);
 }
 
 }  // namespace
@@ -250,6 +291,7 @@ void inputPoll() {
   }
   s_last_poll_ms = now;
   pollTouchGt911();
+  checkLongPress();
 }
 
 int8_t inputConsumeEncoderDelta() { return 0; }
@@ -267,6 +309,19 @@ bool inputConsumeScreenTap(int16_t* x, int16_t* y) {
   }
   portEXIT_CRITICAL(&s_input_mux);
   return tap;
+}
+
+bool inputConsumeLongPress(int16_t* x, int16_t* y) {
+  portENTER_CRITICAL(&s_input_mux);
+  const bool hit = s_long_x >= 0 && s_long_y >= 0;
+  if (hit) {
+    if (x != nullptr) *x = s_long_x;
+    if (y != nullptr) *y = s_long_y;
+    s_long_x = -1;
+    s_long_y = -1;
+  }
+  portEXIT_CRITICAL(&s_input_mux);
+  return hit;
 }
 
 int8_t inputConsumePinchStep() {
@@ -291,6 +346,8 @@ void inputDiscardPendingInteractions() {
   s_pinch_pending = 0;
   s_tap_x = -1;
   s_tap_y = -1;
+  s_long_x = -1;
+  s_long_y = -1;
   portEXIT_CRITICAL(&s_input_mux);
 }
 

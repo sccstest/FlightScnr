@@ -252,6 +252,18 @@ void buzzerSetEnabled(bool enabled) {
 #endif
 }
 
+#if FLIGHTSCNR_HAS_SPEAKER
+bool buzzerToggleAlertSound() {
+  s_enabled = !s_enabled;
+  persistSettings();
+  Serial.printf("Alert sound: %s (long-press)\n", s_enabled ? "on" : "off");
+  if (s_enabled) {
+    buzzerPlayChime(chime::Kind::Confirm);
+  }
+  return s_enabled;
+}
+#endif
+
 void buzzerToneStep(int8_t delta) {
 #if FLIGHTSCNR_HAS_HAPTIC
   (void)delta;

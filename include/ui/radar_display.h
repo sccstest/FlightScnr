@@ -18,6 +18,13 @@ enum class RadarLinkStatus : uint8_t {
 void radarDisplaySetLinkStatus(RadarLinkStatus status);
 RadarLinkStatus radarDisplayLinkStatus();
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** One-touch mute: show the centered "Sound on" / "Sound off" toast for ~1.5 s. */
+void radarDisplayShowSoundToast(bool sound_on);
+/** Expire the toast and repaint the muted icon when Alert Sound changes. Call from loop. */
+void radarDisplayTickSoundOverlay();
+#endif
+
 /** Draw the static sonar/radar grid (black disc, green overlay, labels). */
 void radarDisplayDraw();
 

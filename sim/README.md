@@ -51,6 +51,9 @@ The first build downloads SDL2 2.32.10 (the official MinGW dev package) into
 or `pio run -e sim` and then `.pio\build\sim\program.exe --lat … --lon …`.
 
 - Click = tap. Drag = swipe (the same 140 px threshold as the device).
+- **Hold the mouse button still for about a second** = long-press. On the radar it
+  toggles Alert Sound (one-touch mute), shows a "Sound off" / "Sound on" toast, and
+  keeps a small crossed-out speaker at the left edge while muted.
 - **F12** saves a PNG screenshot to `sim_data/`. **Esc** quits.
 - `--scale 0.8` makes the window smaller. Touch coordinates still map to the 720×720 panel.
 
@@ -99,6 +102,8 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 ```
 
 - `--tap SEC:X:Y` and `--swipe SEC:X1:Y1:X2:Y2` script a finger, in panel pixels.
+- `--longpress SEC:X:Y` holds a finger still at X,Y for 1.2 s (the long-press fires at
+  0.9 s). On the radar that toggles Alert Sound.
 - `--shot SEC` saves `sim_data/shot-<SEC>s.png`.
 - `--exit-after SEC` closes the simulator.
 - `--hidden` runs without a visible window (screenshots still work), so a stray

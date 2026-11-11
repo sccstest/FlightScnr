@@ -102,6 +102,12 @@ constexpr Note kClick[] = {
     {0.00f, 1800.0f, 1800.0f, 0, 0.6f, 0, 0.006f, Timbre::Soft},
 };
 
+// Sound back on: a quick, light two-note rise (shorter than any alert chime).
+constexpr Note kConfirm[] = {
+    {0.00f, E5, E5, 0, 0.70f, 0, 0.07f, Timbre::Bell},
+    {0.08f, A5, A5, 0, 0.80f, 0, 0.12f, Timbre::Bell},
+};
+
 #define FS_PATTERN(arr, secs) Pattern{arr, sizeof(arr) / sizeof(arr[0]), secs}
 
 Pattern patternFor(Kind kind) {
@@ -113,6 +119,7 @@ Pattern patternFor(Kind kind) {
     case Kind::Overhead:   return FS_PATTERN(kOverhead, 1.35f);
     case Kind::Emergency:  return FS_PATTERN(kEmergency, 1.50f);
     case Kind::Click:      return FS_PATTERN(kClick, 0.03f);
+    case Kind::Confirm:    return FS_PATTERN(kConfirm, 0.45f);
   }
   return FS_PATTERN(kTracked, 1.20f);
 }
@@ -248,6 +255,7 @@ const char* name(Kind kind) {
     case Kind::Overhead:   return "overhead";
     case Kind::Emergency:  return "emergency";
     case Kind::Click:      return "click";
+    case Kind::Confirm:    return "confirm";
   }
   return "?";
 }

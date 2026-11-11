@@ -1487,6 +1487,18 @@ void handleInput() {
   }
   handleNavigation();
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // One-touch mute: long-press anywhere on the radar flips Alert Sound (settings
+  // page 3). The touch that long-pressed produces no tap, so no flight detail opens.
+  if (inputConsumeLongPress(nullptr, nullptr) && g_screen == AppScreen::Radar) {
+    ui::radarDisplayShowSoundToast(hardware::buzzerToggleAlertSound());
+    return;
+  }
+  if (g_screen == AppScreen::Radar) {
+    ui::radarDisplayTickSoundOverlay();
+  }
+#endif
+
   if (g_screen == AppScreen::Radar) {
     int16_t tx = 0;
     int16_t ty = 0;
@@ -2268,7 +2280,11 @@ void loop() {
   tickOffHours();
   if (g_off_hours_active) {
     inputPoll();
-    if (inputConsumeKnobPress() || inputConsumeScreenTap(nullptr, nullptr)) {
+    if (inputConsumeKnobPress() || inputConsumeScreenTap(nullptr, nullptr)
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        || inputConsumeLongPress(nullptr, nullptr)  // a held finger still wakes it
+#endif
+    ) {
       g_off_hours_active = false;
       if (services::offhours::mode() == services::offhours::Mode::DisplayOff) {
         displayWake();
