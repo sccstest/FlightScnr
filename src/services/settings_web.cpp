@@ -914,16 +914,30 @@ void handleSettingsPage() {
             "<p class=\"hint\">Aircraft alerts show a thick red ring on the outer "
             "edge for 10 seconds. Vibration is only for taps and knob turns.</p>");
 #else
-  appendRaw(page, kSettingsPageCap, &used,
-            "<details class=\"card\"><summary><span class=\"ico\">&#9835;</span>Sound"
-            "<span class=\"sum\">UI beep</span><span class=\"chev\">&#9656;</span>"
-            "</summary><div class=\"body\">");
-  appendToggle(page, kSettingsPageCap, &used, "ui_beep", "UI beep on touch and knob",
+#if FLIGHTSCNR_HAS_SPEAKER
+  constexpr const char* kSoundSum = "alert chimes";
+  constexpr const char* kSoundToggle = "Alert chimes on the speaker";
+  constexpr const char* kSoundLevel = "Chime volume (A quiet &ndash; E loud)";
+#else
+  constexpr const char* kSoundSum = "UI beep";
+  constexpr const char* kSoundToggle = "UI beep on touch and knob";
+  constexpr const char* kSoundLevel = "Beep tone";
+#endif
+  {
+    const int n = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<details class=\"card\"><summary><span class=\"ico\">&#9835;</span>Sound"
+        "<span class=\"sum\">%s</span><span class=\"chev\">&#9656;</span>"
+        "</summary><div class=\"body\">",
+        kSoundSum);
+    appendClamped(page, kSettingsPageCap, &used, n);
+  }
+  appendToggle(page, kSettingsPageCap, &used, "ui_beep", kSoundToggle,
                hardware::buzzerEnabled());
   const char beep_tone = hardware::buzzerToneLetter();
   const int beep_n = snprintf(
       page + used, kSettingsPageCap - used,
-      "<label for=\"beep_tone\">Beep tone</label>"
+      "<label for=\"beep_tone\">%s</label>"
       "<select id=\"beep_tone\" name=\"beep_tone\">"
       "<option value=\"A\"%s>A</option>"
       "<option value=\"B\"%s>B</option>"
@@ -931,7 +945,7 @@ void handleSettingsPage() {
       "<option value=\"D\"%s>D</option>"
       "<option value=\"E\"%s>E</option>"
       "</select>",
-      beep_tone == 'A' ? " selected" : "", beep_tone == 'B' ? " selected" : "",
+      kSoundLevel, beep_tone == 'A' ? " selected" : "", beep_tone == 'B' ? " selected" : "",
       beep_tone == 'C' ? " selected" : "", beep_tone == 'D' ? " selected" : "",
       beep_tone == 'E' ? " selected" : "");
   appendClamped(page, kSettingsPageCap, &used, beep_n);

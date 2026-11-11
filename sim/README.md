@@ -21,6 +21,7 @@ the UI and data features without the board.
 | LittleFS | `sim_data/littlefs/` |
 | FreeRTOS tasks, semaphores, esp_timer | `std::thread`, a mutex and condition variable |
 | Backlight PWM (GPIO 26) | window brightness |
+| ES8311 codec + speaker (I2S) | SDL audio on the PC's default output |
 
 **Left out:** the Wi-Fi setup portal (`wifi_setup.cpp`), the settings web page
 (`settings_web.cpp`) and OTA (`ota_github.cpp`) are stubbed in `sim/src/sim_stubs.cpp`.
@@ -54,6 +55,20 @@ or `pio run -e sim` and then `.pio\build\sim\program.exe --lat … --lon …`.
 - `--scale 0.8` makes the window smaller. Touch coordinates still map to the 720×720 panel.
 
 - **Mouse wheel** = two-finger pinch at the cursor: up spreads (zoom in), down squeezes.
+
+### Alert sounds
+
+The 4C plays a short chime through its speaker when an aircraft alert fires. The
+simulator plays the same chimes (same synthesizer, `src/hardware/chime_synth.cpp`)
+through the PC's speakers via SDL audio.
+
+- **F1–F6** play the tracked (watch list), military, helicopter, private, overhead and
+  emergency chimes at the current volume.
+- Settings page 3: **Alert Sound** on/off and **Chime Volume** A–E (both play a preview).
+- `--chime SEC:NAME` plays one from a script (`tracked`, `military`, `helicopter`,
+  `private`, `overhead`, `emergency`, `click`).
+- `program.exe --dump-chimes DIR` writes every chime as `chime-<name>.wav` and exits.
+- If Windows has no audio output, the simulator runs silently.
 
 ### Map under the radar
 

@@ -4,12 +4,16 @@
 //   program.exe [--lat 27.95 --lon -82.46] [--scale 0.8] [--data DIR]
 //               [--tap SEC:X:Y]... [--swipe SEC:X1:Y1:X2:Y2]... [--shot SEC]...
 //               [--pinch SEC:spread|squeeze]...
-//               [--exit-after SEC]
+//               [--chime SEC:NAME]... [--exit-after SEC]
+//   program.exe --dump-chimes DIR      (write every alert chime as a WAV, then exit)
 //
 // --tap / --swipe script a finger at a time after start (panel pixels, 0-719);
 // --shot saves sim_data/shot-<SEC>s.png. All three can be repeated.
+// --chime plays an alert chime (tracked, military, helicopter, private, overhead,
+// emergency, click) at the current volume, like the F1-F6 keys.
 //
-// Keys: F12 = save PNG screenshot to sim_data/, Esc = quit.
+// Keys: F1-F6 = play the tracked / military / helicopter / private / overhead /
+// emergency chime. F12 = save PNG screenshot to sim_data/, Esc = quit.
 // Mouse wheel = two-finger pinch at the cursor (wheel up = spread = zoom in).
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -29,7 +33,9 @@
 #include <thread>
 #include <vector>
 
+#include "hardware/buzzer.h"
 #include "hardware/pin_config.h"
+#include "sim_audio.h"
 #include "sim_state.h"
 
 void setup();
@@ -203,7 +209,7 @@ double argDouble(int argc, char** argv, const char* name, double def) {
 
 struct ScriptEvent {
   double at;
-  enum Kind { Down, Move, Up, Shot, PinchSpread, PinchSqueeze } kind;
+  enum Kind { Down, Move, Up, Shot, PinchSpread, PinchSqueeze, Chime } kind;
   int x;
   int y;
 };
@@ -231,6 +237,14 @@ std::vector<ScriptEvent> parseScript(int argc, char** argv) {
         ev.push_back({t, strcmp(how, "squeeze") == 0 ? ScriptEvent::PinchSqueeze
                                                      : ScriptEvent::PinchSpread,
                       LCD_WIDTH / 2, LCD_HEIGHT / 2});
+      }
+    } else if (strcmp(argv[i], "--chime") == 0) {
+      char name[16] = {};
+      hardware::chime::Kind k;
+      if (sscanf(v, "%lf:%15s", &t, name) == 2 && sim::chimeFromName(name, &k)) {
+        ev.push_back({t, ScriptEvent::Chime, static_cast<int>(k), 0});
+      } else {
+        fprintf(stderr, "[sim] bad --chime %s (want SEC:military etc.)\n", v);
       }
     } else if (strcmp(argv[i], "--shot") == 0 || strcmp(argv[i], "--screenshot-after") == 0) {
       ev.push_back({atof(v), ScriptEvent::Shot, 0, 0});
@@ -303,11 +317,16 @@ int main(int argc, char** argv) {
   std::vector<ScriptEvent> script = parseScript(argc, argv);
   const double exit_after = argDouble(argc, argv, "--exit-after", -1);
 
+  if (const char* dir = argStr(argc, argv, "--dump-chimes")) {
+    return sim::dumpChimes(dir);
+  }
+
   SDL_SetMainReady();
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
     return 1;
   }
+  sim::audioOpen();  // before setup(): buzzerInit() asks whether audio is there
   const int panel = LCD_WIDTH;
   const int win = static_cast<int>(panel * scale);
   SDL_Window* window =
@@ -365,6 +384,12 @@ int main(int argc, char** argv) {
         case SDL_KEYDOWN:
           if (e.key.keysym.sym == SDLK_ESCAPE) running = false;
           if (e.key.keysym.sym == SDLK_F12) screenshot();
+          if (e.key.keysym.sym >= SDLK_F1 && e.key.keysym.sym <= SDLK_F6) {
+            // F1..F6 follow chime::Kind order: tracked, military, helicopter, private,
+            // overhead, emergency.
+            hardware::buzzerPlayChime(
+                static_cast<hardware::chime::Kind>(e.key.keysym.sym - SDLK_F1));
+          }
           break;
         case SDL_MOUSEBUTTONDOWN:
           if (e.button.button == SDL_BUTTON_LEFT) sim::setTouch(true, e.button.x, e.button.y);
@@ -410,6 +435,8 @@ int main(int argc, char** argv) {
         char name[48];
         snprintf(name, sizeof(name), "shot-%gs.png", ev.at);
         screenshot(name);
+      } else if (ev.kind == ScriptEvent::Chime) {
+        hardware::buzzerPlayChime(static_cast<hardware::chime::Kind>(ev.x));
       } else if (ev.kind == ScriptEvent::PinchSpread || ev.kind == ScriptEvent::PinchSqueeze) {
         pinch.start(secs, ev.x, ev.y, ev.kind == ScriptEvent::PinchSpread);
       } else {
@@ -422,6 +449,7 @@ int main(int argc, char** argv) {
   }
 
   sim::requestQuit();
+  sim::audioClose();
   SDL_DestroyWindow(window);
   SDL_Quit();
   fflush(stdout);

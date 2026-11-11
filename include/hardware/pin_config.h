@@ -21,6 +21,11 @@
 #include "boards/tencoder_pro.h"
 #endif
 
+/* Boards with an I2S codec + speaker (alert chimes) set this to 1 in their header. */
+#ifndef FLIGHTSCNR_HAS_SPEAKER
+#define FLIGHTSCNR_HAS_SPEAKER 0
+#endif
+
 /* Boards without a rotary encoder (touch only) set this to 0 in their header. */
 #ifndef FLIGHTSCNR_HAS_ENCODER
 #define FLIGHTSCNR_HAS_ENCODER 1

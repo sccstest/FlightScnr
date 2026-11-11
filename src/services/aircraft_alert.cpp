@@ -453,6 +453,7 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
   bool fired_private = false;
   bool fired_other = false;
   bool fired_overhead = false;
+  bool fired_emergency = false;
   for (size_t i = 0; i < count; ++i) {
     if (!shouldAlert(list[i])) {
       continue;
@@ -479,6 +480,9 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
     } else {
       fired_other = true;  // watch list / emergency
     }
+    if (s_emrg_enabled && list[i].isEmergencySquawk()) {
+      fired_emergency = true;  // the urgent chime wins over any other kind
+    }
     {
       float t = 0.0f;
       float miss = 0.0f;
@@ -496,14 +500,27 @@ void checkNewAircraft(const services::adsb::Aircraft* list, size_t count) {
   }
   if (fired) {
     // Priority when several fire at once: military, watch/emergency, helicopter, private.
-    ui::alertFlashStart(fired_military ? ui::AlertFlashKind::Military
-                        : fired_other  ? ui::AlertFlashKind::Tracked
-                        : fired_heli   ? ui::AlertFlashKind::Helicopter
-                        : fired_private ? ui::AlertFlashKind::Private
-                        : fired_overhead ? ui::AlertFlashKind::Overhead
-                                         : ui::AlertFlashKind::Tracked);
+    const ui::AlertFlashKind kind = fired_military  ? ui::AlertFlashKind::Military
+                                    : fired_other   ? ui::AlertFlashKind::Tracked
+                                    : fired_heli    ? ui::AlertFlashKind::Helicopter
+                                    : fired_private ? ui::AlertFlashKind::Private
+                                    : fired_overhead ? ui::AlertFlashKind::Overhead
+                                                     : ui::AlertFlashKind::Tracked;
+    ui::alertFlashStart(kind);
 #if !FLIGHTSCNR_HAS_HAPTIC
-    hardware::buzzerAlert();
+    // Speaker boards play the matching chime; piezo boards ignore the kind (triple beep).
+    using hardware::chime::Kind;
+    Kind chime = Kind::Emergency;
+    if (!fired_emergency) {
+      switch (kind) {
+        case ui::AlertFlashKind::Military:   chime = Kind::Military; break;
+        case ui::AlertFlashKind::Helicopter: chime = Kind::Helicopter; break;
+        case ui::AlertFlashKind::Private:    chime = Kind::Private; break;
+        case ui::AlertFlashKind::Overhead:   chime = Kind::Overhead; break;
+        case ui::AlertFlashKind::Tracked:    chime = Kind::Tracked; break;
+      }
+    }
+    hardware::buzzerAlert(chime);
 #endif
   }
 }

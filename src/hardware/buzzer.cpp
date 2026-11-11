@@ -13,6 +13,9 @@
 #if FLIGHTSCNR_HAS_HAPTIC
 #include "SensorDRV2605.hpp"
 #endif
+#if FLIGHTSCNR_HAS_SPEAKER
+#include "hardware/audio_out.h"
+#endif
 
 namespace hardware {
 
@@ -28,7 +31,13 @@ constexpr uint16_t kToneHzDefault = 2000;
 
 constexpr char kToneLetters[] = {'A', 'B', 'C', 'D', 'E'};
 constexpr size_t kToneLevelCount = sizeof(kToneLetters) / sizeof(kToneLetters[0]);
+#if FLIGHTSCNR_HAS_SPEAKER
+constexpr uint8_t kDefaultToneIndex = 2;  // C: middle chime volume
+// Chime gain per volume step A..E (peak relative to full scale, ~5 dB apart).
+constexpr float kSpeakerGains[] = {0.10f, 0.18f, 0.32f, 0.56f, 1.00f};
+#else
 constexpr uint8_t kDefaultToneIndex = 0;  // A
+#endif
 
 // LilyGO T-Encoder-Pro factory (Lvgl_CIT): ledcAttach @ 2000 Hz, duty 127 (~50%),
 // ledcChangeFrequency per step (1500/2000/2500 Hz). Never use duty 255 (DC, no tone).
@@ -164,6 +173,10 @@ void startTone() {
     return;
   }
 
+#if FLIGHTSCNR_HAS_SPEAKER
+  return;  // speaker boards: chimes for alerts only, no tick on every tap
+#endif
+
 #if FLIGHTSCNR_HAS_HAPTIC
   if (s_haptic_ready) {
     hapticFireClick();
@@ -185,6 +198,9 @@ void startTone() {
 }  // namespace
 
 void buzzerInit() {
+#if FLIGHTSCNR_HAS_SPEAKER
+  audio_out::init();
+#endif
 #if FLIGHTSCNR_HAS_BUZZER
   ledcSetup(kLedcChannel, kToneHzDefault, kLedcResolution);
   ledcAttachPin(BUZZER_DATA, kLedcChannel);
@@ -226,6 +242,11 @@ void buzzerSetEnabled(bool enabled) {
   persistSettings();
 #if FLIGHTSCNR_HAS_HAPTIC
   Serial.printf("Vibration: %s\n", s_enabled ? "on" : "off");
+#elif FLIGHTSCNR_HAS_SPEAKER
+  Serial.printf("Alert sound: %s\n", s_enabled ? "on" : "off");
+  if (s_enabled) {
+    buzzerPlayChime(chime::Kind::Tracked);  // preview at the current volume
+  }
 #else
   Serial.printf("UI beep: %s\n", s_enabled ? "on" : "off");
 #endif
@@ -248,8 +269,13 @@ void buzzerToneStep(int8_t delta) {
   }
   s_tone_index = static_cast<uint8_t>(idx);
   persistSettings();
+#if FLIGHTSCNR_HAS_SPEAKER
+  Serial.printf("Chime volume: %c\n", buzzerToneLetter());
+  buzzerPlayChime(chime::Kind::Tracked);  // preview at the new volume
+#else
   Serial.printf("Beep tone: %c\n", buzzerToneLetter());
   buzzerClick();
+#endif
 #endif
 }
 
@@ -284,16 +310,32 @@ void buzzerPoll() {
 #endif
 }
 
-void buzzerAlert() {
+void buzzerAlert(chime::Kind kind) {
 #if FLIGHTSCNR_HAS_HAPTIC
   // Aircraft alerts use a red screen flash, not the vibration motor.
+  (void)kind;
   return;
 #endif
   if (!s_enabled) {
     return;
   }
+#if FLIGHTSCNR_HAS_SPEAKER
+  buzzerPlayChime(kind);
+#else
+  (void)kind;
   s_alert_beeps_remaining = kAlertBeepCount;
   s_alert_next_ms = 0;
+#endif
+}
+
+void buzzerPlayChime(chime::Kind kind) {
+#if FLIGHTSCNR_HAS_SPEAKER
+  const size_t idx = s_tone_index < kToneLevelCount ? s_tone_index : kDefaultToneIndex;
+  Serial.printf("[audio] chime %s volume %c\n", chime::name(kind), kToneLetters[idx]);
+  audio_out::playChime(kind, kSpeakerGains[idx]);
+#else
+  (void)kind;
+#endif
 }
 
 void saveBeepEnabledFromForm(const char* checkbox_value) {

@@ -278,6 +278,11 @@ void buildColorsStrings(char* sweep_line, size_t sweep_len, char* blip_line,
 #if FLIGHTSCNR_HAS_HAPTIC
   snprintf(beep_line, beep_len, "Vibration: %s",
            hardware::buzzerEnabled() ? "on" : "off");
+#elif FLIGHTSCNR_HAS_SPEAKER
+  snprintf(beep_line, beep_len, "Alert Sound: %s",
+           hardware::buzzerEnabled() ? "on" : "off");
+  snprintf(beep_tone_line, beep_tone_len, "Chime Volume: %c",
+           hardware::buzzerToneLetter());
 #else
   snprintf(beep_line, beep_len, "UI Beep: %s",
            hardware::buzzerEnabled() ? "on" : "off");

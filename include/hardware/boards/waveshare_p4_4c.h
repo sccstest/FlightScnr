@@ -9,7 +9,7 @@
  * - ESP32-P4NRW32: 32 MB PSRAM, 32 MB flash. Wi-Fi via ESP32-C6 over SDIO (ESP-Hosted).
  * - Panel: JD9365-class DSI controller, 1500 Mbps/lane, 80 MHz DPI clock, RGB565 framebuffer.
  * - Touch: GT9271 (GT911-compatible register map) on I2C, polled (INT/RST not wired to driver).
- * - Audio: ES8311 codec + PA, 8 Ω speaker on PH2.0 header (not used yet — no buzzer).
+ * - Audio: ES8311 codec + PA, 8 Ω speaker on PH2.0 header: alert chimes (no piezo buzzer).
  * - No rotary encoder or knob button: all navigation is touch.
  */
 
@@ -23,6 +23,8 @@
 #define FLIGHTSCNR_HAS_ENCODER 0
 #define FLIGHTSCNR_HAS_BUZZER 0
 #define FLIGHTSCNR_HAS_HAPTIC 0
+/* ES8311 + speaker: alert chimes (src/hardware/audio_out_p4.cpp). */
+#define FLIGHTSCNR_HAS_SPEAKER 1
 #define FLIGHTSCNR_HAS_LCD_VCI_EN 0
 #define FLIGHTSCNR_HAS_LCD_BACKLIGHT_PWM 1
 #define FLIGHTSCNR_PANEL_AUTODETECT 0
@@ -64,7 +66,8 @@
 /** Only rotation 0 is implemented by the framebuffer driver so far. */
 #define FLIGHTSCNR_DISPLAY_ROTATION 0
 
-/* Speaker path (for later: alert chimes). */
+/* Speaker path: ES8311 codec (I2C 0x18 on the shared bus) + I2S + PA. */
+#define ES8311_I2C_ADDRESS 0x18
 #define AUDIO_PA_EN 53
 #define AUDIO_I2S_MCLK 13
 #define AUDIO_I2S_BCLK 12
