@@ -18,6 +18,7 @@
 #include "services/aircraft_type_lookup.h"
 #include "services/https_lock.h"
 #include "services/radar_basemap.h"
+#include "services/rain_radar.h"
 #include "geo/flat_earth.h"
 #include "services/map_center.h"
 #include "ui/aircraft_symbol.h"
@@ -1214,6 +1215,21 @@ void drawStaticGrid(GfxRef& gfx) {
   gfx.setTextDatum(TextDatum::TopLeft);
 }
 
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** Small "Rain 9:05 AM" at the right edge, just below the E cardinal's spot. */
+void drawRainTimestamp() {
+  char label[24];
+  if (!services::rain::labelText(label, sizeof(label))) {
+    return;
+  }
+  static const UiTextStyle s_rain_style = pickTextSizeForHeight(ui::sc(6), 0, 2);
+  displayFontApply(*s_draw, s_rain_style);
+  s_draw->setTextDatum(TextDatum::MiddleRight);
+  s_draw->setTextColor(radar::kColorGrid);
+  s_draw->drawString(label, radar::kSize - ui::sc(10), radar::kCenterY + ui::sc(22));
+}
+#endif
+
 bool rebuildBackgroundSprite() {
   const unsigned long t0 = millis();
   if (!s_bg_ready) {
@@ -1229,17 +1245,34 @@ bool rebuildBackgroundSprite() {
   const bool painted_map =
       pixels != nullptr &&
       services::basemap::blitRgb565(pixels, radar::kSize, radar::kSize);
-  if (painted_map) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Live rain sits between the map (or plain background) and the grid/planes.
+  if (!painted_map && pixels != nullptr) {
+    s_bg.gfx().fillScreen(radar::kColorBackground);
+  }
+  const bool painted_rain =
+      pixels != nullptr && services::rain::blendInto(pixels, radar::kSize, radar::kSize);
+#else
+  const bool painted_rain = false;
+#endif
+  if (painted_map || painted_rain) {
     initLabelMetrics();
     const DrawScope scope(s_bg.gfx());
     const int cx = radar::kCenterX;
     const int cy = radar::kCenterY;
     const int grid_r = radar::kGridOuterRadius;
     drawGridForMode(cx, cy, grid_r);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    drawRainTimestamp();
+#endif
     s_bg.gfx().setTextDatum(TextDatum::TopLeft);
+  }
+  if (painted_map) {
     s_basemap_bg_stale = false;
   } else {
-    drawStaticGrid(s_bg.gfx());
+    if (!painted_rain) {
+      drawStaticGrid(s_bg.gfx());
+    }
     // Keep stale if a map is expected but decode was deferred (HTTPS/heap).
     if (!services::basemap::wantsDisplay()) {
       s_basemap_bg_stale = false;

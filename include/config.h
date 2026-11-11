@@ -113,6 +113,7 @@ constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when headin
 constexpr bool kFactoryAlertOverheadAny = true;
 constexpr bool kFactoryOverheadSign = true;     // closest-plane banner on the radar
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
+constexpr bool kFactoryRainOverlay = true;      // live NEXRAD rain over the radar (keyless IEM)
 #else
 constexpr double kFactoryLatitude = 37.61977;
 constexpr double kFactoryLongitude = -122.37227;
