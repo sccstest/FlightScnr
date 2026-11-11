@@ -26,6 +26,24 @@ void infoScreenCycleDisplayFocus();
  */
 int8_t infoScreenTouch(int16_t x, int16_t y);
 
+/** Result of a tap on settings page 1 (boards without a knob button). */
+enum class MainPageTap : uint8_t {
+  None,            ///< Not on the Reset Wi-Fi row.
+  ResetArmed,      ///< First tap: row now reads "Tap again to reset" (redraw).
+  ResetConfirmed,  ///< Second tap within 5 s: caller wipes Wi-Fi and reboots.
+  Cancelled,       ///< Tapped elsewhere while armed (redraw).
+};
+
+/**
+ * Touch tap on settings page 1. On boards without a knob button (Waveshare 4C and
+ * Knob 1.8) the page has a "Reset Wi-Fi" row with a tap-again confirm, the touch
+ * stand-in for the 5-second knob hold. Always None on boards with a knob button.
+ */
+MainPageTap infoScreenMainTap(int16_t x, int16_t y);
+
+/** True once when an armed Wi-Fi reset expires unconfirmed (caller redraws). */
+bool infoScreenWifiResetTimedOut();
+
 /** True when Display page focus is Facing (dial opens orientation adjust). */
 bool infoScreenFacingFocused();
 

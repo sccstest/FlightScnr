@@ -3,6 +3,7 @@
 //  - settings_web.cpp (on-device web server)       -> set things with sim flags / sim_data/nvs.txt
 //  - ota_github.cpp   (firmware self-update)       -> nothing to flash
 #include <Arduino.h>
+#include <WiFi.h>
 
 #include "services/ota_github.h"
 #include "services/settings_web.h"
@@ -16,7 +17,9 @@ bool wifiSetupConnect() {
   Serial.println("[sim] Wi-Fi: using the PC's network");
   return true;
 }
-bool wifiReconnect() { return true; }
+// With --offline / --wifi-down the shim's WiFi.status() reports disconnected;
+// "reconnecting" succeeds once that window ends.
+bool wifiReconnect() { return WiFi.status() == WL_CONNECTED; }
 bool wifiSoftRecycle() { return true; }
 uint8_t wifiNetsCount() { return 1; }
 bool wifiNetsGetSsid(uint8_t index, char* out, size_t out_len) {

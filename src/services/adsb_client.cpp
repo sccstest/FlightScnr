@@ -380,6 +380,10 @@ volatile bool s_bg_job_busy = false;
 unsigned long s_last_fetch_ok_ms = 0;
 unsigned long s_fetch_busy_since_ms = 0;
 uint32_t s_fetch_fail_streak = 0;
+// Failed polls since the last good one, for the on-screen "feed down" badge.
+// Unlike s_fetch_fail_streak it also counts 429s and is not cleared by a WiFi
+// recycle, so the badge doesn't blink off every time TLS recovery runs.
+uint32_t s_feed_fail_streak = 0;
 
 // adsb.fi returned HTTP 429 (rate limited). Tracked separately from the TLS
 // fail streak: rate limiting must not trigger a WiFi recycle, just a back-off.
@@ -1200,11 +1204,15 @@ void fetchWorkerTask(void* /*arg*/) {
       if (ok) {
         s_last_fetch_ok_ms = millis();
         s_fetch_fail_streak = 0;
+        s_feed_fail_streak = 0;
         s_fetch_rate_limited = false;
         s_rate_limit_until_ms = 0;
         s_aircraft_staging_count = n;
         s_fetch_ready = true;
-      } else if (!s_fetch_rate_limited) {
+      } else if (s_feed_fail_streak < UINT32_MAX) {
+        ++s_feed_fail_streak;
+      }
+      if (!ok && !s_fetch_rate_limited) {
         // Genuine TLS/connection/parse failure feeds the WiFi-recycle streak;
         // a 429 (rate limit) is handled by the back-off timer instead.
         ++s_fetch_fail_streak;
@@ -1319,6 +1327,7 @@ void fetchWatchdog(unsigned long now_ms) {
   s_fetch_ready = false;
   s_fetch_busy_since_ms = 0;
   ++s_fetch_fail_streak;
+  ++s_feed_fail_streak;
   fetchInit();
 }
 
@@ -1338,6 +1347,8 @@ bool rateLimitBackoffActive(unsigned long now_ms) {
 }
 
 void fetchResetFailStreak() { s_fetch_fail_streak = 0; }
+
+bool feedLooksDown() { return s_feed_fail_streak >= config::kFeedDownAfterFails; }
 
 uint32_t fetchTaskStackFreeBytes() {
   if (s_fetch_task == nullptr) {

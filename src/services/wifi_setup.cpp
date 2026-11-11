@@ -1027,14 +1027,28 @@ bool waitForStaAfterPortal() {
   return wifiTryConnectPreferred(true);
 }
 
-bool openConfigPortal(WiFiManager& wm) {
+enum class PortalResult : uint8_t {
+  Connected,       ///< STA link is up (new or saved network).
+  NotConnected,    ///< Portal closed (user exit / save) but no link came up.
+  RetriedSaved,    ///< We closed it to retry saved networks; none connected.
+  FailedToStart,
+};
+
+void releasePortalPage() {
+  if (s_portal_page != nullptr) {
+    heap_caps_free(s_portal_page);
+    s_portal_page = nullptr;
+  }
+}
+
+PortalResult openConfigPortal(WiFiManager& wm) {
   prepareWifiForPortal();
   bootScreenShowPortalHint();
 
   wm.startConfigPortal(services::device_identity::portalApName());
   if (!wm.getConfigPortalActive()) {
     Serial.println("Config portal failed to start");
-    return false;
+    return PortalResult::FailedToStart;
   }
 
   startPortalMdns();
@@ -1042,7 +1056,12 @@ bool openConfigPortal(WiFiManager& wm) {
                 WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap(),
                 ESP.getMaxAllocHeap());
 
+  ensureNetsLoaded();
+  const bool have_saved = s_nets_count > 0;
+  const unsigned long opened_ms = millis();
+  unsigned long last_client_ms = opened_ms;
   unsigned long last_sta_log_ms = 0;
+  bool retry_saved = false;
   while (wm.getConfigPortalActive()) {
     inputPollLongPress();
     if (inputConsumeWifiResetUiCancelled()) {
@@ -1050,27 +1069,51 @@ bool openConfigPortal(WiFiManager& wm) {
     }
     wm.process();
     const unsigned long now = millis();
+    const unsigned stations = static_cast<unsigned>(WiFi.softAPgetStationNum());
+    if (stations > 0) {
+      last_client_ms = now;
+    }
     if (now - last_sta_log_ms >= 5000UL) {
       last_sta_log_ms = now;
-      Serial.printf("[wifi] portal stations=%u heap=%u\n",
-                    static_cast<unsigned>(WiFi.softAPgetStationNum()), ESP.getFreeHeap());
+      Serial.printf("[wifi] portal stations=%u heap=%u\n", stations, ESP.getFreeHeap());
+    }
+    // Saved networks exist (we got here because they failed, e.g. the router was
+    // still booting after a power cut) and nobody is using the portal: close it
+    // now and then to retry them, instead of waiting here forever.
+    if (have_saved && now - last_client_ms >= config::kWifiPortalRetrySavedMs) {
+      Serial.printf("[wifi] portal idle %lus — closing it to retry saved networks\n",
+                    (now - opened_ms) / 1000UL);
+      wm.stopConfigPortal();
+      retry_saved = true;
+      break;
     }
     delay(5);
   }
 
   s_active_wm = nullptr;
-  if (s_portal_page != nullptr) {
-    heap_caps_free(s_portal_page);
-    s_portal_page = nullptr;
+  releasePortalPage();
+  if (retry_saved) {
+    return wifiTryConnectPreferred(true) && wifiLinkUp() ? PortalResult::Connected
+                                                         : PortalResult::RetriedSaved;
   }
-  return waitForStaAfterPortal() && wifiLinkUp();
+  return waitForStaAfterPortal() && wifiLinkUp() ? PortalResult::Connected
+                                                 : PortalResult::NotConnected;
 }
 
 bool runConfigPortalFlow() {
-  WiFiManager wm;
-  configureWifiManager(wm);
-  if (!openConfigPortal(wm) || !wifiLinkUp()) {
+  // Reopen the portal after each unsuccessful saved-network retry, so the device
+  // is always either joinable for setup or back on a saved network.
+  PortalResult result = PortalResult::RetriedSaved;
+  while (result == PortalResult::RetriedSaved) {
+    WiFiManager wm;
+    configureWifiManager(wm);
+    result = openConfigPortal(wm);
     s_active_wm = nullptr;
+    if (result == PortalResult::RetriedSaved) {
+      Serial.println("[wifi] saved networks still unreachable — reopening setup portal");
+    }
+  }
+  if (result != PortalResult::Connected || !wifiLinkUp()) {
     return false;
   }
 

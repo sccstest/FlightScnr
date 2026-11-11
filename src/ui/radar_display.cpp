@@ -651,6 +651,83 @@ size_t visibleAircraftCount() {
   return visible;
 }
 
+// --- Link badge ("No Wi-Fi" / "Flight data offline") -----------------------
+// A pill in the lower part of the scope, drawn over the aircraft layer so it is
+// part of every composed frame. Solid warning colors read on both the dark
+// radar and the light map styles; only the outline and text ink change.
+
+RadarLinkStatus s_link_status = RadarLinkStatus::Ok;
+
+/** Vertical center of the badge: well inside the outer ring, above the "S". */
+int linkBadgeCenterY() { return radar::kCenterY + (radar::kGridOuterRadius * 58) / 100; }
+
+/** Strip the badge can occupy (full width, so either message fits). */
+IntRect linkBadgeStrip() {
+  const int h = ui::sc(56);
+  return IntRect{0, linkBadgeCenterY() - h / 2, radar::kSize, h};
+}
+
+const char* linkBadgeText(RadarLinkStatus status) {
+  switch (status) {
+    case RadarLinkStatus::NoWifi:
+      return "No Wi-Fi";
+    case RadarLinkStatus::FeedDown:
+      return "Flight data offline";
+    default:
+      return nullptr;
+  }
+}
+
+void drawLinkBadge() {
+  const char* text = linkBadgeText(s_link_status);
+  if (text == nullptr) {
+    return;
+  }
+  const UiTextStyle style = displayFontDetail();
+  displayFontApply(*s_draw, style);
+  const int text_h = displayFontHeight(*s_draw, style);
+  const int text_w = s_draw->textWidth(text);
+  const int h = text_h + ui::sc(8);
+  const int r = h / 2;
+  const int dot_r = ui::sc(4);
+  const int dot_gap = ui::sc(7);
+  const int w = text_w + 2 * dot_r + dot_gap + 2 * r;
+  const int x = radar::kCenterX - w / 2;
+  const int y = linkBadgeCenterY() - h / 2;
+
+  label_layout::Box box;
+  box.x = static_cast<int16_t>(x);
+  box.y = static_cast<int16_t>(y);
+  box.w = static_cast<int16_t>(w);
+  box.h = static_cast<int16_t>(h);
+  const bool light = tagSitsOnLightBackground(box);
+  const bool no_wifi = s_link_status == RadarLinkStatus::NoWifi;
+  // Red for no Wi-Fi, amber for a feed outage; slightly deeper on light maps.
+  const uint16_t fill = no_wifi ? (light ? s_draw->color565(190, 30, 30)
+                                         : s_draw->color565(215, 45, 40))
+                                : (light ? s_draw->color565(225, 140, 0)
+                                         : s_draw->color565(255, 170, 20));
+  const uint16_t ink = no_wifi ? s_draw->color565(255, 255, 255) : s_draw->color565(20, 20, 20);
+  const uint16_t outline = light ? s_draw->color565(40, 40, 40) : s_draw->color565(0, 0, 0);
+
+  // Outline, then the pill (rect + round caps).
+  const int o = ui::sc(2);
+  s_draw->fillCircle(x + r, y + r, r + o, outline);
+  s_draw->fillCircle(x + w - r - 1, y + r, r + o, outline);
+  s_draw->fillRect(x + r, y - o, w - 2 * r, h + 2 * o, outline);
+  s_draw->fillCircle(x + r, y + r, r, fill);
+  s_draw->fillCircle(x + w - r - 1, y + r, r, fill);
+  s_draw->fillRect(x + r, y, w - 2 * r, h, fill);
+
+  // Status dot (hollow ring = "not connected"), then the text.
+  const int dot_cx = x + r + dot_r;
+  s_draw->fillCircle(dot_cx, y + r, dot_r, ink);
+  s_draw->fillCircle(dot_cx, y + r, dot_r - ui::sc(2) > 0 ? dot_r - ui::sc(2) : 1, fill);
+  s_draw->setTextColor(ink);
+  s_draw->setTextDatum(TextDatum::MiddleLeft);
+  s_draw->drawString(text, dot_cx + dot_r + dot_gap, y + r);
+}
+
 void drawAircraft() {
   initLabelMetrics();
   resolveAircraftLabels();
@@ -735,6 +812,7 @@ void drawAircraft() {
       drawAircraftTagPlaced(*placement, planes[i]);
     }
   }
+  drawLinkBadge();
 }
 
 void drawCardinalLabel(const char* text, int x, int y, TextDatum datum) {
@@ -1769,6 +1847,20 @@ void radarDisplayRefreshAircraft() {
   s_aircraft_dirty = false;
   s_aircraft_dirty_rect = {};
 }
+
+void radarDisplaySetLinkStatus(RadarLinkStatus status) {
+  if (status == s_link_status) {
+    return;
+  }
+  s_link_status = status;
+  // Repaint the badge strip on the next frame (sweep path or aircraft refresh).
+  const IntRect strip = linkBadgeStrip();
+  s_aircraft_dirty_rect =
+      rectEmpty(s_aircraft_dirty_rect) ? strip : unionRect(s_aircraft_dirty_rect, strip);
+  s_aircraft_dirty = true;
+}
+
+RadarLinkStatus radarDisplayLinkStatus() { return s_link_status; }
 
 size_t radarDisplayInRangeAircraftCount() { return inRangeAircraftCount(); }
 

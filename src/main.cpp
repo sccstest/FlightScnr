@@ -69,6 +69,12 @@ AppScreen g_screen = AppScreen::Radar;
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
+/** Feeds, NTP, routes etc. have been started (needs Wi-Fi once). */
+bool g_online_services_started = false;
+/** First failed adsb.fi DNS probe of the current streak (0 = resolving fine). */
+unsigned long g_adsb_dns_fail_since_ms = 0;
+/** "[wifi] lost" already logged for the current outage. */
+bool g_wifi_loss_logged = false;
 unsigned long g_last_adsb_fetch_ms = 0;
 unsigned long g_last_adsb_ssl_recover_ms = 0;
 unsigned long g_last_tls_proactive_refresh_ms = 0;
@@ -344,6 +350,7 @@ bool adsbDnsReady(unsigned long now) {
   if (WiFi.status() != WL_CONNECTED) {
     s_resolved = false;
     s_next_probe_ms = 0;
+    g_adsb_dns_fail_since_ms = 0;
     return false;
   }
   if (s_resolved) {
@@ -356,6 +363,13 @@ bool adsbDnsReady(unsigned long now) {
   IPAddress ip;
   s_resolved = WiFi.hostByName(config::kAdsbHost, ip);
   s_next_probe_ms = now + (s_resolved ? 60000UL : 1500UL);
+  // No fetch is attempted while DNS fails (Wi-Fi up, internet down), so the
+  // feed's fail streak never grows; remember how long DNS has been failing.
+  if (s_resolved) {
+    g_adsb_dns_fail_since_ms = 0;
+  } else if (g_adsb_dns_fail_since_ms == 0) {
+    g_adsb_dns_fail_since_ms = now != 0 ? now : 1;
+  }
   if (!s_resolved && config::kSerialTraceDebug) {
     Serial.println("[fetch] defer: DNS not ready for " FLIGHTSCNR_ADSB_HOST);
   }
@@ -1376,6 +1390,18 @@ void tickAutoIdleClock() {
     return;
   }
 
+  // While the feed is down the sky looks empty, so the idle clock would hide the
+  // "Flight data offline" badge and the owner would never learn why there are no
+  // planes. Stay on (or go back to) the radar until data flows again.
+  const bool link_down = ui::radarDisplayLinkStatus() != ui::RadarLinkStatus::Ok;
+  if (g_auto_idle_clock && link_down && WiFi.status() == WL_CONNECTED &&
+      (g_screen == AppScreen::Clock || g_screen == AppScreen::Weather)) {
+    returnToRadar(false);
+    Serial.println("Screen: radar (feed down)");
+    logNavContext("radar_feed_down");
+    return;
+  }
+
   const bool idle_pref = ui::displayPrefsAutoIdleClockEnabled();
   const unsigned long radar_vis_age_ms =
       g_radar_visible_since_ms != 0 ? millis() - g_radar_visible_since_ms : 0UL;
@@ -1383,7 +1409,7 @@ void tickAutoIdleClock() {
 
   if (!g_auto_idle_clock && !g_hold_empty_radar && !g_manual_radar_timed_visit &&
       g_screen == AppScreen::Radar && g_radar_visible && ac_vis == 0 && idle_pref &&
-      radar_min_met) {
+      radar_min_met && !link_down) {
     openClockFromIdleRadar();
     return;
   }
@@ -1618,7 +1644,29 @@ void handleInput() {
     // Discard stray taps on settings pages that do not use them.
 #else
     else {
-      (void)inputConsumeScreenTap(nullptr, nullptr);
+      // Page 1: the "Reset Wi-Fi" row (tap, then tap again to confirm) stands in
+      // for the knob-hold reset these boards can't do.
+      int16_t tx = 0;
+      int16_t ty = 0;
+      if (inputConsumeScreenTap(&tx, &ty)) {
+        noteSecondaryActivity();
+        const ui::MainPageTap tap = ui::infoScreenMainTap(tx, ty);
+        if (tap == ui::MainPageTap::ResetConfirmed) {
+          hardware::buzzerClick();
+          Serial.println("[wifi] reset confirmed on settings page 1");
+          wifiResetCredentialsAndReboot();
+          showSettings();  // Only reached in the simulator (reset is a no-op there).
+          return;
+        }
+        if (tap != ui::MainPageTap::None) {
+          hardware::buzzerClick();
+          showSettings();
+        }
+        return;
+      }
+      if (ui::infoScreenWifiResetTimedOut()) {
+        showSettings();
+      }
     }
 #endif
     const int8_t enc = inputConsumeEncoderDelta();
@@ -2125,6 +2173,50 @@ void tickAdsbFetch() {
 
 }  // namespace
 
+/** Start everything that needs the network. Runs once: at boot, or on the first
+ *  successful reconnect if Wi-Fi was not available at boot. */
+static void startOnlineServices() {
+  if (g_online_services_started) {
+    return;
+  }
+  g_online_services_started = true;
+  services::clock::startNtp();
+  services::tzlookup::init();
+  services::tzlookup::requestForMapCenter();
+  services::route::init();
+  services::basemap::init();
+  services::adsb::fetchInit();
+  services::weather::bootSanityCheck();
+  settingsSetSavedCallback(applySettingsLive);
+  g_last_adsb_fetch_ms = 0;
+  g_last_tls_proactive_refresh_ms = millis();
+  beginDisclaimerScreen();
+  logDiagLine("boot");
+}
+
+/** Pick the radar's link badge: "No Wi-Fi" once the link has been down a few
+ *  seconds, "Flight data offline" while adsb.fi polls keep failing, else none. */
+static void tickLinkStatus() {
+  ui::RadarLinkStatus status = ui::RadarLinkStatus::Ok;
+  if (WiFi.status() != WL_CONNECTED) {
+    const bool past_grace = g_wifi_down_since != 0 &&
+                            millis() - g_wifi_down_since >= config::kNoWifiBadgeAfterMs;
+    // Within the grace period keep whatever was showing (avoids a flash on blips).
+    status = past_grace ? ui::RadarLinkStatus::NoWifi : ui::radarDisplayLinkStatus();
+  } else if (services::adsb::feedLooksDown() ||
+             (g_adsb_dns_fail_since_ms != 0 &&
+              millis() - g_adsb_dns_fail_since_ms >= config::kFeedDownDnsFailMs)) {
+    status = ui::RadarLinkStatus::FeedDown;
+  }
+  if (status != ui::radarDisplayLinkStatus()) {
+    Serial.printf("[link] radar badge: %s\n",
+                  status == ui::RadarLinkStatus::NoWifi     ? "no Wi-Fi"
+                  : status == ui::RadarLinkStatus::FeedDown ? "flight data offline"
+                                                            : "cleared");
+    ui::radarDisplaySetLinkStatus(status);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -2161,19 +2253,13 @@ void setup() {
   services::ota_github::init();
 
   if (wifiSetupConnect()) {
-    services::clock::startNtp();
-    services::tzlookup::init();
-    services::tzlookup::requestForMapCenter();
-    services::route::init();
-    services::basemap::init();
-    services::adsb::fetchInit();
-    services::weather::bootSanityCheck();
-    settingsSetSavedCallback(applySettingsLive);
-    g_last_adsb_fetch_ms = 0;
-    g_last_tls_proactive_refresh_ms = millis();
-    beginDisclaimerScreen();
-    logDiagLine("boot");
+    // Show where the settings page lives: `.local` names fail on many networks.
+    bootScreenShowConnected(WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    delay(config::kBootConnectedIpMs);
+    startOnlineServices();
   }
+  // Otherwise loop() keeps retrying the saved networks and starts the services
+  // (and the disclaimer -> radar flow) once one connects.
 }
 
 void loop() {
@@ -2226,13 +2312,20 @@ void loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
     settingsWebStop();
-    if (g_radar_visible) {
+    if (!g_wifi_loss_logged) {
       Serial.println("[wifi] lost — will reconnect");
-      g_radar_visible = false;
+      g_wifi_loss_logged = true;
     }
 
     if (g_wifi_down_since == 0) {
       g_wifi_down_since = millis();
+    }
+
+    // Keep the radar sweeping with a "No Wi-Fi" badge instead of freezing the
+    // last frame, so the outage doesn't look like a hung device.
+    tickLinkStatus();
+    if (g_screen == AppScreen::Radar && g_radar_visible) {
+      tickRadarAnimation();
     }
 
     const unsigned long down_ms = millis() - g_wifi_down_since;
@@ -2241,6 +2334,14 @@ void loop() {
       g_last_reconnect_ms = millis();
       if (wifiReconnect()) {
         g_wifi_down_since = 0;
+        g_wifi_loss_logged = false;
+        tickLinkStatus();
+        if (!g_online_services_started) {
+          // Wi-Fi was unavailable at boot: start the services and the normal
+          // disclaimer -> radar flow now.
+          startOnlineServices();
+          return;
+        }
         services::clock::startNtp();
         if (g_screen == AppScreen::Radar) {
           showRadar();
@@ -2263,6 +2364,12 @@ void loop() {
     }
   } else {
     g_wifi_down_since = 0;
+    g_wifi_loss_logged = false;
+    if (!g_online_services_started) {
+      // Came up on its own (auto-reconnect) after a boot without Wi-Fi.
+      startOnlineServices();
+    }
+    tickLinkStatus();
     if (g_screen == AppScreen::Radar) {
       if (!g_radar_visible) {
         showRadar();

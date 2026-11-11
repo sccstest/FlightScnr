@@ -48,6 +48,13 @@ constexpr uint8_t kWifiDemoteAfterFails = 3;
  * open the setup portal (without wiping) so the user can add/fix a network.
  */
 constexpr uint8_t kWifiPortalAfterReconnectFails = 3;
+/**
+ * While the setup portal is open and nobody is connected to its hotspot, close it
+ * this often and retry the saved networks (e.g. the router came back after a power
+ * cut), then reopen it if none connects. Without this the device sat in the portal
+ * forever once the router had been slower to boot than the device.
+ */
+constexpr unsigned long kWifiPortalRetrySavedMs = 120000UL;
 
 // --- Knob button (active LOW; absent on Waveshare — see FLIGHTSCNR_HAS_KNOB_BUTTON) ---
 #if FLIGHTSCNR_HAS_KNOB_BUTTON
@@ -81,6 +88,8 @@ constexpr unsigned long kFlightDetailEnrichFailsafeMs = 30000;
 constexpr unsigned long kRadarMinVisibleMs = 5000;
 /** Details splash shown at boot before radar (ms). */
 constexpr unsigned long kBootDetailsDurationMs = 5000;
+/** "Connected" screen with the IP address, shown right after Wi-Fi joins at boot (ms). */
+constexpr unsigned long kBootConnectedIpMs = 2500;
 /** When disclaimer acceptance is remembered, show it this long then continue. */
 constexpr unsigned long kDisclaimerRememberedTimeoutMs = 5000;
 
@@ -173,6 +182,18 @@ constexpr unsigned long kAdsbFetchBackoffMs = 15000UL;
  *  A 429 is throttling, not a TLS fault, so we back off instead of recycling
  *  WiFi (which would reconnect and immediately hammer the API again). */
 constexpr unsigned long kAdsbRateLimitBackoffMs = 15000UL;
+
+/** The radar shows "Flight data offline" after this many polls in a row failed
+ *  (connect/TLS/parse error, hung fetch or HTTP 429). With the 2 s poll and 15 s
+ *  back-off that is roughly 20-30 s of no data. Cleared by the next good poll. */
+constexpr uint32_t kFeedDownAfterFails = 3;
+/** ...or after adsb.fi's name has failed to resolve for this long (ms): with the
+ *  router up but the internet down, polls are skipped rather than failed. */
+constexpr unsigned long kFeedDownDnsFailMs = 20000UL;
+/** Wi-Fi must be down this long before the radar shows "No Wi-Fi" (ms); kept
+ *  below kWifiDownGraceMs so the badge is painted before the first (blocking)
+ *  reconnect attempt. */
+constexpr unsigned long kNoWifiBadgeAfterMs = 3000UL;
 
 /** Defer radar SPI panel writes when largest contiguous block is below this.
  *  The ESP-IDF SPI master driver uses internal DMA descriptors; corrupted driver

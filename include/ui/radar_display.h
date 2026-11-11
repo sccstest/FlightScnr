@@ -1,10 +1,22 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "services/adsb_client.h"
 
 namespace ui {
+
+/** Connection state shown as a small badge on the radar. */
+enum class RadarLinkStatus : uint8_t {
+  Ok = 0,
+  NoWifi,    ///< "No Wi-Fi": the router link is down.
+  FeedDown,  ///< "Flight data offline": Wi-Fi is up but adsb.fi polls keep failing.
+};
+
+/** Set the badge state; the radar repaints the badge on its next frame when it changes. */
+void radarDisplaySetLinkStatus(RadarLinkStatus status);
+RadarLinkStatus radarDisplayLinkStatus();
 
 /** Draw the static sonar/radar grid (black disc, green overlay, labels). */
 void radarDisplayDraw();

@@ -88,6 +88,16 @@ int s_row_bottom[kMaxTouchRows] = {};
 int s_row_count = 0;
 #endif
 
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+// No knob button to hold for a Wi-Fi wipe: page 1 gets a "Reset Wi-Fi" row
+// instead. First tap arms it ("Tap again to reset"), a second tap within
+// kWifiResetConfirmMs wipes saved networks and reboots into the setup portal.
+constexpr unsigned long kWifiResetConfirmMs = 5000UL;
+unsigned long s_wifi_reset_armed_ms = 0;
+int s_wifi_reset_row_top = -1;
+int s_wifi_reset_row_bottom = -1;
+#endif
+
 /** Selected rows get "<  ... >" on touch-only boards: tap a side to change it. */
 const char* focusDecorate(const char* text, bool focused, char* buf, size_t len) {
 #if !FLIGHTSCNR_HAS_ENCODER
@@ -324,7 +334,10 @@ void drawMainPage(uint16_t bg, uint16_t fg, uint16_t label_fg, uint16_t hint_fg)
   };
   const int main_h = measureBlockHeight(main_lines, sizeof(main_lines) / sizeof(main_lines[0]));
   const int api_h = measureBlockHeight(api_lines, sizeof(api_lines) / sizeof(api_lines[0]));
-  const int block_h = title_h + kTitleGap + main_h + kSectionGap + api_h;
+  int block_h = title_h + kTitleGap + main_h + kSectionGap + api_h;
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  block_h += kSectionGap + displayFontHeight(tft, displayFontDetail());
+#endif
 
   int y = kCenterY - block_h / 2;
   if (y < kBezelInsetPx) {
@@ -363,6 +376,15 @@ void drawMainPage(uint16_t bg, uint16_t fg, uint16_t label_fg, uint16_t hint_fg)
                  bg);
   drawCenterLine(adsbdb_line, &y, displayFontDetail(),
                  services::apikeys::useAdsbDb() ? fg : label_fg, bg);
+
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  y += kSectionGap;
+  const bool armed = s_wifi_reset_armed_ms != 0;
+  s_wifi_reset_row_top = y;
+  drawCenterLine(armed ? "Tap again to reset" : "[ Reset Wi-Fi ]", &y, displayFontDetail(),
+                 armed ? tft.color565(255, 90, 80) : label_fg, bg);
+  s_wifi_reset_row_bottom = y;
+#endif
 }
 
 uint16_t settingsActiveFg() {
@@ -657,7 +679,7 @@ void toggleAlertsRow(AlertsAdjustRow row) {
 
 namespace ui {
 
-void infoScreenResetToMain() { s_page = ui::InfoSettingsPage::Main; }
+void infoScreenResetToMain() { infoScreenSetPage(ui::InfoSettingsPage::Main); }
 
 int8_t infoScreenTouch(int16_t x, int16_t y) {
 #if !FLIGHTSCNR_HAS_ENCODER
@@ -776,7 +798,50 @@ void infoScreenCycleColorsFocus() {
 
 InfoSettingsPage infoScreenPage() { return s_page; }
 
-void infoScreenSetPage(InfoSettingsPage page) { s_page = page; }
+void infoScreenSetPage(InfoSettingsPage page) {
+  s_page = page;
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  s_wifi_reset_armed_ms = 0;
+#endif
+}
+
+MainPageTap infoScreenMainTap(int16_t x, int16_t y) {
+  (void)x;
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  if (s_page != InfoSettingsPage::Main || s_wifi_reset_row_top < 0) {
+    return MainPageTap::None;
+  }
+  // Generous hit box: the row plus a little margin above and below.
+  if (y < s_wifi_reset_row_top - ui::sc(10) || y >= s_wifi_reset_row_bottom + ui::sc(10)) {
+    // A tap anywhere else cancels a pending confirm.
+    if (s_wifi_reset_armed_ms != 0) {
+      s_wifi_reset_armed_ms = 0;
+      return MainPageTap::Cancelled;
+    }
+    return MainPageTap::None;
+  }
+  const unsigned long now = millis();
+  if (s_wifi_reset_armed_ms != 0 && now - s_wifi_reset_armed_ms < kWifiResetConfirmMs) {
+    s_wifi_reset_armed_ms = 0;
+    return MainPageTap::ResetConfirmed;
+  }
+  s_wifi_reset_armed_ms = now != 0 ? now : 1;
+  return MainPageTap::ResetArmed;
+#else
+  (void)y;
+  return MainPageTap::None;
+#endif
+}
+
+bool infoScreenWifiResetTimedOut() {
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  if (s_wifi_reset_armed_ms != 0 && millis() - s_wifi_reset_armed_ms >= kWifiResetConfirmMs) {
+    s_wifi_reset_armed_ms = 0;
+    return true;
+  }
+#endif
+  return false;
+}
 
 void infoScreenDraw() {
   tft.beginOffscreen();

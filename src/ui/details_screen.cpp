@@ -4,10 +4,14 @@
 #include <cstdio>
 #include <cstring>
 
+#include <WiFi.h>
+
 #include "config.h"
 #include "hardware/display.h"
 #include "hardware/display_font.h"
+#include "services/adsb_client.h"
 #include "services/ota_github.h"
+#include "ui/radar_display.h"
 #include "ui/radar_theme.h"
 #include "ui/ui_scale.h"
 
@@ -119,6 +123,33 @@ void detailsScreenDraw(bool boot_splash) {
       {update_line, displayFontDetail(), tft.color565(255, 200, 80)},
       {"Use web settings to install", displayFontDetail(), hint_fg},
   };
+  // Network status: the IP is how the owner reaches the settings page when the
+  // .local name doesn't resolve, and the feed line explains an empty radar.
+  const bool wifi_up = WiFi.status() == WL_CONNECTED;
+  char ip_line[40];
+  char feed_line[40];
+  uint16_t feed_fg = label_fg;
+  if (wifi_up) {
+    snprintf(ip_line, sizeof(ip_line), "IP: %s", WiFi.localIP().toString().c_str());
+    if (services::adsb::feedLooksDown() ||
+        ui::radarDisplayLinkStatus() == ui::RadarLinkStatus::FeedDown) {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: offline");
+      feed_fg = tft.color565(255, 170, 20);
+    } else if (services::adsb::lastFetchOkAgeMs() == UINT32_MAX) {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: starting");
+    } else {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: OK");
+    }
+  } else {
+    snprintf(ip_line, sizeof(ip_line), "Wi-Fi: not connected");
+    snprintf(feed_line, sizeof(feed_line), "Retrying saved networks");
+    feed_fg = hint_fg;
+  }
+  const InfoLine net_lines[] = {
+      {ip_line, displayFontDetail(), wifi_up ? fg : tft.color565(255, 90, 80)},
+      {feed_line, displayFontDetail(), feed_fg},
+  };
+
   const InfoLine author_lines[] = {
       {"FlightScnr by", displayFontBody(), label_fg},
       {"Yash Mulgaonkar", displayFontBody(), label_fg},
@@ -130,7 +161,8 @@ void detailsScreenDraw(bool boot_splash) {
                      kLineGap)
                   : 0;
   const int author_h = measureBlockHeight(author_lines, sizeof(author_lines) / sizeof(author_lines[0]));
-  const int block_h = version_h + update_h + kAuthorTopGap + author_h;
+  const int net_h = measureBlockHeight(net_lines, sizeof(net_lines) / sizeof(net_lines[0]));
+  const int block_h = version_h + update_h + kAuthorTopGap + net_h + kAuthorTopGap + author_h;
 
   tft.fillScreen(bg);
 
@@ -148,6 +180,11 @@ void detailsScreenDraw(bool boot_splash) {
     for (const InfoLine& line : update_lines) {
       drawCenterLine(line.text, &y, line.style, line.color, bg);
     }
+  }
+
+  y += kAuthorTopGap - kLineGap;
+  for (const InfoLine& line : net_lines) {
+    drawCenterLine(line.text, &y, line.style, line.color, bg);
   }
 
   y += kAuthorTopGap - kLineGap;

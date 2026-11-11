@@ -242,6 +242,23 @@ void bootScreenShowConnectFailed() {
                 sizeof(lines) / sizeof(lines[0]));
 }
 
+void bootScreenShowConnected(const char* ssid, const char* ip) {
+  strncpy(s_connecting_ssid, (ssid != nullptr && ssid[0] != '\0') ? ssid : "Wi-Fi",
+          sizeof(s_connecting_ssid) - 1);
+  s_connecting_ssid[sizeof(s_connecting_ssid) - 1] = '\0';
+  fitSsidLine();
+  char url[40];
+  snprintf(url, sizeof(url), "http://%s", ip != nullptr ? ip : "");
+  const TextLine lines[] = {
+      {"Connected", displayFontTitle()},
+      {s_ssid_line, displayFontDetail()},
+      {"Settings page:", displayFontBody()},
+      {url, displayFontBody()},
+  };
+  drawTextBlock(config::kColorBlack, config::kTextOnBlack, lines,
+                sizeof(lines) / sizeof(lines[0]));
+}
+
 void bootScreenShowWifiCleared() {
   const TextLine lines[] = {
       {"Resetting Wi-Fi", displayFontTitle()},
