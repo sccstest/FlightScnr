@@ -7,6 +7,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+#include <cmath>
 #include <cstdlib>
 
 #include "hardware/buzzer.h"
@@ -17,6 +18,7 @@ portMUX_TYPE s_input_mux = portMUX_INITIALIZER_UNLOCKED;
 volatile int16_t s_tap_x = -1;
 volatile int16_t s_tap_y = -1;
 volatile SwipeGesture s_swipe_pending = SwipeNone;
+volatile int8_t s_pinch_pending = 0;
 
 uint8_t s_gt_addr = 0;
 bool s_touch_ready = false;
@@ -27,6 +29,14 @@ int16_t s_touch_start_y = 0;
 int16_t s_touch_last_x = 0;
 int16_t s_touch_last_y = 0;
 unsigned long s_last_poll_ms = 0;
+
+// Two-finger pinch: one step each time the finger spacing grows or shrinks by
+// kPinchStepRatio from where the last step fired. A pinch never also counts as a
+// tap or swipe; single-finger tracking resumes only after all fingers lift.
+constexpr float kPinchStepRatio = 1.30f;
+bool s_pinching = false;
+bool s_pinch_used = false;
+float s_pinch_base = 0.0f;
 
 // S3 boards use 70 px on a 360–390 px screen; keep the same physical swipe length.
 constexpr int kSwipeMinPx = 70 * LCD_WIDTH / 360;
@@ -100,6 +110,39 @@ void finishTouchGesture() {
   }
 }
 
+void queuePinch(int8_t step) {
+  portENTER_CRITICAL(&s_input_mux);
+  const int v = s_pinch_pending + step;
+  s_pinch_pending = static_cast<int8_t>(v > 8 ? 8 : (v < -8 ? -8 : v));
+  portEXIT_CRITICAL(&s_input_mux);
+}
+
+void trackPinch(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+  const float dx = static_cast<float>(x1 - x0);
+  const float dy = static_cast<float>(y1 - y0);
+  const float d = sqrtf(dx * dx + dy * dy);
+  if (!s_pinching) {
+    s_pinching = true;
+    s_pinch_used = true;
+    s_pinch_base = d;
+    s_touch_tracking = false;  // the first finger's touch is not a tap/swipe
+    return;
+  }
+  if (s_pinch_base < 1.0f) {
+    s_pinch_base = d;
+    return;
+  }
+  if (d >= s_pinch_base * kPinchStepRatio) {
+    queuePinch(1);
+    s_pinch_base = d;
+    hardware::buzzerClick();
+  } else if (d <= s_pinch_base / kPinchStepRatio) {
+    queuePinch(-1);
+    s_pinch_base = d;
+    hardware::buzzerClick();
+  }
+}
+
 void initTouchGt911() {
   Wire.begin(IIC_SDA, IIC_SCL, 400000);
   delay(200);  // GT9271 power-on settle (Waveshare example waits the same)
@@ -130,17 +173,38 @@ void pollTouchGt911() {
   bool down = points > 0 && points <= 10;
   int16_t x = 0;
   int16_t y = 0;
+  int16_t x2 = 0;
+  int16_t y2 = 0;
   if (down) {
-    uint8_t p[8] = {};
-    if (gtReadReg(kGtRegPoint1, p, sizeof(p))) {
+    // Point records are 8 bytes each: id, x lo/hi, y lo/hi, size lo/hi, reserved.
+    uint8_t p[16] = {};
+    const size_t want = points >= 2 ? 16 : 8;
+    if (gtReadReg(kGtRegPoint1, p, want)) {
       x = static_cast<int16_t>(p[1] | (p[2] << 8));
       y = static_cast<int16_t>(p[3] | (p[4] << 8));
+      x2 = static_cast<int16_t>(p[9] | (p[10] << 8));
+      y2 = static_cast<int16_t>(p[11] | (p[12] << 8));
     } else {
       down = false;
     }
   }
   const uint8_t clear = 0;
   gtWriteReg(kGtRegStatus, &clear, 1);
+
+  if (down && points >= 2) {
+    trackPinch(x, y, x2, y2);
+    s_touch_was_down = true;
+    return;
+  }
+  if (s_pinch_used) {
+    // Ignore the leftover finger(s) of a pinch until everything lifts.
+    if (!down) {
+      s_pinch_used = false;
+      s_pinching = false;
+      s_touch_was_down = false;
+    }
+    return;
+  }
 
   if (down && !s_touch_was_down) {
     s_touch_start_x = x;
@@ -192,6 +256,14 @@ bool inputConsumeScreenTap(int16_t* x, int16_t* y) {
   return tap;
 }
 
+int8_t inputConsumePinchStep() {
+  portENTER_CRITICAL(&s_input_mux);
+  const int8_t step = s_pinch_pending;
+  s_pinch_pending = 0;
+  portEXIT_CRITICAL(&s_input_mux);
+  return step;
+}
+
 SwipeGesture inputConsumeSwipe() {
   portENTER_CRITICAL(&s_input_mux);
   const SwipeGesture swipe = s_swipe_pending;
@@ -203,6 +275,7 @@ SwipeGesture inputConsumeSwipe() {
 void inputDiscardPendingInteractions() {
   portENTER_CRITICAL(&s_input_mux);
   s_swipe_pending = SwipeNone;
+  s_pinch_pending = 0;
   s_tap_x = -1;
   s_tap_y = -1;
   portEXIT_CRITICAL(&s_input_mux);

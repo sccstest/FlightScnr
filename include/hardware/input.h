@@ -36,6 +36,12 @@ enum SwipeGesture : uint8_t {
 /** Swipe detected since last poll; SwipeNone if no swipe pending. */
 SwipeGesture inputConsumeSwipe();
 
+/**
+ * Two-finger pinch steps since last call (multi-touch panels only; 0 elsewhere).
+ * @return +1 per spread step (fingers apart = zoom in), -1 per squeeze step.
+ */
+int8_t inputConsumePinchStep();
+
 /** Poll for knob long-press (Wi-Fi reset). May reboot the device. */
 void inputPollLongPress();
 

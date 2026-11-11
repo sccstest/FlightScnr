@@ -1153,6 +1153,15 @@ void handleNavigation() {
     Serial.println("Screen: settings (3/3)");
     logNavContext("settings_p3");
     navigated = true;
+#if !FLIGHTSCNR_HAS_ENCODER
+  } else if ((swipe == SwipeUp || swipe == SwipeDown) &&
+             g_screen == AppScreen::FlightDetail) {
+    // Touch only (4C): swipe up = next aircraft, down = previous (the dial's job).
+    noteSecondaryActivity();
+    onFlightDetailStep(swipe == SwipeUp ? 1 : -1);
+    hardware::buzzerClick();
+    navigated = true;
+#endif
   } else if (swipe == SwipeRight && g_screen == AppScreen::FlightDetail) {
     returnToRadar(false, true);
     navigated = true;
@@ -1451,6 +1460,11 @@ void handleInput() {
       onRangeStep(enc);
       hardware::buzzerClick();
     }
+    // Two-finger pinch (4C): spread = zoom in = smaller range preset.
+    const int8_t pinch = inputConsumePinchStep();
+    if (pinch != 0) {
+      onRangeStep(static_cast<int8_t>(-pinch));
+    }
     return;
   }
 
@@ -1479,6 +1493,27 @@ void handleInput() {
         noteSecondaryActivity();
         hardware::buzzerClick();
       }
+#if !FLIGHTSCNR_HAS_ENCODER
+      // Touch only (4C): tap a row to select it; tap the selected row's left/right
+      // half to step its value. Facing opens the orientation screen like the dial.
+      {
+        int16_t tx = 0;
+        int16_t ty = 0;
+        if (inputConsumeScreenTap(&tx, &ty)) {
+          noteSecondaryActivity();
+          hardware::buzzerClick();
+          const int8_t step = ui::infoScreenTouch(tx, ty);
+          if (step != 0 && ui::infoScreenFacingFocused()) {
+            openOrientationAdjust(step);
+          } else if (step != 0) {
+            ui::infoScreenHandleKnob(step);
+          } else {
+            showSettings();
+          }
+          return;
+        }
+      }
+#endif
       // Waveshare has no knob button — screen tap advances the focused row.
       if (inputConsumeKnobTap()
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
@@ -1495,6 +1530,23 @@ void handleInput() {
         noteSecondaryActivity();
         hardware::buzzerClick();
       }
+#if !FLIGHTSCNR_HAS_ENCODER
+      {
+        int16_t tx = 0;
+        int16_t ty = 0;
+        if (inputConsumeScreenTap(&tx, &ty)) {
+          noteSecondaryActivity();
+          hardware::buzzerClick();
+          const int8_t step = ui::infoScreenTouch(tx, ty);
+          if (step != 0) {
+            ui::infoScreenHandleKnob(step);
+          } else {
+            showSettings();
+          }
+          return;
+        }
+      }
+#endif
       if (inputConsumeKnobTap()
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
           || inputConsumeScreenTap(nullptr, nullptr)
@@ -1528,6 +1580,28 @@ void handleInput() {
   }
 
   if (g_screen == AppScreen::Orientation) {
+#if !FLIGHTSCNR_HAS_ENCODER
+    // Touch only (4C): left third rotates one step back, right third one step
+    // forward, middle saves (same as the dial + press on knob boards).
+    {
+      int16_t tx = 0;
+      int16_t ty = 0;
+      if (inputConsumeScreenTap(&tx, &ty)) {
+        noteSecondaryActivity();
+        hardware::buzzerClick();
+        if (tx < config::kDisplayWidth / 3) {
+          ui::radar::facingStep(-1);
+          showOrientationPreview();
+        } else if (tx >= (config::kDisplayWidth * 2) / 3) {
+          ui::radar::facingStep(1);
+          showOrientationPreview();
+        } else {
+          saveOrientationAdjust();
+        }
+        return;
+      }
+    }
+#endif
     if (inputConsumeScreenTap(nullptr, nullptr)) {
       noteSecondaryActivity();
       hardware::buzzerClick();
@@ -1591,6 +1665,23 @@ void handleInput() {
       noteSecondaryActivity();
       hardware::buzzerClick();
     }
+#if !FLIGHTSCNR_HAS_ENCODER
+    {
+      int16_t tx = 0;
+      int16_t ty = 0;
+      if (inputConsumeScreenTap(&tx, &ty)) {
+        noteSecondaryActivity();
+        hardware::buzzerClick();
+        const int8_t step = ui::clockSettingsTouch(tx, ty);
+        if (step != 0) {
+          ui::clockSettingsHandleKnob(step);
+        } else {
+          showClockSettings();
+        }
+        return;
+      }
+    }
+#endif
     if (inputConsumeKnobTap()
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
         || inputConsumeScreenTap(nullptr, nullptr)

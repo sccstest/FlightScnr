@@ -367,7 +367,8 @@ void facingLabel(char* out, size_t out_len) {
       snprintf(out, out_len, "W");
       break;
     default:
-      snprintf(out, out_len, "%u°", static_cast<unsigned>(s_facing_deg));
+      // The UI fonts are 7-bit ASCII (no degree glyph), so spell it out.
+      snprintf(out, out_len, "%u deg", static_cast<unsigned>(s_facing_deg));
       break;
   }
 }

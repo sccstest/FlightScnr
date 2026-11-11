@@ -28,6 +28,27 @@ enum class ClockSettingsRow : uint8_t { Timezone, Format, DateFormat };
 
 ClockSettingsRow s_focus = ClockSettingsRow::Timezone;
 
+#if !FLIGHTSCNR_HAS_ENCODER
+// Touch-only boards: row bounds from the last draw, for tap-to-select / tap-to-step.
+int s_row_top[3] = {};
+int s_row_bottom[3] = {};
+int s_row_count = 0;
+#endif
+
+const char* focusDecorate(const char* text, bool focused, char* buf, size_t len) {
+#if !FLIGHTSCNR_HAS_ENCODER
+  if (focused) {
+    snprintf(buf, len, "<  %s  >", text);
+    return buf;
+  }
+#else
+  (void)focused;
+  (void)buf;
+  (void)len;
+#endif
+  return text;
+}
+
 int circleHalfWidthAtRow(int row_y, int row_h) {
   if (kCircleRadius <= 0 || row_h <= 0) {
     return 0;
@@ -110,6 +131,32 @@ void buildStrings(char* tz_line, size_t tz_len, char* fmt_line, size_t fmt_len,
 
 }  // namespace
 
+int8_t clockSettingsTouch(int16_t x, int16_t y) {
+#if !FLIGHTSCNR_HAS_ENCODER
+  int hit = -1;
+  for (int i = 0; i < s_row_count; ++i) {
+    const int top = (i == 0) ? s_row_top[i] - ui::sc(6) : s_row_top[i];
+    const int bottom = (i + 1 < s_row_count) ? s_row_top[i + 1] : s_row_bottom[i] + ui::sc(6);
+    if (y >= top && y < bottom) {
+      hit = i;
+      break;
+    }
+  }
+  if (hit < 0) {
+    return 0;
+  }
+  if (hit != static_cast<int>(s_focus)) {
+    s_focus = static_cast<ClockSettingsRow>(hit);
+    return 0;
+  }
+  return x < kCenterX ? -1 : 1;
+#else
+  (void)x;
+  (void)y;
+  return 0;
+#endif
+}
+
 void clockSettingsResetFocus() { s_focus = ClockSettingsRow::Timezone; }
 
 void clockSettingsCycleFocus() {
@@ -151,10 +198,14 @@ void clockSettingsScreenDraw() {
       (s_focus == ClockSettingsRow::DateFormat) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
+  char deco[3][48];
   const InfoLine option_lines[] = {
-      {tz_line, displayFontBody(), tz_fg},
-      {fmt_line, displayFontBody(), fmt_fg},
-      {date_line, displayFontBody(), date_fg},
+      {focusDecorate(tz_line, s_focus == ClockSettingsRow::Timezone, deco[0], 48),
+       displayFontBody(), tz_fg},
+      {focusDecorate(fmt_line, s_focus == ClockSettingsRow::Format, deco[1], 48),
+       displayFontBody(), fmt_fg},
+      {focusDecorate(date_line, s_focus == ClockSettingsRow::DateFormat, deco[2], 48),
+       displayFontBody(), date_fg},
   };
   const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
   const int block_h = title_h + kTitleGap + options_h;
@@ -172,8 +223,21 @@ void clockSettingsScreenDraw() {
   tft.drawString("Clock settings", kCenterX, y);
   y += title_h + kTitleGap;
 
+#if !FLIGHTSCNR_HAS_ENCODER
+  s_row_count = 0;
+#endif
   for (const InfoLine& line : option_lines) {
+#if !FLIGHTSCNR_HAS_ENCODER
+    const int top = y;
+#endif
     drawCenterLine(line.text, &y, line.style, line.color, bg);
+#if !FLIGHTSCNR_HAS_ENCODER
+    if (s_row_count < 3) {
+      s_row_top[s_row_count] = top;
+      s_row_bottom[s_row_count] = y;
+      ++s_row_count;
+    }
+#endif
   }
 
   tft.setTextDatum(TextDatum::TopLeft);

@@ -229,8 +229,14 @@ void bootScreenShowConnectFailed() {
       {"Could not connect", displayFontTitle()},
       {"Check Wi-Fi password", displayFontBody()},
       {"and signal strength.", displayFontBody()},
+#if FLIGHTSCNR_HAS_KNOB_BUTTON
       {"Hold knob 5 sec", displayFontBody()},
       {"to reset Wi-Fi", displayFontBody()},
+#else
+      // No knob button: the firmware keeps retrying, then reopens Wi-Fi setup.
+      {"Retrying; Wi-Fi setup", displayFontBody()},
+      {"reopens if it fails", displayFontBody()},
+#endif
   };
   drawTextBlock(config::kColorBlack, config::kTextOnBlack, lines,
                 sizeof(lines) / sizeof(lines[0]));

@@ -1756,15 +1756,24 @@ void drawOrientationHints(PlaneGfx& gfx) {
   char facing_buf[16];
   radar::facingLabel(facing_buf, sizeof(facing_buf));
   char line[40];
+#if FLIGHTSCNR_HAS_ENCODER
   snprintf(line, sizeof(line), "Facing %s", facing_buf);
+  const char* hint = "Tap to save";
+#else
+  // Touch only (4C): tap the left/right third to turn, the middle to save.
+  snprintf(line, sizeof(line), "<  Facing %s  >", facing_buf);
+  const char* hint = "Tap middle to save";
+#endif
 
   // Body size matches settings rows; draw into a sprite/offscreen buffer so
   // CO5300 2x2 pixelAlign does not chunk the glyphs.
   displayFontApply(gfx, displayFontBody());
   gfx.setTextDatum(TextDatum::TopCenter);
   gfx.setTextColor(radar::kColorLabel, radar::kColorBackground);
-  gfx.drawString(line, radar::kCenterX, 28);
-  gfx.drawString("Tap to save", radar::kCenterX, radar::kSize - 48);
+  gfx.drawString(line, radar::kCenterX, ui::sc(28));
+  // The touch hint is wider than "Tap to save"; keep it inside the round edge.
+  gfx.drawString(hint, radar::kCenterX,
+                 radar::kSize - (FLIGHTSCNR_HAS_ENCODER ? ui::sc(48) : ui::sc(72)));
   gfx.setTextDatum(TextDatum::TopLeft);
 }
 

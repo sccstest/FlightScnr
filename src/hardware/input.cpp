@@ -528,6 +528,9 @@ bool inputConsumeScreenTap(int16_t* x, int16_t* y) {
   return tap;
 }
 
+// CST816 / CHSC5816 are read single-touch here; pinch is a 4C (GT9271) feature.
+int8_t inputConsumePinchStep() { return 0; }
+
 SwipeGesture inputConsumeSwipe() {
   portENTER_CRITICAL(&s_input_mux);
   const SwipeGesture swipe = s_swipe_pending;

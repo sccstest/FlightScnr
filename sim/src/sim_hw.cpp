@@ -80,7 +80,11 @@ bool s_last_down = false;
 uint8_t gtRegister(uint16_t reg) {
   int x = 0;
   int y = 0;
+  int x2 = 0;
+  int y2 = 0;
   const bool down = sim::touch(&x, &y);
+  const bool down2 = down && sim::touch2(&x2, &y2);
+  const uint8_t points = down ? (down2 ? 2 : 1) : 0;
   if (reg >= 0x8140 && reg <= 0x8143) {
     return static_cast<uint8_t>("9271"[reg - 0x8140]);
   }
@@ -91,18 +95,21 @@ uint8_t gtRegister(uint16_t reg) {
       return 0x00;
     }
     s_last_down = down;
-    return static_cast<uint8_t>(0x80 | (down ? 1 : 0));
+    return static_cast<uint8_t>(0x80 | points);
   }
-  if (reg >= 0x814F && reg <= 0x8156) {
-    const uint8_t p[8] = {0,
-                          static_cast<uint8_t>(x & 0xFF),
-                          static_cast<uint8_t>((x >> 8) & 0xFF),
-                          static_cast<uint8_t>(y & 0xFF),
-                          static_cast<uint8_t>((y >> 8) & 0xFF),
+  if (reg >= 0x814F && reg <= 0x815E) {
+    const int idx = (reg - 0x814F) / 8;
+    const int px = idx == 0 ? x : x2;
+    const int py = idx == 0 ? y : y2;
+    const uint8_t p[8] = {static_cast<uint8_t>(idx),
+                          static_cast<uint8_t>(px & 0xFF),
+                          static_cast<uint8_t>((px >> 8) & 0xFF),
+                          static_cast<uint8_t>(py & 0xFF),
+                          static_cast<uint8_t>((py >> 8) & 0xFF),
                           30,
                           0,
                           0};
-    return p[reg - 0x814F];
+    return p[(reg - 0x814F) % 8];
   }
   return 0;
 }

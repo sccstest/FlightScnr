@@ -64,6 +64,30 @@ enum class ColorsAdjustRow : uint8_t {
 
 ColorsAdjustRow s_colors_focus = ColorsAdjustRow::Sweep;
 
+#if !FLIGHTSCNR_HAS_ENCODER
+// Touch-only boards (Waveshare 4C): remember where each option row was drawn so a
+// tap can select a row, and the selected row's left/right half can step its value.
+constexpr int kMaxTouchRows = 10;
+int s_row_top[kMaxTouchRows] = {};
+int s_row_bottom[kMaxTouchRows] = {};
+int s_row_count = 0;
+#endif
+
+/** Selected rows get "<  ... >" on touch-only boards: tap a side to change it. */
+const char* focusDecorate(const char* text, bool focused, char* buf, size_t len) {
+#if !FLIGHTSCNR_HAS_ENCODER
+  if (focused) {
+    snprintf(buf, len, "<  %s  >", text);
+    return buf;
+  }
+#else
+  (void)focused;
+  (void)buf;
+  (void)len;
+#endif
+  return text;
+}
+
 int circleHalfWidthAtRow(int row_y, int row_h) {
   if (kCircleRadius <= 0 || row_h <= 0) {
     return 0;
@@ -357,12 +381,18 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
       (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
+  char deco[5][48];
   const InfoLine option_lines[] = {
-      {bright_line, displayFontBody(), bright_fg},
-      {units_line, displayFontBody(), units_fg},
-      {range_line, displayFontBody(), range_fg},
-      {compass_line, displayFontBody(), compass_fg},
-      {facing_line, displayFontBody(), facing_fg},
+      {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
+       displayFontBody(), bright_fg},
+      {focusDecorate(units_line, s_display_focus == DisplayAdjustRow::Units, deco[1], 48),
+       displayFontBody(), units_fg},
+      {focusDecorate(range_line, s_display_focus == DisplayAdjustRow::Range, deco[2], 48),
+       displayFontBody(), range_fg},
+      {focusDecorate(compass_line, s_display_focus == DisplayAdjustRow::Compass, deco[3], 48),
+       displayFontBody(), compass_fg},
+      {focusDecorate(facing_line, s_display_focus == DisplayAdjustRow::Facing, deco[4], 48),
+       displayFontBody(), facing_fg},
   };
   const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
   const int block_h = title_h + kTitleGap + options_h;
@@ -378,8 +408,21 @@ void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   tft.drawString("Settings 2/3", kCenterX, y);
   y += title_h + kTitleGap;
 
+#if !FLIGHTSCNR_HAS_ENCODER
+  s_row_count = 0;
+#endif
   for (const InfoLine& line : option_lines) {
+#if !FLIGHTSCNR_HAS_ENCODER
+    const int top = y;
+#endif
     drawCenterLine(line.text, &y, line.style, line.color, bg);
+#if !FLIGHTSCNR_HAS_ENCODER
+    if (s_row_count < kMaxTouchRows) {
+      s_row_top[s_row_count] = top;
+      s_row_bottom[s_row_count] = y;
+      ++s_row_count;
+    }
+#endif
   }
 }
 
@@ -425,16 +468,26 @@ void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
 #endif
 
   const int title_h = displayFontHeight(tft, displayFontTitle());
+  char deco[8][48];
+  const ColorsAdjustRow f = s_colors_focus;
   const InfoLine option_lines[] = {
-      {sweep_line, displayFontBody(), sweep_fg},
-      {blip_line, displayFontBody(), blip_fg},
-      {detail_line, displayFontBody(), detail_fg},
-      {clock_line, displayFontBody(), clock_fg},
-      {idle_line, displayFontBody(), idle_fg},
-      {color_line, displayFontBody(), color_fg},
-      {beep_line, displayFontBody(), beep_fg},
+      {focusDecorate(sweep_line, f == ColorsAdjustRow::Sweep, deco[0], 48), displayFontBody(),
+       sweep_fg},
+      {focusDecorate(blip_line, f == ColorsAdjustRow::BlipDetails, deco[1], 48),
+       displayFontBody(), blip_fg},
+      {focusDecorate(detail_line, f == ColorsAdjustRow::DetailTimeout, deco[2], 48),
+       displayFontBody(), detail_fg},
+      {focusDecorate(clock_line, f == ColorsAdjustRow::ClockTimeout, deco[3], 48),
+       displayFontBody(), clock_fg},
+      {focusDecorate(idle_line, f == ColorsAdjustRow::IdleClock, deco[4], 48),
+       displayFontBody(), idle_fg},
+      {focusDecorate(color_line, f == ColorsAdjustRow::Color, deco[5], 48), displayFontBody(),
+       color_fg},
+      {focusDecorate(beep_line, f == ColorsAdjustRow::BeepOn, deco[6], 48), displayFontBody(),
+       beep_fg},
 #if !FLIGHTSCNR_HAS_HAPTIC
-      {beep_tone_line, displayFontBody(), beep_tone_fg},
+      {focusDecorate(beep_tone_line, f == ColorsAdjustRow::BeepTone, deco[7], 48),
+       displayFontBody(), beep_tone_fg},
 #endif
   };
   const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
@@ -450,8 +503,21 @@ void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   tft.setTextColor(fg, bg);
   tft.drawString("Settings 3/3", kCenterX, y);  y += title_h + kTitleGap;
 
+#if !FLIGHTSCNR_HAS_ENCODER
+  s_row_count = 0;
+#endif
   for (const InfoLine& line : option_lines) {
+#if !FLIGHTSCNR_HAS_ENCODER
+    const int top = y;
+#endif
     drawCenterLine(line.text, &y, line.style, line.color, bg);
+#if !FLIGHTSCNR_HAS_ENCODER
+    if (s_row_count < kMaxTouchRows) {
+      s_row_top[s_row_count] = top;
+      s_row_bottom[s_row_count] = y;
+      ++s_row_count;
+    }
+#endif
   }
 }
 
@@ -460,6 +526,42 @@ void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
 namespace ui {
 
 void infoScreenResetToMain() { s_page = ui::InfoSettingsPage::Main; }
+
+int8_t infoScreenTouch(int16_t x, int16_t y) {
+#if !FLIGHTSCNR_HAS_ENCODER
+  if (s_page != InfoSettingsPage::Display && s_page != InfoSettingsPage::Colors) {
+    return 0;
+  }
+  // Rows are drawn edge to edge; give each the gap below it so taps never fall through.
+  int hit = -1;
+  for (int i = 0; i < s_row_count; ++i) {
+    const int bottom = (i + 1 < s_row_count) ? s_row_top[i + 1] : s_row_bottom[i] + ui::sc(6);
+    const int top = (i == 0) ? s_row_top[i] - ui::sc(6) : s_row_top[i];
+    if (y >= top && y < bottom) {
+      hit = i;
+      break;
+    }
+  }
+  if (hit < 0) {
+    return 0;
+  }
+  const int focused = (s_page == InfoSettingsPage::Display) ? static_cast<int>(s_display_focus)
+                                                             : static_cast<int>(s_colors_focus);
+  if (hit != focused) {
+    if (s_page == InfoSettingsPage::Display) {
+      s_display_focus = static_cast<DisplayAdjustRow>(hit);
+    } else {
+      s_colors_focus = static_cast<ColorsAdjustRow>(hit);
+    }
+    return 0;
+  }
+  return x < kCenterX ? -1 : 1;
+#else
+  (void)x;
+  (void)y;
+  return 0;
+#endif
+}
 
 void infoScreenResetDisplayFocus() {
   s_display_focus = DisplayAdjustRow::Brightness;

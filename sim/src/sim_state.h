@@ -15,6 +15,9 @@ uint8_t backlight();
 /** Mouse-as-finger state, in panel pixels. */
 void setTouch(bool down, int x, int y);
 bool touch(int* x, int* y);
+/** Optional second finger (pinch). Reported by the fake GT9271 as point 2. */
+void setTouch2(bool down, int x, int y);
+bool touch2(int* x, int* y);
 
 void requestQuit();
 bool quitRequested();

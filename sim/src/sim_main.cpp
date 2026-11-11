@@ -3,12 +3,14 @@
 //
 //   program.exe [--lat 27.95 --lon -82.46] [--scale 0.8] [--data DIR]
 //               [--tap SEC:X:Y]... [--swipe SEC:X1:Y1:X2:Y2]... [--shot SEC]...
+//               [--pinch SEC:spread|squeeze]...
 //               [--exit-after SEC]
 //
 // --tap / --swipe script a finger at a time after start (panel pixels, 0-719);
 // --shot saves sim_data/shot-<SEC>s.png. All three can be repeated.
 //
 // Keys: F12 = save PNG screenshot to sim_data/, Esc = quit.
+// Mouse wheel = two-finger pinch at the cursor (wheel up = spread = zoom in).
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
@@ -45,6 +47,9 @@ std::atomic<bool> s_touch_down{false};
 std::atomic<int> s_touch_x{0};
 std::atomic<int> s_touch_y{0};
 std::atomic<bool> s_quit{false};
+std::atomic<bool> s_touch2_down{false};
+std::atomic<int> s_touch2_x{0};
+std::atomic<int> s_touch2_y{0};
 }  // namespace
 
 void setFramebuffer(uint16_t* fb, int w, int h) {
@@ -68,6 +73,16 @@ bool touch(int* x, int* y) {
   *x = s_touch_x;
   *y = s_touch_y;
   return s_touch_down;
+}
+void setTouch2(bool down, int x, int y) {
+  s_touch2_x = x;
+  s_touch2_y = y;
+  s_touch2_down = down;
+}
+bool touch2(int* x, int* y) {
+  *x = s_touch2_x;
+  *y = s_touch2_y;
+  return s_touch2_down;
 }
 void requestQuit() { s_quit = true; }
 bool quitRequested() { return s_quit; }
@@ -188,7 +203,7 @@ double argDouble(int argc, char** argv, const char* name, double def) {
 
 struct ScriptEvent {
   double at;
-  enum Kind { Down, Move, Up, Shot } kind;
+  enum Kind { Down, Move, Up, Shot, PinchSpread, PinchSqueeze } kind;
   int x;
   int y;
 };
@@ -210,12 +225,54 @@ std::vector<ScriptEvent> parseScript(int argc, char** argv) {
                       y1 + (y2 - y1) * k / 8});
       }
       ev.push_back({t + 0.3, ScriptEvent::Up, x2, y2});
+    } else if (strcmp(argv[i], "--pinch") == 0) {
+      char how[16] = {};
+      if (sscanf(v, "%lf:%15s", &t, how) == 2) {
+        ev.push_back({t, strcmp(how, "squeeze") == 0 ? ScriptEvent::PinchSqueeze
+                                                     : ScriptEvent::PinchSpread,
+                      LCD_WIDTH / 2, LCD_HEIGHT / 2});
+      }
     } else if (strcmp(argv[i], "--shot") == 0 || strcmp(argv[i], "--screenshot-after") == 0) {
       ev.push_back({atof(v), ScriptEvent::Shot, 0, 0});
     }
   }
   return ev;
 }
+
+/** Two fingers moving apart (spread) or together (squeeze) around a point. One
+ *  gesture = one zoom step on the device (spacing changes by 1.4x > the 1.3x step). */
+struct PinchAnim {
+  bool active = false;
+  double t0 = 0;
+  int cx = 0;
+  int cy = 0;
+  float d0 = 0;
+  float d1 = 0;
+
+  void start(double now, int x, int y, bool spread) {
+    active = true;
+    t0 = now;
+    cx = x;
+    cy = y;
+    d0 = spread ? 100.0f : 140.0f;
+    d1 = spread ? 140.0f : 100.0f;
+  }
+
+  void tick(double now) {
+    if (!active) return;
+    const double kDur = 0.35;
+    const double f = (now - t0) / kDur;
+    if (f >= 1.0) {
+      sim::setTouch2(false, 0, 0);
+      sim::setTouch(false, cx, cy);
+      active = false;
+      return;
+    }
+    const float d = d0 + (d1 - d0) * static_cast<float>(f);
+    sim::setTouch(true, cx - static_cast<int>(d / 2), cy);
+    sim::setTouch2(true, cx + static_cast<int>(d / 2), cy);
+  }
+};
 
 const char* argStr(int argc, char** argv, const char* name) {
   for (int i = 1; i + 1 < argc; ++i) {
@@ -294,8 +351,11 @@ int main(int argc, char** argv) {
   size_t next_event = 0;
   std::sort(script.begin(), script.end(),
             [](const ScriptEvent& a, const ScriptEvent& b) { return a.at < b.at; });
+  PinchAnim pinch;
   bool running = true;
   while (running) {
+    const double now_s =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       switch (e.type) {
@@ -314,6 +374,15 @@ int main(int argc, char** argv) {
           break;
         case SDL_MOUSEMOTION:
           if (e.motion.state & SDL_BUTTON_LMASK) sim::setTouch(true, e.motion.x, e.motion.y);
+          break;
+        case SDL_MOUSEWHEEL:
+          if (!pinch.active && e.wheel.y != 0) {
+            int mx = 0, my = 0;
+            SDL_GetMouseState(&mx, &my);
+            float lx = 0, ly = 0;
+            SDL_RenderWindowToLogical(ren, mx, my, &lx, &ly);
+            pinch.start(now_s, static_cast<int>(lx), static_cast<int>(ly), e.wheel.y > 0);
+          }
           break;
         default:
           break;
@@ -341,10 +410,13 @@ int main(int argc, char** argv) {
         char name[48];
         snprintf(name, sizeof(name), "shot-%gs.png", ev.at);
         screenshot(name);
+      } else if (ev.kind == ScriptEvent::PinchSpread || ev.kind == ScriptEvent::PinchSqueeze) {
+        pinch.start(secs, ev.x, ev.y, ev.kind == ScriptEvent::PinchSpread);
       } else {
         sim::setTouch(ev.kind != ScriptEvent::Up, ev.x, ev.y);
       }
     }
+    pinch.tick(secs);
     if (exit_after >= 0 && secs >= exit_after) running = false;
     SDL_Delay(16);
   }

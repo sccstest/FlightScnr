@@ -20,3 +20,8 @@
 /* Native/host unit tests and accidental bare builds default to T-Encoder Pro. */
 #include "boards/tencoder_pro.h"
 #endif
+
+/* Boards without a rotary encoder (touch only) set this to 0 in their header. */
+#ifndef FLIGHTSCNR_HAS_ENCODER
+#define FLIGHTSCNR_HAS_ENCODER 1
+#endif
