@@ -74,6 +74,9 @@ enum class AlertsAdjustRow : uint8_t {
   Private,
   When,
   OverheadAny,
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  Notable,
+#endif
   Count,
 };
 
@@ -587,6 +590,10 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
            services::alert::alertOnApproachEnabled() ? "overhead" : "entering");
   snprintf(rows[6], sizeof(rows[6]), "Overhead (any): %s",
            onOff(services::alert::overheadAnyEnabled()));
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  snprintf(rows[static_cast<int>(AlertsAdjustRow::Notable)], sizeof(rows[0]),
+           "Notable planes: %s", onOff(services::alert::notableAlertEnabled()));
+#endif
 
   char deco[kRows][48];
   InfoLine option_lines[kRows];
@@ -675,6 +682,11 @@ void toggleAlertsRow(AlertsAdjustRow row) {
     case AlertsAdjustRow::OverheadAny:
       services::alert::toggleOverheadAny();
       break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case AlertsAdjustRow::Notable:
+      services::alert::toggleNotableAlert();
+      break;
+#endif
     default:
       break;
   }

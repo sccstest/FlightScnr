@@ -57,6 +57,8 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
   constexpr uint16_t kPrivateWhite = 0xE73C;    // ~(230,230,230)
   constexpr uint16_t kOverheadYellow = 0xFEA0;  // ~(255,212,0)
   constexpr uint16_t kTrackedGreen = 0x0666;
+  constexpr uint16_t kNotableMagenta = 0xF81C;  // ~(255,0,230)
+  constexpr uint16_t kNotableGold = 0xFDA0;     // ~(255,180,0)
   uint16_t ring_color = kTrackedGreen;
   switch (s_kind) {
     case AlertFlashKind::Military:
@@ -70,6 +72,12 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
       break;
     case AlertFlashKind::Overhead:
       ring_color = kOverheadYellow;
+      break;
+    case AlertFlashKind::Notable:
+      // Alternates every blink so it reads as "something special", not a class color.
+      ring_color = ((millis() - s_flash_start_ms) / (2 * kRingBlinkPhaseMs)) % 2 == 0
+                       ? kNotableMagenta
+                       : kNotableGold;
       break;
     default:
       break;
@@ -104,8 +112,10 @@ void alertFlashStart(AlertFlashKind kind) {
   const unsigned long now = millis();
   s_flash_start_ms = now;
   s_flash_end_ms = now + kAlertFlashMs;
-  // Do not downgrade an active military alert when a tracked alert follows it.
-  if (!s_active || kind == AlertFlashKind::Military) {
+  // Do not downgrade an active military alert when a tracked alert follows it, and
+  // never downgrade the notable "go look" ring.
+  if (!s_active || kind == AlertFlashKind::Notable ||
+      (kind == AlertFlashKind::Military && s_kind != AlertFlashKind::Notable)) {
     s_kind = kind;
   }
   s_active = true;
@@ -114,6 +124,7 @@ void alertFlashStart(AlertFlashKind kind) {
                 : s_kind == AlertFlashKind::Helicopter ? "blue helicopter"
                 : s_kind == AlertFlashKind::Private    ? "white private"
                 : s_kind == AlertFlashKind::Overhead   ? "yellow overhead"
+                : s_kind == AlertFlashKind::Notable    ? "magenta/gold notable"
                                                        : "green tracked",
                 static_cast<unsigned long>(kAlertFlashMs), kRingThicknessPx);
   // Bake into the next radar content rebuild + blit — keeps SPI off the hot path.

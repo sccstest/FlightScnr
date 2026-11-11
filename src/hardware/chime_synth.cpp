@@ -18,7 +18,9 @@ constexpr float G5 = 783.99f;
 constexpr float A5 = 880.00f;
 constexpr float B5 = 987.77f;
 constexpr float C6 = 1046.50f;
+constexpr float D6 = 1174.66f;
 constexpr float E6 = 1318.51f;
+constexpr float G6 = 1567.98f;
 
 enum class Timbre : uint8_t {
   Bell,  // struck: fundamental + quickly fading 2nd/3rd partials
@@ -98,6 +100,23 @@ constexpr Note kEmergency[] = {
     {1.00f, E5, E5, 0, 0.85f, 0.20f, 0.10f, Timbre::Horn},
 };
 
+// Notable aircraft ("go outside and look"): a quick fanfare run G5-C6-E6, a bright
+// hit on G6 over a C6/E6 chord, then a falling sparkle and a final ring.
+constexpr Note kNotable[] = {
+    {0.00f, G5, G5, 0, 0.70f, 0, 0.12f, Timbre::Bell},
+    {0.07f, C6, C6, 0, 0.70f, 0, 0.12f, Timbre::Bell},
+    {0.14f, E6, E6, 0, 0.75f, 0, 0.12f, Timbre::Bell},
+    {0.24f, G6, G6, 0, 0.80f, 0.10f, 0.20f, Timbre::Horn},
+    {0.24f, C6, C6, 0, 0.45f, 0.10f, 0.25f, Timbre::Horn},
+    {0.24f, E6, E6, 0, 0.40f, 0.10f, 0.25f, Timbre::Horn},
+    {0.62f, G6, G6, 0, 0.55f, 0, 0.10f, Timbre::Bell},
+    {0.69f, E6, E6, 0, 0.55f, 0, 0.10f, Timbre::Bell},
+    {0.76f, D6, D6, 0, 0.55f, 0, 0.10f, Timbre::Bell},
+    {0.83f, C6, C6, 0, 0.60f, 0, 0.12f, Timbre::Bell},
+    {0.93f, G6, G6, 0, 0.75f, 0, 0.45f, Timbre::Bell},
+    {0.93f, C6, C6, 0, 0.60f, 0, 0.45f, Timbre::Bell},
+};
+
 constexpr Note kClick[] = {
     {0.00f, 1800.0f, 1800.0f, 0, 0.6f, 0, 0.006f, Timbre::Soft},
 };
@@ -113,6 +132,7 @@ Pattern patternFor(Kind kind) {
     case Kind::Overhead:   return FS_PATTERN(kOverhead, 1.35f);
     case Kind::Emergency:  return FS_PATTERN(kEmergency, 1.50f);
     case Kind::Click:      return FS_PATTERN(kClick, 0.03f);
+    case Kind::Notable:    return FS_PATTERN(kNotable, 1.50f);
   }
   return FS_PATTERN(kTracked, 1.20f);
 }
@@ -248,6 +268,7 @@ const char* name(Kind kind) {
     case Kind::Overhead:   return "overhead";
     case Kind::Emergency:  return "emergency";
     case Kind::Click:      return "click";
+    case Kind::Notable:    return "notable";
   }
   return "?";
 }

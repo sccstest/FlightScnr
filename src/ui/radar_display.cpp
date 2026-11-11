@@ -326,6 +326,13 @@ int aircraftSymbolHalfPx() {
 
 /** Second tag line: ICAO type, or "ground" for parked/taxiing traffic. */
 bool tagTypeLine(const services::adsb::Aircraft& plane, char* out, size_t out_size) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // Notable aircraft show their friendly name ("Hurricane Hunter") instead of the type.
+  if (const char* tag = services::alert::notableTag(plane)) {
+    snprintf(out, out_size, "%s", tag);
+    return true;
+  }
+#endif
   if (plane.type[0] != '\0') {
     services::aircraft_type::formatRadarTagLabel(plane.type, out, out_size);
     return true;
@@ -437,7 +444,8 @@ void drawAircraftTagPlaced(const label_layout::Placement& placement,
   int ly = placement.box.y;
   // Ink follows the map under the tag. A single color (no background) keeps
   // the glyph transparent so the basemap shows through instead of a solid chip.
-  const TagInk ink = tagInkForBackground(tagSitsOnLightBackground(placement.box));
+  const bool light_bg = tagSitsOnLightBackground(placement.box);
+  const TagInk ink = tagInkForBackground(light_bg);
 
   if (plane.callsign[0] != '\0') {
     s_draw->setTextColor(ink.label);
@@ -450,7 +458,16 @@ void drawAircraftTagPlaced(const label_layout::Placement& placement,
 
   char type_label[32];
   if (tagTypeLine(plane, type_label, sizeof(type_label))) {
-    s_draw->setTextColor(ink.type);
+    uint16_t type_ink = ink.type;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (services::alert::notableTag(plane) != nullptr) {
+      // Notable name in an ink no other tag line uses: white on dark maps (tags there
+      // are green / yellow / cyan / magenta), crimson on light maps (navy / blue / teal /
+      // purple).
+      type_ink = light_bg ? tft.color565(190, 0, 60) : tft.color565(255, 255, 255);
+    }
+#endif
+    s_draw->setTextColor(type_ink);
     s_draw->drawString(type_label, anchor_x, ly);
   }
   ly += line_h;
@@ -789,6 +806,12 @@ void drawAircraft() {
     if (services::alert::isHighlighted(planes[i])) {
       if (pulse_on) {
         // With type colors the pulse keeps the class color so it stays recognizable.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        if (services::alert::notableTag(planes[i]) != nullptr &&
+            !planes[i].isEmergencySquawk()) {
+          color = tft.color565(255, 60, 220);  // notable aircraft pulse magenta
+        } else
+#endif
         color = planes[i].isEmergencySquawk()       ? radar::kColorAlertEmergency
                 : services::alert::typeColorsEnabled() ? color
                                                        : radar::kColorAlertMilitary;

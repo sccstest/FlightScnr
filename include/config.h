@@ -111,6 +111,7 @@ constexpr bool kFactoryAlertHelicopter = true;
 constexpr bool kFactoryAlertPrivate = true;
 constexpr bool kFactoryAlertOnApproach = true;  // class alerts fire when heading overhead
 constexpr bool kFactoryAlertOverheadAny = true;
+constexpr bool kFactoryAlertNotable = true;     // 'go look' alarm for notable aircraft
 constexpr bool kFactoryBasemapVfr = true;       // settings page preselects the FAA VFR chart
 #else
 constexpr double kFactoryLatitude = 37.61977;
@@ -128,6 +129,7 @@ constexpr bool kFactoryAlertHelicopter = false;
 constexpr bool kFactoryAlertPrivate = false;
 constexpr bool kFactoryAlertOnApproach = false;
 constexpr bool kFactoryAlertOverheadAny = false;
+constexpr bool kFactoryAlertNotable = false;
 constexpr bool kFactoryBasemapVfr = false;
 #endif
 

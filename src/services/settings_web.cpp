@@ -973,6 +973,12 @@ void handleSettingsPage() {
   appendToggle(page, kSettingsPageCap, &used, "alert_ovh",
                "Overhead alert for any aircraft below 10,000 ft",
                services::alert::overheadAnyEnabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "alert_notbl",
+               "\"Go outside and look\" alarm for notable aircraft (Hurricane Hunters, Coast Guard, "
+               "tankers and military heavies, Air Force One, 747s, A380, Beluga...)",
+               services::alert::notableAlertEnabled());
+#endif
   appendToggle(page, kSettingsPageCap, &used, "type_colors",
                "Color radar icons by type (red military, blue helicopter, white private)",
                services::alert::typeColorsEnabled());
@@ -1588,6 +1594,9 @@ void handleSave() {
                                 watch_reg_arg_present);
   services::alert::saveApproachFromForm(s_server->arg("alert_appr").c_str(),
                                         s_server->arg("alert_ovh").c_str());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  services::alert::saveNotableFromForm(s_server->arg("alert_notbl").c_str());
+#endif
   services::alert::saveClassAlertsFromForm(s_server->arg("alert_heli").c_str(),
                                            s_server->arg("alert_ga").c_str(),
                                            s_server->arg("type_colors").c_str());

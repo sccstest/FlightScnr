@@ -66,7 +66,7 @@ through the PC's speakers via SDL audio.
   emergency chimes at the current volume.
 - Settings page 3: **Alert Sound** on/off and **Chime Volume** A–E (both play a preview).
 - `--chime SEC:NAME` plays one from a script (`tracked`, `military`, `helicopter`,
-  `private`, `overhead`, `emergency`, `click`).
+  `private`, `overhead`, `emergency`, `click`, `notable`).
 - `program.exe --dump-chimes DIR` writes every chime as `chime-<name>.wav` and exits.
 - If Windows has no audio output, the simulator runs silently.
 
@@ -111,6 +111,15 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 - `--wifi-down A[:B]` drops Wi-Fi from A to B seconds. Leave out B to keep it down.
 - `--feed-down A[:B]` keeps Wi-Fi up but fails every HTTP request from A to B seconds.
   Use these to check the radar's "No Wi-Fi" and "Flight data offline" badges.
+- `--fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS]]]]]`
+  (temporary test aid) adds one made-up aircraft to every adsb.fi response from SEC
+  seconds on, so the notable-aircraft alarm can be tested without waiting for a real
+  one. It starts MILES (default 15) from home on BEARING (default 270) and flies
+  HEADING (default 90) at KNOTS (default 240) and 6500 ft, 1 mi to the right of a
+  straight line. MIL=1 sets the military flag. Leave REG empty with `::`.
+  Example: `--fake-plane 0:P3:NOAA42:N42RF` (a Hurricane Hunter about to pass 1 mi
+  from home); `--fake-plane 0:A124:ADB3171:UR-82008:0:0:12:0:300` (a very rare type
+  flying away, which alarms on first sight).
 
 All of these can be repeated. Example: tap the disclaimer's Accept at 8 s, screenshot
 the radar at 20 s, tap the middle at 34 s, screenshot at 38 s.

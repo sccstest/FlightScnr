@@ -13,8 +13,13 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include <cmath>
 #include <mutex>
 #include <string>
+#include <vector>
+
+#include "config.h"
+#include "services/map_center.h"
 
 WiFiClass WiFi;
 
@@ -80,6 +85,102 @@ const NetFaults& netFaults() {
 }
 
 double simNowS() { return static_cast<double>(millis()) / 1000.0; }
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Fake aircraft (TEMPORARY test aid for the notable-aircraft alarm; sim only):
+//   --fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS]]]]]
+// From SEC seconds on, every adsb.fi response gets one extra aircraft that starts
+// MILES (default 15) from home on BEARING (default 270, i.e. west of home) and flies
+// HEADING (default 90) at KNOTS (default 240), offset 1 mi to the right of a direct
+// line, at 6500 ft. MIL=1 sets dbFlags military. Repeat the flag for more planes.
+// Example: --fake-plane 5:P3:NOAA42:N42RF
+// ---------------------------------------------------------------------------
+namespace {
+
+struct FakePlane {
+  double at_s = 0;
+  char type[8] = "";
+  char callsign[12] = "";
+  char reg[16] = "";
+  int mil = 0;
+  double bearing = 270, miles = 15, heading = 90, knots = 240;
+  char hex[8] = "";
+};
+
+const std::vector<FakePlane>& fakePlanes() {
+  static std::vector<FakePlane> planes = [] {
+    std::vector<FakePlane> out;
+    for (int i = 1; i + 1 < __argc; ++i) {
+      if (strcmp(__argv[i], "--fake-plane") != 0) continue;
+      FakePlane p;
+      std::string spec = __argv[i + 1];
+      std::vector<std::string> f;
+      size_t start = 0;
+      while (true) {
+        const size_t c = spec.find(':', start);
+        f.push_back(spec.substr(start, c == std::string::npos ? std::string::npos : c - start));
+        if (c == std::string::npos) break;
+        start = c + 1;
+      }
+      if (f.size() < 4) continue;
+      p.at_s = atof(f[0].c_str());
+      snprintf(p.type, sizeof(p.type), "%s", f[1].c_str());
+      snprintf(p.callsign, sizeof(p.callsign), "%s", f[2].c_str());
+      snprintf(p.reg, sizeof(p.reg), "%s", f[3].c_str());
+      if (f.size() > 4) p.mil = atoi(f[4].c_str());
+      if (f.size() > 5) p.bearing = atof(f[5].c_str());
+      if (f.size() > 6) p.miles = atof(f[6].c_str());
+      if (f.size() > 7) p.heading = atof(f[7].c_str());
+      if (f.size() > 8) p.knots = atof(f[8].c_str());
+      snprintf(p.hex, sizeof(p.hex), "%06x", 0xfa0000u + static_cast<unsigned>(out.size()));
+      printf("[sim] fake plane %s %s %s from %.0f s: %.0f mi at %.0f deg, hdg %.0f, %.0f kt\n",
+             p.type, p.callsign, p.reg, p.at_s, p.miles, p.bearing, p.heading, p.knots);
+      out.push_back(p);
+    }
+    return out;
+  }();
+  return planes;
+}
+
+void injectFakePlanes(const std::string& url, std::vector<uint8_t>* body) {
+  const auto& planes = fakePlanes();
+  if (planes.empty() || url.find(FLIGHTSCNR_ADSB_HOST) == std::string::npos) return;
+  std::string s(body->begin(), body->end());
+  const size_t ac = s.find("\"ac\":[");
+  if (ac == std::string::npos) return;
+  const double now = static_cast<double>(millis()) / 1000.0;
+  const double home_lat = services::map_center::latitude();
+  const double home_lon = services::map_center::longitude();
+  const double kDeg = 3.14159265358979 / 180.0;
+  std::string extra;
+  for (const FakePlane& p : planes) {
+    if (now < p.at_s) continue;
+    const double flown_mi = p.knots * 1.15078 * (now - p.at_s) / 3600.0;
+    // Start point, nudged 1 mi to the right of the heading so it passes near, not over.
+    double e = p.miles * sin(p.bearing * kDeg) + cos(p.heading * kDeg) * 1.0;
+    double n = p.miles * cos(p.bearing * kDeg) - sin(p.heading * kDeg) * 1.0;
+    e += flown_mi * sin(p.heading * kDeg);
+    n += flown_mi * cos(p.heading * kDeg);
+    const double lat = home_lat + n / 69.0;
+    const double lon = home_lon + e / (69.0 * cos(home_lat * kDeg));
+    char obj[512];
+    snprintf(obj, sizeof(obj),
+             "{\"hex\":\"%s\",\"flight\":\"%-8s\",\"r\":\"%s\",\"t\":\"%s\",\"dbFlags\":%d,"
+             "\"alt_baro\":6500,\"gs\":%.1f,\"track\":%.1f,\"true_heading\":%.1f,"
+             "\"category\":\"A5\",\"squawk\":\"4512\",\"lat\":%.6f,\"lon\":%.6f,"
+             "\"baro_rate\":0},",
+             p.hex, p.callsign, p.reg, p.type, p.mil ? 1 : 0, p.knots, p.heading, p.heading,
+             lat, lon);
+    extra += obj;
+  }
+  if (extra.empty()) return;
+  const size_t at = ac + 6;
+  if (at < s.size() && s[at] == ']') extra.pop_back();  // empty list: no trailing comma
+  s.insert(at, extra);
+  body->assign(s.begin(), s.end());
+}
 
 }  // namespace
 
@@ -339,6 +440,7 @@ int HTTPClient::sendRequest(const char* type, const uint8_t* payload, size_t siz
   WinHttpCloseHandle(req);
   WinHttpCloseHandle(conn);
 
+  injectFakePlanes(url_.c_str(), &body);
   size_ = static_cast<int>(body.size());
   client_->simLoad(std::move(body));
   return static_cast<int>(status);
