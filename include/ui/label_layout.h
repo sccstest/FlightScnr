@@ -106,6 +106,9 @@ struct Placement {
   bool on_right = false;  /** block sits right of the symbol (text is left-aligned) */
 };
 
+/** Most screen areas tags must stay out of (e.g. a top banner and a bottom sign). */
+constexpr size_t kMaxBlocked = 2;
+
 /** Screen the tags are placed into. */
 struct Geometry {
   int16_t center_x = 0;
@@ -114,6 +117,10 @@ struct Geometry {
   int16_t visible_radius = 0;
   int16_t symbol_half = 0;  /** aircraft icon half-extent */
   int16_t gap = 0;          /** icon edge to block */
+  /** Overlays drawn over the tags. They count as tags already placed there, so a
+   *  tag moves off them, or shrinks / hides, instead of showing through. */
+  Box blocked[kMaxBlocked]{};
+  uint8_t blocked_count = 0;
 };
 
 /** Drop all remembered placement (tests, and font / panel geometry changes). */

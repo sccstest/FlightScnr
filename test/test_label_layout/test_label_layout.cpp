@@ -303,6 +303,31 @@ void test_no_short_tier_without_callsign(void) {
   }
 }
 
+// (k) Blocked overlays (a bottom sign band): a tag next to one moves off it, and a
+//     tag under one is hidden or kept mostly clear rather than drawn beneath it.
+void test_blocked_band_keeps_tags_off(void) {
+  ll::Geometry g = panel();
+  const ll::Box band{0, 280, 390, 110};
+  g.blocked[0] = band;
+  g.blocked_count = 1;
+
+  ll::Target near = makeTarget(300, 120, 270, 0);
+  ll::resolve(&near, 1, g);
+  const ll::Placement* p = ll::find(300);
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_EQUAL(ll::kTierFull, p->tier);
+  TEST_ASSERT_EQUAL(0, overlap(p->box, band));
+
+  ll::reset();
+  ll::Target under = makeTarget(301, 195, 340, 0);
+  ll::resolve(&under, 1, g);
+  const ll::Placement* q = ll::find(301);
+  TEST_ASSERT_NOT_NULL(q);
+  if (q->tier != ll::kTierHidden) {
+    TEST_ASSERT_TRUE(overlap(q->box, band) * 100 <= q->box.w * q->box.h * ll::kHideCoveragePct);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_isolated_tag_points_at_center);
@@ -318,5 +343,6 @@ int main(int, char**) {
   RUN_TEST(test_tier_promotion_uses_stricter_coverage);
   RUN_TEST(test_closer_tag_survives_lower_priority_crowd);
   RUN_TEST(test_duplicate_keys_stable_across_reorder);
+  RUN_TEST(test_blocked_band_keeps_tags_off);
   return UNITY_END();
 }

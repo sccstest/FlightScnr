@@ -94,6 +94,8 @@ void drawWithOptionalIcon(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint
 
 int radiusPx() { return 15; }
 
+int compactHalfPx() { return (kCompactSidePx + 1) / 2; }
+
 void draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
           const services::adsb::Aircraft* aircraft) {
   drawWithOptionalIcon(gfx, cx, cy, heading_deg, color, aircraft, kFullSidePx, kFull);

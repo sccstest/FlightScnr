@@ -31,8 +31,10 @@ constexpr int kBannerTopY = ui::sc(31);
 constexpr int kPadX = ui::sc(14);
 constexpr int kPadY = ui::sc(5);
 constexpr int kLineGap = ui::sc(1);
-constexpr int kMaxBannerW = ui::sc(214);
 constexpr int kDotR = ui::sc(2);
+constexpr int kOutline = ui::sc(2);
+/** The pill's outline stays this far inside the glass. */
+constexpr int kGlassMargin = ui::sc(3);
 
 struct Rect {
   int x = 0, y = 0, w = 0, h = 0;
@@ -83,23 +85,41 @@ int titleWidth(PlaneGfx& g, const char* title) {
   return g.textWidth(spaced);
 }
 
+/** Widest pill of height h whose round ends, outline included, stay on the glass. */
+int maxBannerWidth(int h) {
+  const int reach = config::kDisplayWidth / 2 - kGlassMargin - (h / 2 + kOutline);
+  const int dy = radar::kCenterY - (kBannerTopY + h / 2);
+  if (reach <= dy) return 3 * h;
+  const int end_cx = static_cast<int>(std::sqrt(static_cast<float>(reach * reach - dy * dy)));
+  return 2 * (end_cx + h / 2);
+}
+
 void drawTitle(PlaneGfx& g, const char* title, int cx, int y, int max_w, uint16_t color) {
   displayFontApply(g, titleStyle());
   char buf[48];
   snprintf(buf, sizeof(buf), "%s", title);
   // Too wide: drop trailing parts unless they are short (e.g. "Look east" /
-  // "Liftoff!"), then trim the first part, which holds the long names.
+  // "Liftoff!"), then shorten the first part, which holds the long names, with "...".
   char* bar = strrchr(buf, '|');
   while (bar != nullptr && titleWidth(g, buf) > max_w) {
     if (g.textWidth(bar + 1) < max_w / 2) break;
     *bar = 0;
     bar = strrchr(buf, '|');
   }
-  while (titleWidth(g, buf) > max_w && strlen(buf) > 4) {
-    char* mid = strchr(buf, '|');
-    char* cut = mid ? mid - 1 : buf + strlen(buf) - 1;
-    if (cut <= buf + 1) break;
-    memmove(cut, cut + 1, strlen(cut + 1) + 1);
+  if (titleWidth(g, buf) > max_w) {
+    char first[48];
+    const char* rest = strchr(buf, '|');
+    if (rest == nullptr) rest = "";
+    snprintf(first, sizeof(first), "%.*s", static_cast<int>(strlen(buf) - strlen(rest)), buf);
+    char cand[56];
+    for (int n = static_cast<int>(strlen(first)) - 1; n >= 1; --n) {
+      while (n > 1 && first[n - 1] == ' ') --n;  // no space before the "..."
+      snprintf(cand, sizeof(cand), "%.*s...%s", n, first, rest);
+      if (titleWidth(g, cand) <= max_w || n == 1) {
+        snprintf(buf, sizeof(buf), "%s", cand);
+        break;
+      }
+    }
   }
   char spaced[64];
   spacedTitle(buf, spaced, sizeof(spaced));
@@ -131,7 +151,8 @@ Rect layoutBanner(PlaneGfx& g, const Banner& b) {
   w += 2 * kPadX;
   const int h = th + dh + kLineGap + 2 * kPadY;
   if (w < h * 3) w = h * 3;
-  if (w > kMaxBannerW * 2) w = kMaxBannerW * 2;
+  const int max_w = maxBannerWidth(h);
+  if (w > max_w) w = max_w;
   Rect r;
   r.w = w;
   r.h = h;
@@ -152,7 +173,7 @@ void drawBanner(PlaneGfx& g, const Banner& b, const Rect& r) {
   const uint16_t accent = accentFor(g, b.kind);
   const uint16_t dark = g.color565(14, 18, 26);
   const uint16_t white = g.color565(255, 255, 255);
-  fillPill(g, r, ui::sc(2), b.urgent ? dark : accent);  // outline
+  fillPill(g, r, kOutline, b.urgent ? dark : accent);  // outline
   fillPill(g, r, 0, b.urgent ? accent : dark);
   const uint16_t title_c = b.urgent ? dark : accent;
   const uint16_t detail_c = b.urgent ? dark : white;
@@ -435,6 +456,18 @@ void drawRadarOverlay(PlaneGfx& g) {
   if (s_state.banner.kind != EventKind::None && !s_state.rect.empty()) {
     drawBanner(g, s_state.banner, s_state.rect);
   }
+}
+
+bool bannerBounds(int* x, int* y, int* w, int* h) {
+  if (s_state.banner.kind == EventKind::None || s_state.rect.empty()) return false;
+  // The widest the banner can get, not its current width: the countdown changes
+  // its width every second, and plane tags shouldn't move with it.
+  const int bw = maxBannerWidth(s_state.rect.h);
+  *x = radar::kCenterX - bw / 2 - kOutline;
+  *y = s_state.rect.y - kOutline;
+  *w = bw + 2 * kOutline;
+  *h = s_state.rect.h + 2 * kOutline;
+  return true;
 }
 
 bool bannerHit(int x, int y) {

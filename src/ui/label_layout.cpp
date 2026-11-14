@@ -45,7 +45,18 @@ size_t s_result_count = 0;
 uint8_t s_order[kMaxTargets];
 uint8_t s_rank[kMaxTargets];
 Placement s_chosen[kMaxTargets];
-Box s_scratch_boxes[kMaxTargets];
+Box s_scratch_boxes[kMaxTargets + kMaxBlocked];
+
+/** Copy the blocked overlays to the front of `out`; returns how many. */
+size_t seedBlocked(const Geometry& geom, Box* out) {
+  size_t n = 0;
+  for (size_t b = 0; b < geom.blocked_count && b < kMaxBlocked; ++b) {
+    if (!geom.blocked[b].empty()) {
+      out[n++] = geom.blocked[b];
+    }
+  }
+  return n;
+}
 
 uint32_t s_signature = 0;
 bool s_valid = false;
@@ -359,6 +370,11 @@ uint32_t signatureOf(const Target* targets, size_t count, const Geometry& geom) 
   sig = fnvMix(sig, static_cast<uint32_t>(geom.visible_radius) << 16 |
                         static_cast<uint16_t>(geom.symbol_half));
   sig = fnvMix(sig, static_cast<uint32_t>(geom.gap));
+  for (size_t b = 0; b < geom.blocked_count && b < kMaxBlocked; ++b) {
+    const Box& k = geom.blocked[b];
+    sig = fnvMix(sig, static_cast<uint32_t>(k.x) << 16 | static_cast<uint16_t>(k.y));
+    sig = fnvMix(sig, static_cast<uint32_t>(k.w) << 16 | static_cast<uint16_t>(k.h));
+  }
   for (size_t i = 0; i < count; ++i) {
     const Target& t = targets[i];
     sig = fnvMix(sig, t.key);
@@ -482,7 +498,7 @@ void resolve(const Target* targets, size_t count, const Geometry& geom) {
 
   // Pass 0: greedy in priority order, so a label only ever yields to one that
   // matters more than it does.
-  size_t placed_count = 0;
+  size_t placed_count = seedBlocked(geom, s_scratch_boxes);
   for (size_t i = 0; i < count; ++i) {
     const size_t idx = s_order[i];
     s_chosen[idx] =
@@ -498,7 +514,7 @@ void resolve(const Target* targets, size_t count, const Geometry& geom) {
     bool moved = false;
     for (size_t i = 0; i < count; ++i) {
       const size_t idx = s_order[i];
-      size_t others_count = 0;
+      size_t others_count = seedBlocked(geom, s_scratch_boxes);
       for (size_t j = 0; j < count; ++j) {
         if (s_rank[j] < s_rank[idx] && s_chosen[j].tier != kTierHidden) {
           s_scratch_boxes[others_count++] = s_chosen[j].box;

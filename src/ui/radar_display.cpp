@@ -295,7 +295,12 @@ bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
 
   const int cx = radar::kCenterX;
   const int cy = radar::kCenterY;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // The whole small icon stays on the glass (centered on the rim, half was cut off).
+  const int rim_r = radar::kCenterX - aircraft_symbol::compactHalfPx() - ui::sc(3);
+#else
   const int rim_r = radar::kCenterX - radar::kBeyondRingScreenMarginPx;
+#endif
   const float angle_rad = atan2f(dx_km, dy_km);
 
   *out_x = cx + static_cast<int>(lroundf(sinf(angle_rad) * rim_r));
@@ -535,6 +540,21 @@ label_layout::Geometry labelGeometry() {
   geom.visible_radius = radar::kAircraftLabelVisibleRadiusPx;
   geom.symbol_half = static_cast<int16_t>(aircraftSymbolHalfPx());
   geom.gap = radar::kAircraftLabelGapPx;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // The sky-events banner (top) and the overhead sign (bottom) draw over the tags:
+  // keep tags out from under them rather than show through.
+  int bx = 0, by = 0, bw = 0, bh = 0;
+  if (ui::sky::bannerBounds(&bx, &by, &bw, &bh)) {
+    geom.blocked[geom.blocked_count++] =
+        label_layout::Box{static_cast<int16_t>(bx), static_cast<int16_t>(by),
+                          static_cast<int16_t>(bw), static_cast<int16_t>(bh)};
+  }
+  if (overheadSignBounds(&bx, &by, &bw, &bh)) {
+    geom.blocked[geom.blocked_count++] =
+        label_layout::Box{static_cast<int16_t>(bx), static_cast<int16_t>(by),
+                          static_cast<int16_t>(bw), static_cast<int16_t>(bh)};
+  }
+#endif
   return geom;
 }
 
@@ -1757,7 +1777,9 @@ size_t collectAircraftMarkers(CachedAircraftMarker* markers, size_t max_markers)
 
 IntRect markerBounds(const CachedAircraftMarker& marker) {
   if (marker.beyond_dot) {
-    const int dot_r = aircraft_symbol::radiusPx() / 2 + 4;
+    // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
+    const int dot_r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
+                               aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
     return clampRectToScreen(IntRect(marker.x - dot_r, marker.y - dot_r, dot_r * 2 + 1,
                                      dot_r * 2 + 1));
   }
@@ -2052,6 +2074,10 @@ void radarDisplayDraw() {
 
 void radarDisplayRefreshAircraft() {
   initPalette();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // First: whether the sign shows decides where tags may go.
+  const bool sign_changed = overheadSignUpdate();
+#endif
   // Place the new tag set before measuring what changed: the dirty rect has to
   // cover where the labels are about to land, not where they used to.
   resolveAircraftLabels();
@@ -2062,7 +2088,7 @@ void radarDisplayRefreshAircraft() {
       unionChangedMarkerBounds(s_current_aircraft_markers, curr_count);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // Repaint the sign's band only when its text, logo or visibility changed.
-  if (overheadSignUpdate()) {
+  if (sign_changed) {
     IntRect band;
     overheadSignBounds(&band.x, &band.y, &band.w, &band.h);
     dirty = rectEmpty(dirty) ? band : unionRect(dirty, band);
