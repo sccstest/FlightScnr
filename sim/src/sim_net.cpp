@@ -90,7 +90,7 @@ double simNowS() { return static_cast<double>(millis()) / 1000.0; }
 
 // ---------------------------------------------------------------------------
 // Fake aircraft (TEMPORARY test aid for the notable-aircraft alarm; sim only):
-//   --fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS]]]]]
+//   --fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS[:HEX]]]]]]
 // From SEC seconds on, every adsb.fi response gets one extra aircraft that starts
 // MILES (default 15) from home on BEARING (default 270, i.e. west of home) and flies
 // HEADING (default 90) at KNOTS (default 240), offset 1 mi to the right of a direct
@@ -134,7 +134,11 @@ const std::vector<FakePlane>& fakePlanes() {
       if (f.size() > 6) p.miles = atof(f[6].c_str());
       if (f.size() > 7) p.heading = atof(f[7].c_str());
       if (f.size() > 8) p.knots = atof(f[8].c_str());
-      snprintf(p.hex, sizeof(p.hex), "%06x", 0xfa0000u + static_cast<unsigned>(out.size()));
+      if (f.size() > 9 && f[9].size() == 6) {
+        snprintf(p.hex, sizeof(p.hex), "%s", f[9].c_str());  // real airframe: gets its photo
+      } else {
+        snprintf(p.hex, sizeof(p.hex), "%06x", 0xfa0000u + static_cast<unsigned>(out.size()));
+      }
       printf("[sim] fake plane %s %s %s from %.0f s: %.0f mi at %.0f deg, hdg %.0f, %.0f kt\n",
              p.type, p.callsign, p.reg, p.at_s, p.miles, p.bearing, p.heading, p.knots);
       out.push_back(p);

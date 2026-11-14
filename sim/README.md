@@ -117,12 +117,13 @@ same tiles, zoom, projection, rotation and color adjustments. It writes
 - `--wifi-down A[:B]` drops Wi-Fi from A to B seconds. Leave out B to keep it down.
 - `--feed-down A[:B]` keeps Wi-Fi up but fails every HTTP request from A to B seconds.
   Use these to check the radar's "No Wi-Fi" and "Flight data offline" badges.
-- `--fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS]]]]]`
+- `--fake-plane SEC:TYPE:CALLSIGN:REG[:MIL[:BEARING[:MILES[:HEADING[:KNOTS[:HEX]]]]]]`
   (temporary test aid) adds one made-up aircraft to every adsb.fi response from SEC
   seconds on, so the notable-aircraft alarm can be tested without waiting for a real
   one. It starts MILES (default 15) from home on BEARING (default 270) and flies
   HEADING (default 90) at KNOTS (default 240) and 6500 ft, 1 mi to the right of a
-  straight line. MIL=1 sets the military flag. Leave REG empty with `::`.
+  straight line. MIL=1 sets the military flag. Leave REG empty with `::`. HEX (6
+  characters) uses a real airframe's Mode S code, so the detail page loads its photo.
   Example: `--fake-plane 0:P3:NOAA42:N42RF` (a Hurricane Hunter about to pass 1 mi
   from home); `--fake-plane 0:A124:ADB3171:UR-82008:0:0:12:0:300` (a very rare type
   flying away, which alarms on first sight).
