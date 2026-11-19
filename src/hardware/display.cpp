@@ -35,6 +35,10 @@ void displayInit() {
   pinMode(LCD_BL, OUTPUT);
   digitalWrite(LCD_BL, HIGH);
 #endif
+#if defined(LCD_BL_EN)
+  pinMode(LCD_BL_EN, OUTPUT);
+  digitalWrite(LCD_BL_EN, HIGH);
+#endif
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // MIPI-DSI framebuffer panel: the "bus" writes straight into PSRAM.
@@ -127,9 +131,15 @@ void displaySleep() {
 #if FLIGHTSCNR_HAS_LCD_BACKLIGHT_PWM
   digitalWrite(LCD_BL, LOW);
 #endif
+#if defined(LCD_BL_EN)
+  digitalWrite(LCD_BL_EN, LOW);
+#endif
 }
 
 void displayWake() {
+#if defined(LCD_BL_EN)
+  digitalWrite(LCD_BL_EN, HIGH);
+#endif
 #if FLIGHTSCNR_HAS_LCD_BACKLIGHT_PWM
   hardware::displayApplyBrightness();
 #endif

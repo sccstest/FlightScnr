@@ -57,8 +57,12 @@ void applyBacklightPwm(uint8_t pct) {
   ensureBacklightPwm();
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // Waveshare's BSP caps the 4C backlight at 95% duty.
-  ledcWrite(LCD_BL, static_cast<uint32_t>(panelLevelForPercent(pct)) * 95u / 100u);
+  // The 4C's LCD_BL_PWM is active-low: Waveshare's board config sets LEDC output_invert
+  // ("a larger duty is always brighter" only after that inversion). Writing the level
+  // straight gave ~5% brightness at "100%", which looked like a dead screen on first
+  // hardware boot. Waveshare's BSP also caps the backlight at 95% duty.
+  const uint32_t level = static_cast<uint32_t>(panelLevelForPercent(pct)) * 95u / 100u;
+  ledcWrite(LCD_BL, 255u - level);
 #else
   ledcWrite(LCD_BL, panelLevelForPercent(pct));
 #endif

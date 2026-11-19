@@ -49,6 +49,9 @@
 
 #define LCD_RST 27
 #define LCD_BL 26
+/* Enable pin of the AP3032 backlight boost driver (BL_EN, 100K pull-down on the board).
+ * Must be driven high or the backlight stays dark, whatever the PWM on LCD_BL says. */
+#define LCD_BL_EN 33
 #define LCD_WIDTH 720
 #define LCD_HEIGHT 720
 
