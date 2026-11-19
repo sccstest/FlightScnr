@@ -8,6 +8,9 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <freertos/task.h>
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+#include <esp_task_wdt.h>
+#endif
 
 #include "config.h"
 #include "services/route_cache_store.h"
@@ -2326,7 +2329,22 @@ void setup() {
   // WiFi/lwIP tasks, can starve core 0's idle task past the 5s task-watchdog window
   // and reboot the device. We intentionally run heavy work there, so unsubscribe
   // core 0's idle task from the watchdog (core 1's loop watchdog stays active).
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+  // IDF 5.x (P4): disableCore0WDT() deletes the idle task but leaves IDF's idle
+  // hook registered, which then logs "esp_task_wdt_reset: task not found" every
+  // few ms (seen on the first hardware boot). Reconfiguring with no idle cores
+  // removes the hook too; timeout and panic stay as sdkconfig set them.
+  {
+    const esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000U,
+        .idle_core_mask = 0,
+        .trigger_panic = true,
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+  }
+#else
   disableCore0WDT();
+#endif
 
   hardware::panelBootResolve();
   displayInit();
