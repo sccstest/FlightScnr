@@ -1061,6 +1061,8 @@ PortalResult openConfigPortal(WiFiManager& wm) {
   const unsigned long opened_ms = millis();
   unsigned long last_client_ms = opened_ms;
   unsigned long last_sta_log_ms = 0;
+  unsigned long last_sta_poll_ms = opened_ms - 1000UL;
+  unsigned stations = 0;
   bool retry_saved = false;
   while (wm.getConfigPortalActive()) {
     inputPollLongPress();
@@ -1069,7 +1071,13 @@ PortalResult openConfigPortal(WiFiManager& wm) {
     }
     wm.process();
     const unsigned long now = millis();
-    const unsigned stations = static_cast<unsigned>(WiFi.softAPgetStationNum());
+    // Ask for the station count once a second, not every pass. On the P4 this is an
+    // ESP-Hosted RPC to the C6, and ~200 of them a second made the C6 stop answering
+    // about 45 s after the portal opened; esp_hosted then crashed on the missing reply.
+    if (now - last_sta_poll_ms >= 1000UL) {
+      last_sta_poll_ms = now;
+      stations = static_cast<unsigned>(WiFi.softAPgetStationNum());
+    }
     if (stations > 0) {
       last_client_ms = now;
     }
