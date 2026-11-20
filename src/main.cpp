@@ -93,6 +93,8 @@ AppScreen g_screen = AppScreen::Radar;
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
+/** Set while night mode skips the loop's network checks; see restartOutageTimersAfterNight(). */
+bool g_outage_timers_paused = false;
 /** Feeds, NTP, routes etc. have been started (needs Wi-Fi once). */
 bool g_online_services_started = false;
 /** First failed adsb.fi DNS probe of the current streak (0 = resolving fine). */
@@ -2299,24 +2301,55 @@ void tryTlsWifiRefresh(unsigned long now) {
  *  full P4 reset re-initializes the C6. Wi-Fi down: the reconnect rounds open the
  *  setup portal at 30 min (wifi_setup.cpp; the portal has its own escalation), so
  *  the Wi-Fi-down restart here is only a backstop at 60 min in case it never did. */
+unsigned long s_esc_no_data_since_ms = 0;
+unsigned long s_esc_force_poll_ms = 0;
+
+/** Night mode returns from loop() before the reconnect and the escalation checks run,
+ *  so their timers would read the whole night as an outage at wake and restart the
+ *  device before it even tried to reconnect or fetch. Restart them on wake. */
+void restartOutageTimersAfterNight() {
+  s_esc_no_data_since_ms = 0;
+  s_esc_force_poll_ms = 0;
+  if (g_wifi_down_since != 0) {
+    g_wifi_down_since = millis() != 0 ? millis() : 1;
+  }
+  g_last_reconnect_ms = 0;  // first reconnect round right after the grace period
+  wifiRestartOutageClock();
+}
+
 void tickNetworkEscalation(unsigned long now) {
-  static unsigned long s_no_data_since_ms = 0;
   static unsigned long s_last_try_ms = 0;
   const bool wifi_up = WiFi.status() == WL_CONNECTED;
 
   if (!wifi_up || !adsbFetchScreenActive() ||
       services::adsb::lastFetchOkAgeMs() < 60000UL) {
-    s_no_data_since_ms = 0;
-  } else if (s_no_data_since_ms == 0) {
-    s_no_data_since_ms = now != 0 ? now : 1;
+    s_esc_no_data_since_ms = 0;
+    s_esc_force_poll_ms = 0;
+  } else if (s_esc_no_data_since_ms == 0) {
+    s_esc_no_data_since_ms = now != 0 ? now : 1;
   }
 
   const char* why = nullptr;
   if (!wifi_up && g_wifi_down_since != 0 &&
       now - g_wifi_down_since >= config::kEscalateWifiDownMs + config::kWifiPortalAfterDownMs) {
     why = "Wi-Fi down for 60 min";
-  } else if (s_no_data_since_ms != 0 && now - s_no_data_since_ms >= config::kEscalateNoAdsbMs) {
-    why = "Wi-Fi up but no adsb.fi data for 20 min";
+  } else if (s_esc_no_data_since_ms != 0 &&
+             now - s_esc_no_data_since_ms >= config::kEscalateNoAdsbMs) {
+    // Failing polls back off to 5 min, so the internet may have come back since the
+    // last one: restart only on a poll that failed within the last minute. Otherwise
+    // ask for one poll now; if it cannot even run within 2 min (worker stuck, heap
+    // gate), restart anyway.
+    if (services::adsb::lastFetchFailAgeMs() <= 60000UL) {
+      s_esc_force_poll_ms = 0;
+      why = "Wi-Fi up but no adsb.fi data for 20 min";
+    } else if (s_esc_force_poll_ms == 0) {
+      s_esc_force_poll_ms = now != 0 ? now : 1;
+      g_last_adsb_fetch_ms = 0;  // poll on the next radar pass
+      Serial.println("[net] no adsb.fi data for 20 min - one more poll before a restart");
+    } else if (now - s_esc_force_poll_ms >= 120000UL) {
+      s_esc_force_poll_ms = 0;
+      why = "Wi-Fi up but no adsb.fi data for 20 min (poll could not run)";
+    }
   }
   if (why == nullptr || (s_last_try_ms != 0 && now - s_last_try_ms < 60000UL)) {
     return;
@@ -2793,8 +2826,14 @@ static void loopBody() {
       (void)inputConsumePinchStep();
       settingsWebPoll();
       tickDiagLog();
+      g_outage_timers_paused = true;
       return;
     }
+  }
+  if (g_outage_timers_paused) {
+    // First full pass after night mode (scheduled end or a tap).
+    g_outage_timers_paused = false;
+    restartOutageTimersAfterNight();
   }
   tickBootDetailsSplash();
   tickDisclaimerCountdown();
