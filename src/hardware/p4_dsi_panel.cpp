@@ -375,7 +375,12 @@ void Arduino_P4Dsi::tftInit() {
   }
 #endif
   // DSI_HOST_MODE_CFG bit 0: 0 = video mode (picture), 1 = command mode (no picture).
+  // Real hardware only: the desktop simulator has no DSI registers to read.
+#if defined(FLIGHTSCNR_SIM)
+  const bool video_mode = true;
+#else
   const bool video_mode = (*reinterpret_cast<volatile uint32_t*>(0x500A0034UL) & 1U) == 0;
+#endif
   Serial.printf("DSI: %ux%u up, %u lanes @ %u Mbps, DPI %u MHz, host in %s mode\n",
                 cfg_.width, cfg_.height, cfg_.lanes, static_cast<unsigned>(cfg_.lane_mbps),
                 static_cast<unsigned>(cfg_.dpi_clock_mhz),

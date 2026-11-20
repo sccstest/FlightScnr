@@ -2317,7 +2317,21 @@ static void tickLinkStatus() {
 }
 
 void setup() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+  // Must precede begin(). With the zero timeout below, a line that does not fit in
+  // the ring is cut off; the default 256 B truncated the ~800 B [diag] lines even
+  // with a serial monitor reading.
+  Serial.setTxBufferSize(8192);
+#endif
   Serial.begin(115200);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+  // Serial is the P4's USB Serial/JTAG port. When a computer is attached but no
+  // program reads it, the core waits up to 20 x tx_timeout (100 ms) per write before
+  // giving up, so every log line could stall the UI for ~2 s: the device crawled
+  // whenever it sat on a PC's USB port without a serial monitor open. Drop log lines
+  // instead of waiting. (On a phone charger there is no USB host, so it never waited.)
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(500);
   Serial.println();
   Serial.printf("[diag] boot reset=%s fw=%s overnight=%d radar_resume_dbg=%d diag_ivl=%lus slow>%lums\n",

@@ -562,9 +562,10 @@ void handleSettingsPage() {
     char carto_masked[48];
     services::basemap::statusText(bm_status, sizeof(bm_status));
     services::apikeys::maskedCarto(carto_masked, sizeof(carto_masked));
-    const auto bm_style = services::basemap::hasImage()
-                              ? services::basemap::storedStyle()
-                              : services::basemap::Style::Dark;
+    // The stored bake's style, or the board's factory style (Voyager on the 4C) when
+    // nothing is baked yet. This used to fall back to Dark, so a first bake on the
+    // gift unit came out near-black unless the user changed the dropdown.
+    const auto bm_style = services::basemap::storedStyle();
     const bool dark_sel = bm_style == services::basemap::Style::Dark;
     const bool light_sel = bm_style == services::basemap::Style::Light;
     const bool vfr_sel = bm_style == services::basemap::Style::Vfr;
@@ -1470,7 +1471,9 @@ void handleSettingsPage() {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
       "setVal('use_rain',j.use_rain);"
 #endif
-      "setVal('basemap_style',j.basemap_style);"
+      // Not basemap_style: it is a choice for the next Generate, not a live setting.
+      // Syncing it reset the user's pick every time the device changed anything
+      // (even a zoom on the touchscreen), so Voyager silently became Dark Matter.
       "setVal('bm_contrast_dark',j.bm_contrast_dark);"
       "setVal('bm_contrast_light',j.bm_contrast_light);"
       "setVal('bm_wash_vfr',j.bm_wash_vfr);"
@@ -2163,8 +2166,7 @@ void handleSettingsApi() {
   snprintf(night_start_s, sizeof(night_start_s), "%02u:%02u", night_start / 60, night_start % 60);
   snprintf(night_end_s, sizeof(night_end_s), "%02u:%02u", night_end / 60, night_end % 60);
 
-  const auto bm_style = services::basemap::hasImage() ? services::basemap::storedStyle()
-                                                     : services::basemap::Style::Dark;
+  const auto bm_style = services::basemap::storedStyle();
 
   // Compose into a reusable PSRAM/DRAM buffer — avoid WebServer String copy.
   constexpr size_t kApiCap = 6144;
