@@ -1570,14 +1570,30 @@ void drawScaleLabelWithBackground(const char* text, int x, int y) {
   {
     const int w = s_draw->textWidth(text);
     const int h = s_scale_label_h;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    // 4C: test the text edge farther from the center (the bottom on the usual
+    // W-SW bearing) and keep ~15 px of glass free, so the outer "8 mi" is not
+    // half under the round bezel.
+    const int dy_top = y - h - radar::kCenterY;
+    const int dy_bottom = y - radar::kCenterY;
+    const int dy = std::abs(dy_top) > std::abs(dy_bottom) ? dy_top : dy_bottom;
+    const int r = radar::kSize / 2 - ui::sc(10);
+#else
     const int dy = y - h / 2 - radar::kCenterY;
     const int r = radar::kSize / 2 - ui::sc(4);
+#endif
     if (dy * dy < r * r) {
       const int half_chord = static_cast<int>(sqrtf(static_cast<float>(r * r - dy * dy)));
       const int left_limit = radar::kCenterX - half_chord;
       if (x - w < left_limit) {
         x = left_limit + w;
       }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      // A Facing setting can swing the labels to the right side: keep that end in too.
+      if (x > radar::kCenterX + half_chord) {
+        x = radar::kCenterX + half_chord;
+      }
+#endif
     }
   }
   // Bottom-right anchor: text grows up/left into the W–SW wedge (not toward S).
@@ -1708,7 +1724,27 @@ void drawGridSpokes(int cx, int cy, int radius, uint16_t color) {
 void drawIntercardinalLabel(const char* text, int cx, int cy, int radius,
                             float angle_deg_from_north) {
   const float rad = angle_deg_from_north * 3.14159265f / 180.0f;
-  const int r = radius - radar::kCardinalDiagonalInsetPx;
+  int r = radius - radar::kCardinalDiagonalInsetPx;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // 4C: a two-letter label on a diagonal reached within a few px of the round
+  // glass. Pull it in until its box corners keep ~15 px of glass free.
+  {
+    displayFontApply(*s_draw, s_cardinal_style);
+    const float hw = 0.5f * static_cast<float>(s_draw->textWidth(text));
+    const float hh = 0.5f * static_cast<float>(displayFontHeight(*s_draw, s_cardinal_style));
+    const float s = fabsf(sinf(rad));
+    const float c = fabsf(cosf(rad));
+    const float radial = s * hw + c * hh;      // box reach along the radius
+    const float tangential = c * hw + s * hh;  // and across it
+    const float safe = static_cast<float>(radar::kSize / 2 - ui::sc(10));
+    if (tangential < safe) {
+      const int max_r = static_cast<int>(sqrtf(safe * safe - tangential * tangential) - radial);
+      if (r > max_r) {
+        r = max_r;
+      }
+    }
+  }
+#endif
   const int x = cx + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
   const int y = cy - static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
   drawCardinalLabel(text, x, y, TextDatum::MiddleCenter);
@@ -3130,10 +3166,27 @@ void drawOrientationHints(PlaneGfx& gfx) {
   displayFontApply(gfx, displayFontBody());
   gfx.setTextDatum(TextDatum::TopCenter);
   gfx.setTextColor(radar::kColorLabel, radar::kColorBackground);
-  gfx.drawString(line, radar::kCenterX, ui::sc(28));
+  int line_y = ui::sc(28);
+  int hint_y = radar::kSize - (FLIGHTSCNR_HAS_ENCODER ? ui::sc(48) : ui::sc(72));
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // 4C: at sc(28) the "<" and ">" of the title sat under the round bezel. Put each
+  // line where its whole width fits the glass with ~15 px to spare.
+  {
+    const int r_safe = radar::kSize / 2 - ui::sc(10);
+    const int h = displayFontHeight(gfx, displayFontBody());
+    auto fit_dy = [&](const char* s) {
+      const int half = gfx.textWidth(s) / 2;
+      return half < r_safe ? static_cast<int>(sqrtf(static_cast<float>(r_safe * r_safe -
+                                                                        half * half)))
+                           : 0;
+    };
+    line_y = std::max(line_y, radar::kCenterY - fit_dy(line));
+    hint_y = std::min(hint_y, radar::kCenterY + fit_dy(hint) - h);
+  }
+#endif
+  gfx.drawString(line, radar::kCenterX, line_y);
   // The touch hint is wider than "Tap to save"; keep it inside the round edge.
-  gfx.drawString(hint, radar::kCenterX,
-                 radar::kSize - (FLIGHTSCNR_HAS_ENCODER ? ui::sc(48) : ui::sc(72)));
+  gfx.drawString(hint, radar::kCenterX, hint_y);
   gfx.setTextDatum(TextDatum::TopLeft);
 }
 
