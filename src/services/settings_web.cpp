@@ -79,7 +79,7 @@ const char kPageHead[] = R"HTML(<!DOCTYPE html>
 --muted:#9a9a9a;--accent:#1a9c3c;--accent2:#22c24c;--field:#1e1e1e;--fline:#3a3a3a;--link:#cfcfcf;}
 *{box-sizing:border-box;}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:var(--bg);
-color:var(--text);line-height:1.45;padding-bottom:5.5rem;}
+color:var(--text);line-height:1.45;padding-bottom:5.5rem;overflow-wrap:anywhere;}
 .wrap{max-width:34rem;margin:0 auto;padding:1.25rem 1rem;}
 .app-head{display:flex;align-items:center;gap:.65rem;margin-bottom:.25rem;}
 .logo{width:2.1rem;height:2.1rem;border-radius:50%;flex:none;border:1px solid #0a5;
@@ -91,8 +91,17 @@ padding:.7rem .85rem;margin:0 0 1rem;font-size:.9rem;}
 .banner b{color:#fff;}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:0 0 .9rem;overflow:hidden;}
 .card>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:.6rem;
-padding:.85rem 1rem;font-weight:600;font-size:.98rem;user-select:none;}
-.card>summary::-webkit-details-marker{display:none;}
+padding:.85rem 1rem;font-weight:600;font-size:.98rem;user-select:none;min-height:3.2rem;}
+.card>summary::-webkit-details-marker,.adv>summary::-webkit-details-marker{display:none;}
+.adv{margin:.9rem 0 0;border-top:1px solid var(--line);}
+.adv>summary{list-style:none;cursor:pointer;min-height:2.9rem;display:flex;align-items:center;
+color:var(--muted);font-size:.88rem;}
+.adv>summary::before{content:"\25B8";margin-right:.45rem;transition:transform .18s;}
+.adv[open]>summary::before{transform:rotate(90deg);}
+.grp{border-color:#444;}.grp>.body{padding:.25rem .6rem .6rem;}
+.grp .card{margin:.6rem 0 0;background:var(--card2);}
+.dev{background:#3a3214;border:1px solid #a8892a;color:#fde9a8;border-radius:9px;
+padding:.5rem .65rem;font-size:.8rem;margin:.6rem 0 0;}
 .card>summary .ico{width:1.6rem;height:1.6rem;border-radius:7px;flex:none;display:grid;
 place-items:center;font-size:.95rem;background:var(--card2);border:1px solid var(--line);}
 .card>summary .chev{margin-left:auto;color:var(--muted);transition:transform .18s;font-size:.8rem;}
@@ -101,17 +110,18 @@ place-items:center;font-size:.95rem;background:var(--card2);border:1px solid var
 .card .body{padding:.25rem 1rem 1rem;border-top:1px solid var(--line);}
 label{display:block;margin:.85rem 0 .3rem;font-size:.84rem;color:#d2d2d2;}
 input,select{width:100%;padding:.6rem .65rem;border-radius:9px;border:1px solid var(--fline);
-background:var(--field);color:#fff;font-size:1rem;outline:none;}
+background:var(--field);color:#fff;font-size:1rem;outline:none;min-height:2.75rem;}
 input:focus,select:focus{border-color:var(--accent2);box-shadow:0 0 0 2px rgba(34,194,76,.2);}
 input::placeholder{color:#777;}
 .hint,.note{color:var(--muted);font-size:.78rem;margin:.4rem 0 0;}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;}
 @media(max-width:24rem){.row2{grid-template-columns:1fr;}}
-.chk{display:flex;align-items:center;gap:.6rem;padding:.7rem 0;border-bottom:1px solid rgba(120,120,120,.22);}
+.chk{display:flex;align-items:center;gap:.6rem;border-bottom:1px solid rgba(120,120,120,.22);}
 .chk:last-of-type{border-bottom:none;}
-.chk label{margin:0;font-size:.9rem;color:var(--text);flex:1;}
+.chk label{margin:0;font-size:.9rem;color:var(--text);flex:1;padding:.75rem 0;min-height:2.9rem;}
 .switch{position:relative;width:2.6rem;height:1.5rem;flex:none;}
-.switch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;}
+.switch input{position:absolute;opacity:0;left:-.3rem;right:-.3rem;top:-.65rem;width:auto;
+height:2.8rem;min-height:0;margin:0;cursor:pointer;}
 .switch .track{position:absolute;inset:0;border-radius:999px;background:#333;
 border:1px solid var(--fline);transition:.18s;pointer-events:none;}
 .switch .track::after{content:"";position:absolute;top:50%;left:.18rem;transform:translateY(-50%);
@@ -128,7 +138,8 @@ border:1px solid var(--line);border-radius:8px;padding:.45rem .6rem;}
 .usage b{color:#ddd;}
 a{color:var(--link);}
 .dl{display:inline-flex;align-items:center;gap:.4rem;text-decoration:none;background:var(--card2);
-border:1px solid var(--line);border-radius:9px;padding:.55rem .8rem;font-size:.88rem;margin-top:.5rem;}
+border:1px solid var(--line);border-radius:9px;padding:.55rem .8rem;font-size:.88rem;margin-top:.5rem;
+min-height:2.75rem;}
 .savebar{position:fixed;left:0;right:0;bottom:0;z-index:20;padding:1rem;
 background:linear-gradient(180deg,rgba(10,10,10,0),rgba(10,10,10,.92) 30%,#0a0a0a);}
 .savebar .inner{max-width:34rem;margin:0 auto;}
@@ -143,17 +154,19 @@ background:var(--card2);}
 .net-row .ssid{font-weight:600;}
 .net-row .skip{font-size:.72rem;color:#c9a227;margin-left:.15rem;}
 .net-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem;}
-button.sm,a.sm{font-size:.78rem;padding:.4rem .55rem;border-radius:8px;border:1px solid var(--fline);
-background:#262626;color:#eee;cursor:pointer;text-decoration:none;display:inline-block;}
+button.sm,a.sm{font-size:.85rem;padding:.4rem .75rem;border-radius:8px;border:1px solid var(--fline);
+background:#262626;color:#eee;cursor:pointer;text-decoration:none;display:inline-block;min-height:2.75rem;}
+button:disabled{opacity:.45;cursor:default;}
 button.sm.danger{border-color:#633;background:#2a1515;color:#fcc;}
 .wifi-add{margin-top:.75rem;padding-top:.65rem;border-top:1px solid var(--line);}
 .foot{text-align:center;font-size:.8rem;color:var(--muted);margin:1.2rem 0 .2rem;}
 .foot a{color:var(--link);}
 </style></head><body>
-<form id="fs-save" method="POST" action="/save">
 <div class="wrap">
-<div class="app-head"><div class="logo"></div><h1>FlightScnr</h1></div>
-<p class="subtitle">Changes save to flash. Radar refreshes when you tap <strong>Save</strong>.</p>
+<div class="app-head"><div class="logo"></div><h1>FlightScnr settings</h1></div>
+<p class="subtitle">Change what you like, then tap <strong>Save</strong> at the bottom.
+Nothing changes on the radar until you do.</p>
+<form id="fs-save" method="POST" action="/save">
 )HTML";
 
 void formatUsdMicro(uint32_t micro, char* out, size_t len, int decimals) {
@@ -313,6 +326,7 @@ void appendFirmwareUpdateCard(char* page, size_t* used) {
 }
 
 // Emits a labelled on/off toggle row (label left, switch right). id is reused as name.
+// form="fs-save" lets toggles in the Advanced group (outside the <form>) still save.
 void appendToggle(char* page, size_t len, size_t* used, const char* id, const char* label_html,
                   bool checked) {
   if (page == nullptr || used == nullptr || *used >= len) {
@@ -321,8 +335,8 @@ void appendToggle(char* page, size_t len, size_t* used, const char* id, const ch
   const int n = snprintf(
       page + *used, len - *used,
       "<div class=\"chk\"><label for=\"%s\">%s</label>"
-      "<span class=\"switch\"><input id=\"%s\" name=\"%s\" type=\"checkbox\" value=\"T\"%s>"
-      "<span class=\"track\"></span></span></div>",
+      "<span class=\"switch\"><input id=\"%s\" name=\"%s\" form=\"fs-save\" type=\"checkbox\" "
+      "value=\"T\"%s><span class=\"track\"></span></span></div>",
       id, label_html, id, id, checked ? " checked" : "");
   appendClamped(page, len, used, n);
 }
@@ -334,8 +348,8 @@ void appendInlineToggle(char* page, size_t len, size_t* used, const char* id, bo
   }
   const int n = snprintf(
       page + *used, len - *used,
-      "<span class=\"switch\"><input id=\"%s\" name=\"%s\" type=\"checkbox\" value=\"T\"%s>"
-      "<span class=\"track\"></span></span>",
+      "<span class=\"switch\"><input id=\"%s\" name=\"%s\" form=\"fs-save\" type=\"checkbox\" "
+      "value=\"T\"%s><span class=\"track\"></span></span>",
       id, id, checked ? " checked" : "");
   appendClamped(page, len, used, n);
 }
@@ -356,13 +370,13 @@ void sendLocationErrorPage() {
   snprintf(page, sizeof(page),
            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-           "<title>Radar center not saved</title></head>"
+           "<title>Location not saved</title></head>"
            "<body style=\"font-family:system-ui,sans-serif;max-width:28rem;margin:1.5rem auto;"
            "padding:0 1rem;background:#000;color:#ececec\">"
-           "<h1 style=\"font-size:1.25rem;color:#f66\">Radar center not saved</h1>"
-           "<p>Other settings were saved, but the <strong>Radar Center</strong> value could "
-           "not be parsed. Use decimal degrees with a comma between latitude and longitude, "
-           "for example:</p>"
+           "<h1 style=\"font-size:1.25rem;color:#f66\">Location not saved</h1>"
+           "<p>Your other settings were saved, but the <strong>Radar center</strong> "
+           "location could not be read. Enter two numbers with a comma between them "
+           "(latitude, then longitude), for example:</p>"
            "<p style=\"font-family:monospace;background:#222;padding:.75rem;border-radius:6px\">"
            "51.507400, -0.127800</p>"
            "<p style=\"color:#9a9a9a;font-size:.9rem\">Spaces around the comma are fine. "
@@ -400,7 +414,9 @@ void appendRangeOptions(char* buf, size_t len, size_t* used) {
 }
 
 void handleSettingsPage() {
-  services::apikeys::load();
+  // No apikeys::load() here: the keys live in RAM (loaded at boot and at server
+  // start; every save updates RAM too). Re-reading NVS per request raced the
+  // route worker and cost ~20 NVS reads.
   char* const page = settingsPageBuffer();
   if (page == nullptr) {
     s_server->send(503, "text/plain", "Out of memory");
@@ -471,7 +487,7 @@ void handleSettingsPage() {
   // ---------- Radar card ----------
   appendRaw(page, kSettingsPageCap, &used,
             "<details class=\"card\" open><summary><span class=\"ico\">&#9678;</span>Radar"
-            "<span class=\"sum\">center, range, units</span><span class=\"chev\">&#9656;</span>"
+            "<span class=\"sum\">location, range, planes</span><span class=\"chev\">&#9656;</span>"
             "</summary><div class=\"body\">");
 
   char center_value[48];
@@ -481,7 +497,10 @@ void handleSettingsPage() {
       page + used, kSettingsPageCap - used,
       "<label for=\"radar_center\">Radar center (lat, lon)</label>"
       "<input id=\"radar_center\" name=\"radar_center\" type=\"text\" required "
-      "autocomplete=\"off\" placeholder=\"37.636422, -122.365968\" value=\"%s\">",
+      "autocomplete=\"off\" inputmode=\"decimal\" placeholder=\"37.636422, -122.365968\" "
+      "value=\"%s\">"
+      "<p class=\"hint\">Your location &mdash; paste from Google Maps (long-press the map, "
+      "then copy the two numbers).</p>",
       center_value);
   appendClamped(page, kSettingsPageCap, &used, center_n);
 
@@ -507,56 +526,66 @@ void handleSettingsPage() {
   const int min_n = snprintf(
       page + used, kSettingsPageCap - used,
       "<div class=\"row2\"><div>"
-      "<label for=\"min_height\">Min altitude floor (feet AGL)</label>"
+      "<label for=\"min_height\">Hide planes below (ft)</label>"
       "<input id=\"min_height\" name=\"min_height\" type=\"number\" min=\"0\" step=\"1\" "
-      "value=\"%d\">"
-      "<p class=\"hint\">0 = off (show taxi + ground vehicles). Units are feet, not miles. "
-      "Default 500 hides surface traffic. After Save, About should read "
-      "<em>Min alt: off</em>.</p>"
+      "inputmode=\"numeric\" value=\"%d\">"
       "</div><div>"
-      "<label for=\"max_height\">Max altitude ceiling (ft, 0 = off)</label>"
+      "<label for=\"max_height\">Hide planes above (ft)</label>"
       "<input id=\"max_height\" name=\"max_height\" type=\"number\" min=\"0\" step=\"1\" "
-      "value=\"%d\">"
-      "</div></div>",
+      "inputmode=\"numeric\" value=\"%d\">"
+      "</div></div>"
+      "<p class=\"hint\">In feet above the ground. 0 = off. 500 hides planes on the ground "
+      "and taxiing.</p>",
       services::adsb::altitudeFloorFt(), services::adsb::altitudeCeilingFt());
   appendClamped(page, kSettingsPageCap, &used, min_n);
 
-  appendRaw(page, kSettingsPageCap, &used,
-            "<label for=\"radar_accent\">Color theme</label>"
-            "<select id=\"radar_accent\" name=\"radar_accent\">");
-  appendAccentOptions(page, kSettingsPageCap, &used);
-  appendRaw(page, kSettingsPageCap, &used, "</select>");
-
-  appendToggle(page, kSettingsPageCap, &used, "show_cardinals", "Show compass rose",
-               ui::radar::showCompassRose());
-  {
-    const int facing_n = snprintf(
-        page + used, kSettingsPageCap - used,
-        "<label for=\"facing_deg\">Facing direction (degrees at top of radar, 0=N)</label>"
-        "<input id=\"facing_deg\" name=\"facing_deg\" type=\"number\" min=\"0\" max=\"359\" "
-        "step=\"5\" value=\"%u\">"
-        "<p class=\"hint\">0=North, 90=East, 180=South, 270=West. Snaps to 5&deg; steps. "
-        "On the device: Settings &rarr; Display &rarr; Facing, then turn the dial.</p>",
-        static_cast<unsigned>(ui::radar::facingDeg()));
-    if (facing_n > 0) {
-      appendClamped(page, kSettingsPageCap, &used, facing_n);
-    }
-  }
-  appendToggle(page, kSettingsPageCap, &used, "show_sweep", "Show radar sweep line",
-               ui::displayPrefsSweepLineEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "hide_blip_details",
-               "Hide aircraft blip details", ui::displayPrefsHideBlipDetails());
+  appendToggle(page, kSettingsPageCap, &used, "plane_labels",
+               "Plane labels (text next to each plane)",
+               !ui::displayPrefsHideBlipDetails());
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   appendToggle(page, kSettingsPageCap, &used, "overhead_sign",
-               "Overhead sign (closest plane banner)", ui::displayPrefsOverheadSignEnabled());
+               "Overhead sign (banner for the closest plane)",
+               ui::displayPrefsOverheadSignEnabled());
   appendToggle(page, kSettingsPageCap, &used, "hide_airliners",
                "Hide airliners and cargo jets (special ones still show)",
                services::alert::airlinersHidden());
 #endif
 
+  {
+    const int facing_n = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<label for=\"facing_deg\">Which way the top of the screen faces (degrees)</label>"
+        "<input id=\"facing_deg\" name=\"facing_deg\" type=\"number\" min=\"0\" max=\"359\" "
+        "step=\"5\" inputmode=\"numeric\" value=\"%u\">"
+        "<p class=\"hint\">0 = North, 90 = East, 180 = South, 270 = West (steps of 5). "
+#if FLIGHTSCNR_HAS_ENCODER
+        "On the device: Settings &rarr; Display &rarr; Facing, then turn the dial."
+#else
+        "On the device: swipe left on the radar, Settings 2/4 &rarr; Facing, then tap the "
+        "left or right side to turn and the middle to save."
+#endif
+        "</p>",
+        static_cast<unsigned>(ui::radar::facingDeg()));
+    if (facing_n > 0) {
+      appendClamped(page, kSettingsPageCap, &used, facing_n);
+    }
+  }
+
+  appendRaw(page, kSettingsPageCap, &used,
+            "<details class=\"adv\"><summary>Look of the radar</summary>"
+            "<label for=\"radar_accent\">Color theme</label>"
+            "<select id=\"radar_accent\" name=\"radar_accent\">");
+  appendAccentOptions(page, kSettingsPageCap, &used);
+  appendRaw(page, kSettingsPageCap, &used, "</select>");
+  appendToggle(page, kSettingsPageCap, &used, "show_cardinals", "Show compass rose",
+               ui::radar::showCompassRose());
+  appendToggle(page, kSettingsPageCap, &used, "show_sweep", "Show radar sweep line",
+               ui::displayPrefsSweepLineEnabled());
+  appendRaw(page, kSettingsPageCap, &used, "</details>");
+
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
-  // ---------- Radar basemap (Carto / FAA VFR bake) ----------
+  // ---------- Map card (Carto / FAA VFR bake, made in the browser) ----------
   {
     char bm_status[192];
     char carto_masked[48];
@@ -570,42 +599,69 @@ void handleSettingsPage() {
     const bool light_sel = bm_style == services::basemap::Style::Light;
     const bool vfr_sel = bm_style == services::basemap::Style::Vfr;
     const bool voyager_sel = bm_style == services::basemap::Style::Voyager;
-    const uint8_t live_mi = ui::radar::scaleActiveMiles();
-    const uint8_t max_mi =
-        ui::radar::kRangeMileOptions[ui::radar::kRangeMileOptionCount - 1];
     const int bm_n = snprintf(
         page + used, kSettingsPageCap - used,
         "<details class=\"card\"><summary><span class=\"ico\">&#127758;</span>"
-        "Radar basemap<span class=\"sum\">OSM / VFR</span>"
+        "Map<span class=\"sum\">map under the radar</span>"
         "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">"
-        "<p class=\"note\">Optional map under the radar grid. "
-        "Generated in your browser from <a href=\"https://carto.com/basemaps/\" "
-        "target=\"_blank\" rel=\"noopener\">CARTO</a> (OSM, no city labels: Dark Matter, "
-        "Positron, Voyager; free API key required) or "
-        "FAA <a href=\"https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/vfr/\" "
-        "target=\"_blank\" rel=\"noopener\">VFR Sectional</a> charts "
-        "(dark/light/Voyager: contrast; VFR: pale wash toward white — set %% below), "
-        "then stored on device flash (~50&ndash;120&nbsp;KB). "
-        "<b>Current range</b> bakes sharper detail (best when zoomed in). "
-        "<b>Maximum range</b> lets you zoom in without regenerating, but upscales and "
-        "softens. Zooming out past the bake requires regenerate. "
-        "&copy; OpenStreetMap / &copy; CARTO / &copy; FAA."
-        "</p>"
-        "<p class=\"hint\" id=\"bm_status\">%s</p>"
-        "<label for=\"carto_key\">CARTO API key (%s)</label>"
-        "<input id=\"carto_key\" name=\"carto_key\" type=\"password\" autocomplete=\"off\" "
-        "placeholder=\"paste key\">"
-        "<p class=\"hint\">Required for Dark Matter, Positron, and Voyager bakes. "
-        "Free at <a href=\"https://carto.com/basemaps/apikey/\" target=\"_blank\" "
-        "rel=\"noopener\">carto.com/basemaps/apikey</a> (not needed for FAA VFR). "
-        "Key is saved automatically when you Generate (or click Save).</p>"
+        "<p class=\"note\">An optional street or aviation map under the radar. This page "
+        "downloads it and sends it to the device: tap <b>Make map</b> and keep the page "
+        "open (about a minute). "
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        "It is made for the largest range, with a sharp copy for every closer zoom, so "
+        "zooming in stays crisp. "
+#endif
+        "Make it again after you change the location or facing.</p>"
+        "<p class=\"hint\" id=\"bm_status\">%s</p>",
+        bm_status);
+    appendClamped(page, kSettingsPageCap, &used, bm_n);
+    appendToggle(page, kSettingsPageCap, &used, "use_basemap", "Show the map on the radar",
+                 services::basemap::enabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    appendToggle(page, kSettingsPageCap, &used, "use_rain",
+                 "Live rain radar on the map (US only, NOAA)", services::rain::enabled());
+#endif
+    const int bm_n2 = snprintf(
+        page + used, kSettingsPageCap - used,
         "<label for=\"basemap_style\">Map style</label>"
         "<select id=\"basemap_style\">"
+        "<option value=\"voyager\"%s>Voyager (light, like Google Maps)</option>"
+        "<option value=\"light\"%s>Positron (pale grey)</option>"
         "<option value=\"dark\"%s>Dark Matter (dark)</option>"
-        "<option value=\"light\"%s>Positron (light)</option>"
-        "<option value=\"voyager\"%s>Voyager (light, richer)</option>"
-        "<option value=\"vfr\"%s>VFR Sectional (FAA)</option>"
+        "<option value=\"vfr\"%s>VFR Sectional (FAA pilot chart, US only)</option>"
         "</select>"
+        "<label for=\"carto_key\">CARTO key: %s</label>"
+        "<input id=\"carto_key\" name=\"carto_key\" type=\"password\" autocomplete=\"off\" "
+        "placeholder=\"paste key\">"
+        "<p class=\"hint\">Needed for Voyager, Positron and Dark Matter (not for VFR). "
+        "Free at <a href=\"https://carto.com/basemaps/apikey/\" target=\"_blank\" "
+        "rel=\"noopener\">carto.com/basemaps/apikey</a>. Saved when you tap Make map or "
+        "Save.</p>",
+        voyager_sel ? " selected" : "", light_sel ? " selected" : "",
+        dark_sel ? " selected" : "", vfr_sel ? " selected" : "", carto_masked);
+    appendClamped(page, kSettingsPageCap, &used, bm_n2);
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    {
+      const uint8_t live_mi = ui::radar::scaleActiveMiles();
+      const uint8_t max_mi =
+          ui::radar::kRangeMileOptions[ui::radar::kRangeMileOptionCount - 1];
+      const int cov_n = snprintf(
+          page + used, kSettingsPageCap - used,
+          "<label for=\"basemap_coverage\">Map coverage</label>"
+          "<select id=\"basemap_coverage\">"
+          "<option value=\"current\" selected>Current range (%u mi) &mdash; sharper</option>"
+          "<option value=\"max\">Maximum range (%u mi) &mdash; zoom-friendly</option>"
+          "</select>"
+          "<p class=\"hint\"><b>Current range</b> is sharper. <b>Maximum range</b> lets you "
+          "zoom in without making it again, but looks softer. Zooming out past the map "
+          "needs a new one.</p>",
+          static_cast<unsigned>(live_mi), static_cast<unsigned>(max_mi));
+      appendClamped(page, kSettingsPageCap, &used, cov_n);
+    }
+#endif
+    const int adv_n = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<details class=\"adv\"><summary>Advanced: map contrast</summary>"
         "<div class=\"row2\"><div>"
         "<label for=\"bm_contrast_dark\">Dark contrast (%%)</label>"
         "<input id=\"bm_contrast_dark\" name=\"bm_contrast_dark\" type=\"number\" "
@@ -615,31 +671,16 @@ void handleSettingsPage() {
         "<input id=\"bm_contrast_light\" name=\"bm_contrast_light\" type=\"number\" "
         "min=\"0\" max=\"200\" step=\"5\" value=\"%u\">"
         "</div></div>"
-        "<label for=\"bm_wash_vfr\">VFR wash toward white (%%)</label>"
+        "<label for=\"bm_wash_vfr\">VFR fade toward white (%%)</label>"
         "<input id=\"bm_wash_vfr\" name=\"bm_wash_vfr\" type=\"number\" min=\"0\" max=\"100\" "
         "step=\"1\" value=\"%u\">"
-        "<p class=\"hint\">Contrast 100 = normal; lower flattens, higher boosts. "
-        "Adjustments apply when you Generate basemap. Save stores the values.</p>"
-        "<label for=\"basemap_coverage\">Bake coverage</label>"
-        "<select id=\"basemap_coverage\">"
-        "<option value=\"current\" selected>Current range (%u mi) — sharper</option>"
-        "<option value=\"max\">Maximum range (%u mi) — zoom-friendly</option>"
-        "</select>",
-        bm_status, carto_masked, dark_sel ? " selected" : "", light_sel ? " selected" : "",
-        voyager_sel ? " selected" : "", vfr_sel ? " selected" : "",
+        "<p class=\"hint\">100 = normal contrast; lower is flatter, higher is stronger. "
+        "Used the next time you make the map.</p></details>",
         static_cast<unsigned>(services::basemap::contrastPercentDark()),
         static_cast<unsigned>(services::basemap::contrastPercentLight()),
-        static_cast<unsigned>(services::basemap::washPercentVfr()),
-        static_cast<unsigned>(live_mi), static_cast<unsigned>(max_mi));
-    appendClamped(page, kSettingsPageCap, &used, bm_n);
+        static_cast<unsigned>(services::basemap::washPercentVfr()));
+    appendClamped(page, kSettingsPageCap, &used, adv_n);
   }
-  appendToggle(page, kSettingsPageCap, &used, "use_basemap", "Show basemap on radar",
-               services::basemap::enabled());
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  appendToggle(page, kSettingsPageCap, &used, "use_rain",
-               "Live rain radar overlay (NOAA NEXRAD via Iowa Environmental Mesonet)",
-               services::rain::enabled());
-#endif
   {
     char carto_js[services::apikeys::kMaxSingleKeyLen + 8];
     size_t carto_js_len = 0;
@@ -648,22 +689,31 @@ void handleSettingsPage() {
       carto_js_len = sizeof(carto_js) - 1;
     }
     carto_js[carto_js_len] = '\0';
+    // lat/lon/facing/range here are only fallbacks: Make map reads the device's
+    // current values from the latest /api/settings poll (window.fsDev) at click time.
     const int bm2 = snprintf(
         page + used, kSettingsPageCap - used,
         "<p style=\"margin-top:.6rem\">"
-        "<button id=\"bm_gen\" class=\"sm\" type=\"button\">Generate basemap</button> "
-        "<button id=\"bm_clear\" class=\"sm\" type=\"button\">Clear basemap</button></p>"
+        "<button id=\"bm_gen\" class=\"sm\" type=\"button\">Make map</button> "
+        "<button id=\"bm_clear\" class=\"sm\" type=\"button\">Delete map</button></p>"
         "<p id=\"bm_msg\" class=\"note\"></p>"
+        "<p class=\"hint\">&copy; OpenStreetMap / &copy; CARTO / &copy; FAA.</p>"
         "<script>"
         "(function(){"
         "var SIZE=%d,CX=%d,CY=%d,OUTER=%d;"
-        "var lat=%.6f,lon=%.6f,curMiles=%u,maxMiles=%u,facing=%u;"
+        "var lat0=%.6f,lon0=%.6f,cur0=%u,maxMiles=%u,facing0=%u;"
+        "var lat=lat0,lon=lon0,facing=facing0;"
         "var cartoKey=%s;"
+        "function readDev(){var j=window.fsDev||{};"
+        "var c=String(j.radar_center||'').split(','),a=parseFloat(c[0]),b=parseFloat(c[1]);"
+        "lat=isNaN(a)?lat0:a;lon=isNaN(b)?lon0:b;"
+        "var f=parseInt(j.facing_deg,10);facing=isNaN(f)?facing0:f;}"
         "function activeCartoKey(){"
         "var el=document.getElementById('carto_key');"
         "var v=el&&el.value?el.value.trim():'';"
         "return v||cartoKey;}"
         "var msg=document.getElementById('bm_msg');"
+        "var gen=document.getElementById('bm_gen'),clr=document.getElementById('bm_clear');"
         "var styleEl=document.getElementById('basemap_style');"
         "var covEl=document.getElementById('basemap_coverage');"
         "function styleKey(){"
@@ -676,7 +726,9 @@ void handleSettingsPage() {
         "if(k==='voyager')return'Voyager';"
         "if(k==='vfr')return'VFR Sectional';"
         "return'Dark Matter (dark)';}"
-        "function bakeMiles(){return(covEl&&covEl.value==='max')?maxMiles:curMiles;}"
+        "function bakeMiles(){"
+        "if(!covEl||covEl.value==='max')return maxMiles;"
+        "var r=parseInt((window.fsDev||{}).range_mi,10);return r>0?r:cur0;}"
         "function fillRgb(){"
         "var k=styleKey();"
         "if(k==='light')return[240,240,240];"
@@ -695,14 +747,17 @@ void handleSettingsPage() {
         "function washAmount(){"
         "return styleKey()==='vfr'?readPct('bm_wash_vfr',%u,100)/100:0;}"
         "function washTarget(){return 255;}"
+        "var ADJ=['bm_contrast_dark','bm_contrast_light','bm_wash_vfr'];"
         "function persistBakeAdjust(){"
         "var fd=new FormData();"
-        "['bm_contrast_dark','bm_contrast_light','bm_wash_vfr'].forEach(function(id){"
+        "ADJ.forEach(function(id){"
         "var el=document.getElementById(id);if(el)fd.append(id,el.value);});"
         "var ckEl=document.getElementById('carto_key');"
         "if(ckEl&&ckEl.value&&ckEl.value.trim())fd.append('carto_key',ckEl.value.trim());"
         "return fetch('/basemap/adjust',{method:'POST',body:fd}).then(function(r){"
-        "if(r.ok){var k=activeCartoKey();if(k)cartoKey=k;}return r;"
+        "if(r.ok){var k=activeCartoKey();if(k)cartoKey=k;"
+        "var d=window.fsDirty||{};ADJ.concat(['carto_key']).forEach(function(i){delete d[i];});}"
+        "return r;"
         "}).catch(function(){});}"
         "function mercX(L){return(L+180)/360;}"
         "function mercY(A){var s=Math.sin(A*Math.PI/180);return.5-Math.log((1+s)/(1-s))/(4*Math.PI);}"
@@ -748,7 +803,7 @@ void handleSettingsPage() {
         "for(var x=x0;x<=x1;x++)for(var y=y0;y<=y1;y++)(function(X,Y){"
         "jobs.push(loadTile(z,X,Y).then(function(img){if(img){tiles[X+','+Y]=img;got++;}}));})(x,y);"
         "await Promise.all(jobs);"
-        "if(!got)throw new Error('No tiles loaded (check coverage / network)');"
+        "if(!got)throw new Error('No map tiles loaded (check the internet connection)');"
         "msg.textContent='Compositing\\u2026';"
         "var tw=(x1-x0+1)*256,th=(y1-y0+1)*256;"
         "var mc=document.createElement('canvas');mc.width=tw;mc.height=th;"
@@ -790,9 +845,6 @@ void handleSettingsPage() {
         "x.onerror=function(){rej(new Error('Upload error'));};x.send(fd);});"
         "}"
         "async function bake(){"
-        "if(styleKey()!=='vfr'&&!activeCartoKey()){"
-        "msg.textContent='CARTO API key required — paste key above, then Generate';"
-        "return;}"
         "await persistBakeAdjust();"
         "var miles=bakeMiles();"
         "await bakeOne(miles,false);"
@@ -801,23 +853,37 @@ void handleSettingsPage() {
         "var LEVELS=[2,3,6,8,10,20,30];"
         "for(var li=0;li<LEVELS.length;li++){if(LEVELS[li]<miles)await bakeOne(LEVELS[li],true);}"
 #endif
-        "msg.textContent='Basemap saved. Open radar to view.';location.href='/?saved=1';"
+        // No page reload afterwards: that dropped any other unsaved edits. The status
+        // line and the Show-map switch update from the next poll.
+        "msg.textContent='Map saved. It shows on the radar now.';"
         "}"
-        "document.getElementById('bm_gen').addEventListener('click',function(){"
-        "var miles=bakeMiles();"
-        "if(!confirm('Bake '+styleLabel()+' at '+miles+' mi for current center/facing?\\n'"
-        "+(miles===maxMiles"
-        #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-        "?'Sharper copies for each closer zoom level are made too (takes a minute).'"
+        "function busy(on){gen.disabled=on;clr.disabled=on;window.fsBusy=on;}"
+        "gen.addEventListener('click',function(){"
+        "var dd=window.fsDirty||{};"
+        "if(dd.radar_center||dd.facing_deg){msg.textContent='Save first: you changed the "
+        "location or facing. Tap Save, then Make map.';return;}"
+        "if(styleKey()!=='vfr'&&!activeCartoKey()){"
+        "msg.textContent='This style needs a CARTO key: paste it above, or pick VFR.';"
+        "return;}"
+        "readDev();var miles=bakeMiles();"
+        "if(!confirm('Make the '+styleLabel()+' map around '+lat.toFixed(4)+', '+"
+        "lon.toFixed(4)+' ('+miles+' mi)?\\n'"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        "+'Takes about a minute. Keep this page open.'"
 #else
-        "?'Zooming in will soft-upscale (regenerate at current range for sharper detail).'"
+        "+(miles===maxMiles"
+        "?'Zooming in will look softer (make it at the current range for sharper detail).'"
+        ":'Zooming out past '+miles+' mi needs a new map.')"
 #endif
-        ":'Zooming out past '+miles+' mi requires regenerate.')))return;"
-        "bake().catch(function(e){msg.textContent=String(e&&e.message||e);});});"
-        "document.getElementById('bm_clear').addEventListener('click',function(){"
-        "if(!confirm('Delete stored basemap?'))return;"
-        "var x=new XMLHttpRequest();x.open('POST','/basemap/clear');"
-        "x.onload=function(){location.href='/?saved=1';};x.send();});"
+        "))return;"
+        "busy(true);"
+        "bake().catch(function(e){msg.textContent=String(e&&e.message||e);})"
+        ".then(function(){busy(false);});});"
+        "clr.addEventListener('click',function(){"
+        "if(!confirm('Delete the stored map?'))return;"
+        "fetch('/basemap/clear',{method:'POST'}).then(function(r){"
+        "msg.textContent=r.ok?'Map deleted.':'Could not delete the map.';})"
+        ".catch(function(){msg.textContent='Could not reach the device.';});});"
         "})();"
         "</script></div></details>",
         ui::radar::kSize, ui::radar::kCenterX, ui::radar::kCenterY, ui::radar::kGridOuterRadius,
@@ -832,106 +898,131 @@ void handleSettingsPage() {
     appendClamped(page, kSettingsPageCap, &used, bm2);
   }
 
-  // ---------- Display & screens card ----------
+  // ---------- Alerts card ----------
   appendRaw(page, kSettingsPageCap, &used,
-            "<details class=\"card\"><summary><span class=\"ico\">&#9788;</span>"
-            "Display &amp; screens<span class=\"sum\">brightness, timeouts, clock</span>"
-            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">");
-
-  const uint8_t bright = hardware::displayBrightnessPercent();
-  const int bright_n = snprintf(
+            "<details class=\"card\" open><summary><span class=\"ico\">&#9888;</span>Alerts"
+            "<span class=\"sum\">aircraft alerts</span><span class=\"chev\">&#9656;</span>"
+            "</summary><div class=\"body\">");
+  appendToggle(page, kSettingsPageCap, &used, "alert_mil", "Alert on military planes",
+               services::alert::militaryAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_emrg",
+               "Alert on emergencies (squawk 7700 / 7600 / 7500)",
+               services::alert::emergencyAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_heli", "Alert on helicopters",
+               services::alert::helicopterAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_ga",
+               "Alert on private planes",
+               services::alert::privateAlertEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_appr",
+               "Alert when a plane is about to pass overhead (within 2 mi, in the next 3 min), "
+               "not when it first appears",
+               services::alert::alertOnApproachEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_ovh",
+               "Overhead alert (any plane below 10,000 ft about to pass overhead)",
+               services::alert::overheadAnyEnabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "alert_notbl",
+               "Special planes alert (go outside and look: Hurricane Hunters, Coast Guard, "
+               "tankers, Air Force One, 747s, A380, Beluga...)",
+               services::alert::notableAlertEnabled());
+#endif
+  appendToggle(page, kSettingsPageCap, &used, "type_colors",
+               "Color planes by type (red military, blue helicopter, white private)",
+               services::alert::typeColorsEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "alert_hide",
+               "Show only alerted planes on the radar",
+               services::alert::hideNonAlertedEnabled());
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  appendToggle(page, kSettingsPageCap, &used, "sky_launch",
+               "Rocket launches from Cape Canaveral / KSC: countdown banner and chime (T-10 min, liftoff)",
+               services::sky::launchesEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "sky_iss",
+               "Visible ISS passes: banner and chime 2 min before",
+               services::sky::issEnabled());
+#endif
+  const int watch_n = snprintf(
       page + used, kSettingsPageCap - used,
-      "<label for=\"bright_pct\">Screen brightness</label>"
-      "<select id=\"bright_pct\" name=\"bright_pct\">"
-      "<option value=\"20\"%s>20%%</option>"
-      "<option value=\"40\"%s>40%%</option>"
-      "<option value=\"60\"%s>60%%</option>"
-      "<option value=\"80\"%s>80%%</option>"
-      "<option value=\"100\"%s>100%%</option>"
-      "</select>",
-      bright == 20 ? " selected" : "", bright == 40 ? " selected" : "",
-      bright == 60 ? " selected" : "", bright == 80 ? " selected" : "",
-      bright == 100 ? " selected" : "");
-  appendClamped(page, kSettingsPageCap, &used, bright_n);
+      "<label for=\"alert_watch\">Watch these flights (e.g. UAL123)</label>"
+      "<input id=\"alert_watch\" type=\"text\" "
+      "autocomplete=\"off\" placeholder=\"ACA739, UAL123\" value=\"%s\">",
+      watch_buf);
 
-  const unsigned long detail_sec = ui::displayPrefsFlightDetailTimeoutMs() / 1000UL;
-  const unsigned long clock_sec = ui::displayPrefsClockWeatherTimeoutMs() / 1000UL;
-  const int timeouts_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<div class=\"row2\"><div>"
-      "<label for=\"detail_timeout\">Flight detail screen</label>"
-      "<select id=\"detail_timeout\" name=\"detail_timeout\">"
-      "<option value=\"0\"%s>Manual (swipe)</option>"
-      "<option value=\"10\"%s>10 seconds</option>"
-      "<option value=\"20\"%s>20 seconds</option>"
-      "<option value=\"30\"%s>30 seconds</option>"
-      "</select></div><div>"
-      "<label for=\"clock_timeout\">Clock / forecast</label>"
-      "<select id=\"clock_timeout\" name=\"clock_timeout\">"
-      "<option value=\"0\"%s>Manual (swipe)</option>"
-      "<option value=\"5\"%s>5 seconds</option>"
-      "<option value=\"10\"%s>10 seconds</option>"
-      "<option value=\"15\"%s>15 seconds</option>"
-      "</select></div></div>",
-      detail_sec == 0 ? " selected" : "", detail_sec == 10 ? " selected" : "",
-      detail_sec == 20 ? " selected" : "", detail_sec == 30 ? " selected" : "",
-      clock_sec == 0 ? " selected" : "", clock_sec == 5 ? " selected" : "",
-      clock_sec == 10 ? " selected" : "", clock_sec == 15 ? " selected" : "");
-  appendClamped(page, kSettingsPageCap, &used, timeouts_n);
-
-  appendToggle(page, kSettingsPageCap, &used, "idle_clock",
-               "Return to clock when no aircraft visible",
-               ui::displayPrefsAutoIdleClockEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "clock_24h", "24-hour clock",
-               services::clock::use24Hour());
-  appendToggle(page, kSettingsPageCap, &used, "date_numeric",
-               "Numeric date (20.07.2026)", services::clock::useNumericDate());
-  appendToggle(page, kSettingsPageCap, &used, "auto_timezone",
-               "Auto timezone from radar center (DST-aware)",
-               services::clock::useAutoTimezone());
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"note\">Auto timezone resolves the local zone from your radar lat/lon over "
-            "Wi&#8209;Fi. Turn the clock-settings knob on the device to override manually.</p>");
-
-  appendRaw(page, kSettingsPageCap, &used, "</div></details>");
-
-  // ---------- Off-Hours card ----------
-  appendRaw(page, kSettingsPageCap, &used,
-            "<details class=\"card\"><summary><span class=\"ico\">&#9790;</span>"
-            "Off-Hours<span class=\"sum\">night mode schedule</span>"
-            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">");
-  appendToggle(page, kSettingsPageCap, &used, "night_en", "Enable off-hours (night mode)",
-               services::offhours::enabled());
-  {
-    const auto night_mode = services::offhours::mode();
-    const int nm = snprintf(
-        page + used, kSettingsPageCap - used,
-        "<label for=\"night_mode\">During off-hours</label>"
-        "<select id=\"night_mode\" name=\"night_mode\">"
-        "<option value=\"0\"%s>Dim clock (20%%)</option>"
-        "<option value=\"1\"%s>Turn off display</option>"
-        "</select>",
-        night_mode == services::offhours::Mode::Dim ? " selected" : "",
-        night_mode == services::offhours::Mode::DisplayOff ? " selected" : "");
-    if (nm > 0) appendClamped(page, kSettingsPageCap, &used, nm);
-  }
-  {
-    const uint16_t start = services::offhours::startMinute();
-    const uint16_t end = services::offhours::endMinute();
-    const int nt = snprintf(
-        page + used, kSettingsPageCap - used,
-        "<div class=\"row2\">"
-        "<div><label for=\"night_start\">Start</label>"
-        "<input type=\"time\" id=\"night_start\" name=\"night_start\" value=\"%02u:%02u\"></div>"
-        "<div><label for=\"night_end\">End</label>"
-        "<input type=\"time\" id=\"night_end\" name=\"night_end\" value=\"%02u:%02u\"></div>"
-        "</div>",
-        start / 60, start % 60, end / 60, end % 60);
-    if (nt > 0) appendClamped(page, kSettingsPageCap, &used, nt);
+  appendClamped(page, kSettingsPageCap, &used, watch_n);
+  if (watch_count == 0) {
+    appendRaw(page, kSettingsPageCap, &used,
+              "<p class=\"usage\">No flight numbers tracked.</p>");
+  } else {
+    const int tracked_n = snprintf(page + used, kSettingsPageCap - used,
+                                   "<p class=\"usage\"><b>Tracking %u:</b> %s</p>",
+                                   static_cast<unsigned>(watch_count), watch_buf);
+    if (tracked_n > 0) {
+      appendClamped(page, kSettingsPageCap, &used, tracked_n);
+    }
   }
   appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"note\">During off-hours the device shows a dim clock or turns off the "
-            "display. All API calls are paused. Knob press wakes the device.</p>");
+            "<p class=\"hint\">Comma-separated callsigns (3-letter airline + flight number). "
+#if FLIGHTSCNR_HAS_SPEAKER
+            "Chimes and flashes the ring when a watched flight appears on the radar. "
+#elif FLIGHTSCNR_HAS_HAPTIC
+            "Buzzes and highlights when a watched flight appears on radar. "
+#else
+            "Highlights a watched flight when it appears on the radar. "
+#endif
+            "To clear all, delete the text in the field above and tap <b>Save</b>.</p>");
+
+  appendRaw(page, kSettingsPageCap, &used,
+            (watch_type_count != 0 || watch_reg_count != 0)
+                ? "<details class=\"adv\" open><summary>Watch plane types or tail numbers</summary>"
+                : "<details class=\"adv\"><summary>Watch plane types or tail numbers</summary>");
+  const int watch_type_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"alert_watch_type\">Watch these plane types (e.g. B738)</label>"
+      "<input id=\"alert_watch_type\" type=\"text\" "
+      "autocomplete=\"off\" placeholder=\"B738, A333, E75L\" value=\"%s\">",
+      watch_type_buf);
+  appendClamped(page, kSettingsPageCap, &used, watch_type_n);
+  if (watch_type_count == 0) {
+    appendRaw(page, kSettingsPageCap, &used,
+              "<p class=\"usage\">No aircraft types tracked.</p>");
+  } else {
+    const int tracked_types_n =
+        snprintf(page + used, kSettingsPageCap - used,
+                 "<p class=\"usage\"><b>Tracking %u types:</b> %s</p>",
+                 static_cast<unsigned>(watch_type_count), watch_type_buf);
+    if (tracked_types_n > 0) {
+      appendClamped(page, kSettingsPageCap, &used, tracked_types_n);
+    }
+  }
+  appendRaw(page, kSettingsPageCap, &used,
+            "<p class=\"hint\">Comma-separated <b>ICAO type designators</b> from ADS-B "
+            "(2&#8211;4 chars, e.g. <code>B738</code>, <code>A333</code>). "
+            "All aircraft of that type are alerted. Use the code shown on flight detail / "
+            "radar tags &#8212; not marketing names like A330-743. "
+            "Clear the field and <b>Save</b> to remove all types.</p>");
+
+  const int watch_reg_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"alert_watch_reg\">Watch these tail numbers (e.g. N2136U)</label>"
+      "<input id=\"alert_watch_reg\" type=\"text\" "
+      "autocomplete=\"off\" placeholder=\"N2136U, CS-TPQ\" value=\"%s\">",
+      watch_reg_buf);
+  appendClamped(page, kSettingsPageCap, &used, watch_reg_n);
+  if (watch_reg_count == 0) {
+    appendRaw(page, kSettingsPageCap, &used,
+              "<p class=\"usage\">No registrations tracked.</p>");
+  } else {
+    const int tracked_regs_n =
+        snprintf(page + used, kSettingsPageCap - used,
+                 "<p class=\"usage\"><b>Tracking %u regs:</b> %s</p>",
+                 static_cast<unsigned>(watch_reg_count), watch_reg_buf);
+    if (tracked_regs_n > 0) {
+      appendClamped(page, kSettingsPageCap, &used, tracked_regs_n);
+    }
+  }
+  appendRaw(page, kSettingsPageCap, &used,
+            "<p class=\"hint\">Comma-separated civil registrations from ADS-B "
+            "(e.g. <code>N2136U</code>, <code>CS-TPQ</code>). Hyphens optional when matching. "
+            "Clear the field and <b>Save</b> to remove all.</p></details>");
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
   // ---------- Sound / haptic card ----------
@@ -948,7 +1039,7 @@ void handleSettingsPage() {
 #else
 #if FLIGHTSCNR_HAS_SPEAKER
   constexpr const char* kSoundSum = "alert chimes";
-  constexpr const char* kSoundToggle = "Alert chimes on the speaker";
+  constexpr const char* kSoundToggle = "Alert sound (chimes on the speaker)";
   constexpr const char* kSoundLevel = "Chime volume (A quiet &ndash; E loud)";
 #else
   constexpr const char* kSoundSum = "UI beep";
@@ -984,285 +1075,158 @@ void handleSettingsPage() {
 #endif
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
-  // ---------- Alerts card ----------
+  // ---------- Display & screens card ----------
   appendRaw(page, kSettingsPageCap, &used,
-            "<details class=\"card\" open><summary><span class=\"ico\">&#9888;</span>Alerts"
-            "<span class=\"sum\">aircraft alerts</span><span class=\"chev\">&#9656;</span>"
-            "</summary><div class=\"body\">");
-  appendToggle(page, kSettingsPageCap, &used, "alert_mil", "Alert on military aircraft",
-               services::alert::militaryAlertEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_emrg",
-               "Alert on emergency squawk (7700/7600/7500)",
-               services::alert::emergencyAlertEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_heli", "Alert on helicopters",
-               services::alert::helicopterAlertEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_ga",
-               "Alert on private / general aviation planes",
-               services::alert::privateAlertEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_appr",
-               "Alert when an aircraft is about to pass overhead (within 2 mi, next 3 min) instead of when it enters the radar",
-               services::alert::alertOnApproachEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_ovh",
-               "Overhead alert for any aircraft below 10,000 ft",
-               services::alert::overheadAnyEnabled());
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  appendToggle(page, kSettingsPageCap, &used, "alert_notbl",
-               "\"Go outside and look\" alarm for notable aircraft (Hurricane Hunters, Coast Guard, "
-               "tankers and military heavies, Air Force One, 747s, A380, Beluga...)",
-               services::alert::notableAlertEnabled());
+            "<details class=\"card\"><summary><span class=\"ico\">&#9788;</span>"
+            "Screen &amp; clock<span class=\"sum\">brightness, clock, time zone</span>"
+            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">");
+
+  const uint8_t bright = hardware::displayBrightnessPercent();
+  const int bright_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"bright_pct\">Screen brightness</label>"
+      "<select id=\"bright_pct\" name=\"bright_pct\">"
+      "<option value=\"20\"%s>20%%</option>"
+      "<option value=\"40\"%s>40%%</option>"
+      "<option value=\"60\"%s>60%%</option>"
+      "<option value=\"80\"%s>80%%</option>"
+      "<option value=\"100\"%s>100%%</option>"
+      "</select>",
+      bright == 20 ? " selected" : "", bright == 40 ? " selected" : "",
+      bright == 60 ? " selected" : "", bright == 80 ? " selected" : "",
+      bright == 100 ? " selected" : "");
+  appendClamped(page, kSettingsPageCap, &used, bright_n);
+
+  const unsigned long detail_sec = ui::displayPrefsFlightDetailTimeoutMs() / 1000UL;
+  const unsigned long clock_sec = ui::displayPrefsClockWeatherTimeoutMs() / 1000UL;
+  const int timeouts_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<div class=\"row2\"><div>"
+      "<label for=\"detail_timeout\">Close flight details after</label>"
+      "<select id=\"detail_timeout\" name=\"detail_timeout\">"
+      "<option value=\"0\"%s>Manual (swipe)</option>"
+      "<option value=\"10\"%s>10 seconds</option>"
+      "<option value=\"20\"%s>20 seconds</option>"
+      "<option value=\"30\"%s>30 seconds</option>"
+      "</select></div><div>"
+      "<label for=\"clock_timeout\">Close clock / forecast after</label>"
+      "<select id=\"clock_timeout\" name=\"clock_timeout\">"
+      "<option value=\"0\"%s>Manual (swipe)</option>"
+      "<option value=\"5\"%s>5 seconds</option>"
+      "<option value=\"10\"%s>10 seconds</option>"
+      "<option value=\"15\"%s>15 seconds</option>"
+      "</select></div></div>",
+      detail_sec == 0 ? " selected" : "", detail_sec == 10 ? " selected" : "",
+      detail_sec == 20 ? " selected" : "", detail_sec == 30 ? " selected" : "",
+      clock_sec == 0 ? " selected" : "", clock_sec == 5 ? " selected" : "",
+      clock_sec == 10 ? " selected" : "", clock_sec == 15 ? " selected" : "");
+  appendClamped(page, kSettingsPageCap, &used, timeouts_n);
+
+  appendToggle(page, kSettingsPageCap, &used, "idle_clock",
+               "Show the clock when no planes are near",
+               ui::displayPrefsAutoIdleClockEnabled());
+  appendToggle(page, kSettingsPageCap, &used, "clock_24h", "24-hour clock",
+               services::clock::use24Hour());
+  appendToggle(page, kSettingsPageCap, &used, "date_numeric",
+               "Numeric date (20.07.2026)", services::clock::useNumericDate());
+  appendToggle(page, kSettingsPageCap, &used, "auto_timezone",
+               "Set the time zone from my location (with daylight saving)",
+               services::clock::useAutoTimezone());
+  appendRaw(page, kSettingsPageCap, &used,
+#if FLIGHTSCNR_HAS_ENCODER
+            "<p class=\"note\">Looks up the local time zone for your location over "
+            "Wi&#8209;Fi. Turn the clock-settings knob on the device to override manually.</p>"
+#else
+            "<p class=\"note\">Looks up the local time zone for your location over "
+            "Wi&#8209;Fi. To set it by hand on the device: swipe down from the radar to the "
+            "clock, swipe left to Clock settings, tap Timezone, then tap its left or right "
+            "side (this turns the automatic zone off).</p>"
 #endif
-  appendToggle(page, kSettingsPageCap, &used, "type_colors",
-               "Color radar icons by type (red military, blue helicopter, white private)",
-               services::alert::typeColorsEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "alert_hide",
-               "Hide non-alerted aircraft on radar",
-               services::alert::hideNonAlertedEnabled());
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  appendToggle(page, kSettingsPageCap, &used, "sky_launch",
-               "Rocket launches from Cape Canaveral / KSC: countdown banner and chime (T-10 min, liftoff)",
-               services::sky::launchesEnabled());
-  appendToggle(page, kSettingsPageCap, &used, "sky_iss",
-               "Visible ISS passes: banner and chime 2 min before",
-               services::sky::issEnabled());
-#endif
-  const int watch_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"alert_watch\">Alert on ICAO flight numbers</label>"
-      "<input id=\"alert_watch\" type=\"text\" "
-      "autocomplete=\"off\" placeholder=\"ACA739, UAL123\" value=\"%s\">",
-      watch_buf);
+  );
 
-  appendClamped(page, kSettingsPageCap, &used, watch_n);
-  if (watch_count == 0) {
-    appendRaw(page, kSettingsPageCap, &used,
-              "<p class=\"usage\">No flight numbers tracked.</p>");
-  } else {
-    const int tracked_n = snprintf(page + used, kSettingsPageCap - used,
-                                   "<p class=\"usage\"><b>Tracking %u:</b> %s</p>",
-                                   static_cast<unsigned>(watch_count), watch_buf);
-    if (tracked_n > 0) {
-      appendClamped(page, kSettingsPageCap, &used, tracked_n);
-    }
-  }
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"hint\">Comma-separated callsigns (3-letter airline + flight number). "
-            "Buzzes and highlights when a watched flight appears on radar. "
-            "To clear all, delete the text in the field above and tap <b>Save</b>.</p>");
-
-  const int watch_type_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"alert_watch_type\">Alert on aircraft types</label>"
-      "<input id=\"alert_watch_type\" type=\"text\" "
-      "autocomplete=\"off\" placeholder=\"B738, A333, E75L\" value=\"%s\">",
-      watch_type_buf);
-  appendClamped(page, kSettingsPageCap, &used, watch_type_n);
-  if (watch_type_count == 0) {
-    appendRaw(page, kSettingsPageCap, &used,
-              "<p class=\"usage\">No aircraft types tracked.</p>");
-  } else {
-    const int tracked_types_n =
-        snprintf(page + used, kSettingsPageCap - used,
-                 "<p class=\"usage\"><b>Tracking %u types:</b> %s</p>",
-                 static_cast<unsigned>(watch_type_count), watch_type_buf);
-    if (tracked_types_n > 0) {
-      appendClamped(page, kSettingsPageCap, &used, tracked_types_n);
-    }
-  }
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"hint\">Comma-separated <b>ICAO type designators</b> from ADS-B "
-            "(2&#8211;4 chars, e.g. <code>B738</code>, <code>A333</code>). "
-            "All aircraft of that type are alerted. Use the code shown on flight detail / "
-            "radar tags &#8212; not marketing names like A330-743. "
-            "Clear the field and <b>Save</b> to remove all types.</p>");
-
-  const int watch_reg_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"alert_watch_reg\">Alert on registrations / tail numbers</label>"
-      "<input id=\"alert_watch_reg\" type=\"text\" "
-      "autocomplete=\"off\" placeholder=\"N2136U, CS-TPQ\" value=\"%s\">",
-      watch_reg_buf);
-  appendClamped(page, kSettingsPageCap, &used, watch_reg_n);
-  if (watch_reg_count == 0) {
-    appendRaw(page, kSettingsPageCap, &used,
-              "<p class=\"usage\">No registrations tracked.</p>");
-  } else {
-    const int tracked_regs_n =
-        snprintf(page + used, kSettingsPageCap - used,
-                 "<p class=\"usage\"><b>Tracking %u regs:</b> %s</p>",
-                 static_cast<unsigned>(watch_reg_count), watch_reg_buf);
-    if (tracked_regs_n > 0) {
-      appendClamped(page, kSettingsPageCap, &used, tracked_regs_n);
-    }
-  }
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"hint\">Comma-separated civil registrations from ADS-B "
-            "(e.g. <code>N2136U</code>, <code>CS-TPQ</code>). Hyphens optional when matching. "
-            "Clear the field and <b>Save</b> to remove all.</p>");
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
-  // ---------- Route APIs card ----------
-  // Runtime order: AirLabs → FlightAware → FR24 → adsbdb → prefix.
+  // ---------- Off-Hours card ----------
   appendRaw(page, kSettingsPageCap, &used,
-            "<details class=\"card\"><summary><span class=\"ico\">&#9992;</span>Route APIs"
-            "<span class=\"sum\">airline &amp; route lookup</span><span class=\"chev\">&#9656;</span>"
-            "</summary><div class=\"body\">"
-            "<p class=\"note\">Origin/destination show on <b>flight detail</b> (tap a blip), not "
-            "the radar. Paste a key <b>and</b> leave the switch on (pasting a key turns it on "
-            "automatically). Order: <b>AirLabs &rarr; FlightAware &rarr; FR24 &rarr; "
-            "adsbdb</b> &mdash; first complete route per callsign wins. Multiple keys "
-            "comma-separated; when one hits its monthly cap the next key is tried before the "
-            "next provider. Leave blank to keep the saved value. Caps reset on the 1st once "
-            "NTP syncs.</p>");
-
-  // AirLabs (1st priority)
-  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
-  appendInlineToggle(page, kSettingsPageCap, &used, "use_airlabs",
-                     services::apikeys::useAirLabs());
-  appendRaw(page, kSettingsPageCap, &used,
-            "<span class=\"name\">AirLabs</span><span class=\"badge\">1st</span></div>");
-
-  services::apikeys::maskedAirLabs(masked, sizeof(masked));
-  char al_used_note[64];
-  if (services::apikeys::airLabsMaxCalls() == 0) {
-    snprintf(al_used_note, sizeof(al_used_note), "Used this month: %u (unlimited cap)",
-             static_cast<unsigned>(services::apikeys::airLabsCallsUsed()));
-  } else {
-    snprintf(al_used_note, sizeof(al_used_note), "Used this month: %u / %u",
-             static_cast<unsigned>(services::apikeys::airLabsCallsUsed()),
-             static_cast<unsigned>(services::apikeys::airLabsMaxCalls()));
+            "<details class=\"card\"><summary><span class=\"ico\">&#9790;</span>"
+            "Night mode<span class=\"sum\">quiet hours</span>"
+            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">");
+  appendToggle(page, kSettingsPageCap, &used, "night_en", "Night mode",
+               services::offhours::enabled());
+  {
+    const auto night_mode = services::offhours::mode();
+    const int nm = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<label for=\"night_mode\">At night</label>"
+        "<select id=\"night_mode\" name=\"night_mode\">"
+        "<option value=\"0\"%s>Dim clock (20%%)</option>"
+        "<option value=\"1\"%s>Turn off display</option>"
+        "</select>",
+        night_mode == services::offhours::Mode::Dim ? " selected" : "",
+        night_mode == services::offhours::Mode::DisplayOff ? " selected" : "");
+    if (nm > 0) appendClamped(page, kSettingsPageCap, &used, nm);
   }
-  const int al_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"airlabs_key\">API keys (%s)</label>"
-      "<input id=\"airlabs_key\" name=\"airlabs_key\" type=\"password\" "
-      "autocomplete=\"off\" placeholder=\"key1, key2, key3\">"
-      "<label for=\"airlabs_max_calls\">Max calls / month per key (0 = unlimited; "
-      "free tier 1,000/mo)</label>"
-      "<input id=\"airlabs_max_calls\" name=\"airlabs_max_calls\" type=\"number\" min=\"0\" "
-      "step=\"1\" value=\"%u\">"
-      "<p class=\"usage\">%s</p></div>",
-      masked, static_cast<unsigned>(services::apikeys::airLabsMaxCalls()), al_used_note);
-  appendClamped(page, kSettingsPageCap, &used, al_n);
-
-  // FlightAware (2nd priority)
-  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
-  appendInlineToggle(page, kSettingsPageCap, &used, "use_flightaware",
-                     services::apikeys::useFlightAware());
-  appendRaw(page, kSettingsPageCap, &used,
-            "<span class=\"name\">FlightAware</span><span class=\"badge\">2nd</span></div>");
-
-  services::apikeys::maskedFlightAware(masked, sizeof(masked));
-  char fa_budget[16];
-  char fa_cost[16];
-  char fa_spent[16];
-  formatUsdMicro(services::apikeys::flightAwareBudgetUsdMicro(), fa_budget, sizeof(fa_budget), 2);
-  formatUsdMicro(services::apikeys::flightAwareCostUsdMicro(), fa_cost, sizeof(fa_cost), 4);
-  formatUsdMicro(services::apikeys::flightAwareSpentUsdMicro(), fa_spent, sizeof(fa_spent), 4);
-  char fa_used_note[72];
-  if (services::apikeys::flightAwareBudgetUsdMicro() == 0) {
-    snprintf(fa_used_note, sizeof(fa_used_note), "Spent this month: $%s (unlimited budget)",
-             fa_spent);
-  } else {
-    snprintf(fa_used_note, sizeof(fa_used_note), "Spent this month: $%s of $%s", fa_spent,
-             fa_budget);
+  {
+    const uint16_t start = services::offhours::startMinute();
+    const uint16_t end = services::offhours::endMinute();
+    const int nt = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<div class=\"row2\">"
+        "<div><label for=\"night_start\">Start</label>"
+        "<input type=\"time\" id=\"night_start\" name=\"night_start\" value=\"%02u:%02u\"></div>"
+        "<div><label for=\"night_end\">End</label>"
+        "<input type=\"time\" id=\"night_end\" name=\"night_end\" value=\"%02u:%02u\"></div>"
+        "</div>",
+        start / 60, start % 60, end / 60, end % 60);
+    if (nt > 0) appendClamped(page, kSettingsPageCap, &used, nt);
   }
-  const int fa_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"flightaware_key\">AeroAPI keys (%s)</label>"
-      "<input id=\"flightaware_key\" name=\"flightaware_key\" type=\"password\" "
-      "autocomplete=\"off\" placeholder=\"key1, key2, key3\">"
-      "<div class=\"row2\"><div>"
-      "<label for=\"flightaware_max_usd\">Max budget / key ($, 0 = unlimited)</label>"
-      "<input id=\"flightaware_max_usd\" name=\"flightaware_max_usd\" type=\"number\" min=\"0\" "
-      "step=\"0.01\" value=\"%s\">"
-      "</div><div>"
-      "<label for=\"flightaware_cost_usd\">Cost per call ($)</label>"
-      "<input id=\"flightaware_cost_usd\" name=\"flightaware_cost_usd\" type=\"number\" min=\"0\" "
-      "step=\"0.0001\" value=\"%s\">"
-      "</div></div>"
-      "<p class=\"hint\">AeroAPI GET /flights/{ident}; default $0.005 per result set.</p>"
-      "<p class=\"usage\">%s</p></div>",
-      masked, fa_budget, fa_cost, fa_used_note);
-  appendClamped(page, kSettingsPageCap, &used, fa_n);
-
-  // FlightRadar24 (3rd priority)
-  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
-  appendInlineToggle(page, kSettingsPageCap, &used, "use_fr24", services::apikeys::useFr24());
   appendRaw(page, kSettingsPageCap, &used,
-            "<span class=\"name\">FlightRadar24</span><span class=\"badge\">3rd</span></div>");
-
-  services::apikeys::maskedFr24(masked, sizeof(masked));
-  char fr_budget[16];
-  char fr_cost[16];
-  char fr_spent[16];
-  formatUsdMicro(services::apikeys::fr24BudgetUsdMicro(), fr_budget, sizeof(fr_budget), 2);
-  formatUsdMicro(services::apikeys::fr24CostUsdMicro(), fr_cost, sizeof(fr_cost), 4);
-  formatUsdMicro(services::apikeys::fr24SpentUsdMicro(), fr_spent, sizeof(fr_spent), 4);
-  char fr_used_note[72];
-  if (services::apikeys::fr24BudgetUsdMicro() == 0) {
-    snprintf(fr_used_note, sizeof(fr_used_note), "Spent this month: $%s (unlimited budget)",
-             fr_spent);
-  } else {
-    snprintf(fr_used_note, sizeof(fr_used_note), "Spent this month: $%s of $%s", fr_spent,
-             fr_budget);
-  }
-  const int fr_n = snprintf(
-      page + used, kSettingsPageCap - used,
-      "<label for=\"fr24_key\">API tokens (%s)</label>"
-      "<input id=\"fr24_key\" name=\"fr24_key\" type=\"password\" "
-      "autocomplete=\"off\" placeholder=\"token1, token2, token3\">"
-      "<div class=\"row2\"><div>"
-      "<label for=\"fr24_max_usd\">Max budget / key ($, 0 = unlimited)</label>"
-      "<input id=\"fr24_max_usd\" name=\"fr24_max_usd\" type=\"number\" min=\"0\" "
-      "step=\"0.01\" value=\"%s\">"
-      "</div><div>"
-      "<label for=\"fr24_cost_usd\">Cost per call ($)</label>"
-      "<input id=\"fr24_cost_usd\" name=\"fr24_cost_usd\" type=\"number\" min=\"0\" "
-      "step=\"0.0001\" value=\"%s\">"
-      "</div></div>"
-      "<p class=\"usage\">%s</p></div>",
-      masked, fr_budget, fr_cost, fr_used_note);
-  appendClamped(page, kSettingsPageCap, &used, fr_n);
-
-  // adsbdb.com (free, key-less; used after the paid APIs)
-  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\">");
-  appendToggle(page, kSettingsPageCap, &used, "use_adsbdb", "Use adsbdb (free)",
-               services::apikeys::useAdsbDb());
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"usage\">Free route source (adsbdb.com), no key needed. "
-            "Used after the paid APIs above (default on).</p></div>");
-
+#if FLIGHTSCNR_HAS_KNOB_BUTTON
+            "<p class=\"note\">At night the device shows a dim clock or turns the screen "
+            "off, and stops downloading flights. Knob press wakes the device.</p>");
+#else
+            "<p class=\"note\">At night the device shows a dim clock or turns the screen "
+            "off, and stops downloading flights. Tap the screen to wake it for 5 minutes.</p>");
+#endif
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
   // ---------- Weather card ----------
   appendRaw(page, kSettingsPageCap, &used,
             "<details class=\"card\"><summary><span class=\"ico\">&#9729;</span>Weather"
-            "<span class=\"sum\">Tomorrow.io</span><span class=\"chev\">&#9656;</span>"
+            "<span class=\"sum\">&deg;C / &deg;F, forecast</span><span class=\"chev\">&#9656;</span>"
             "</summary><div class=\"body\">");
+  {
+    const int wu_n = snprintf(
+        page + used, kSettingsPageCap - used,
+        "<label for=\"weather_units\">Temperature</label>"
+        "<select id=\"weather_units\" name=\"weather_units\">"
+        "<option value=\"metric\"%s>Celsius (&deg;C)</option>"
+        "<option value=\"imperial\"%s>Fahrenheit (&deg;F)</option>"
+        "</select>"
+        "<p class=\"note\">The weather shows on the clock screen; swipe right there for the "
+        "3-day forecast.</p>",
+        services::weather::useImperial() ? "" : " selected",
+        services::weather::useImperial() ? " selected" : "");
+    appendClamped(page, kSettingsPageCap, &used, wu_n);
+  }
+  // Open-Meteo (free, key-less; used when Tomorrow.io is off/keyless or fails).
+  appendToggle(page, kSettingsPageCap, &used, "use_openmeteo",
+               "Free weather from Open-Meteo (no key needed)",
+               services::apikeys::useOpenMeteo());
+  appendRaw(page, kSettingsPageCap, &used,
+            "<details class=\"adv\"><summary>Advanced: Tomorrow.io key</summary>");
   appendToggle(page, kSettingsPageCap, &used, "use_weather", "Use Tomorrow.io",
                services::apikeys::useWeather());
   services::apikeys::maskedWeather(masked, sizeof(masked));
   const int wx_n = snprintf(
       page + used, kSettingsPageCap - used,
-      "<label for=\"weather_key\">API key (%s)</label>"
+      "<label for=\"weather_key\">Tomorrow.io key: %s</label>"
       "<input id=\"weather_key\" name=\"weather_key\" type=\"password\" "
       "autocomplete=\"off\" placeholder=\"paste key\">"
-      "<label for=\"weather_units\">Units</label>"
-      "<select id=\"weather_units\" name=\"weather_units\">"
-      "<option value=\"metric\"%s>Metric (&deg;C)</option>"
-      "<option value=\"imperial\"%s>Imperial (&deg;F)</option>"
-      "</select>"
-      "<p class=\"note\">Current conditions show on the clock screen; swipe right for the 3-day "
-      "forecast.</p>",
-      masked, services::weather::useImperial() ? "" : " selected",
-      services::weather::useImperial() ? " selected" : "");
+      "<p class=\"hint\">Optional. Open-Meteo is used when Tomorrow.io is off or "
+      "unavailable.</p></details></div></details>",
+      masked);
   appendClamped(page, kSettingsPageCap, &used, wx_n);
-  // Open-Meteo (free, key-less; used when Tomorrow.io is off/keyless or fails).
-  appendToggle(page, kSettingsPageCap, &used, "use_openmeteo", "Use Open-Meteo (free weather)",
-               services::apikeys::useOpenMeteo());
-  appendRaw(page, kSettingsPageCap, &used,
-            "<p class=\"note\">Free weather source (Open-Meteo.com), no key needed. "
-            "Used when Tomorrow.io is off or unavailable.</p></div></details>");
 
   // Close the settings form but keep .wrap open so Wi-Fi / route-cache cards
   // share the same column spacing (nested forms cannot live inside /save).
@@ -1292,8 +1256,8 @@ void handleSettingsPage() {
             "<details class=\"card\"><summary><span class=\"ico\">W</span>"
             "Wi&#8209;Fi networks<span class=\"sum\">up to 3</span>"
             "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">"
-            "<p class=\"note\">Tried in preference order (#1 first). After repeated failures a "
-            "network is temporarily skipped this session until you remove or edit it.</p>");
+            "<p class=\"note\">The device tries them in order, #1 first. A network that "
+            "keeps failing is skipped for now, until you edit or remove it.</p>");
 
   const uint8_t net_n = wifiNetsCount();
   if (net_n == 0) {
@@ -1371,21 +1335,171 @@ void handleSettingsPage() {
     }
   } else {
     appendRaw(page, kSettingsPageCap, &used,
-              "<p class=\"note\">Store full (3/3). Remove one before adding another.</p>");
+              "<p class=\"note\">All 3 places are used. Remove one to add another.</p>");
   }
 
   appendRaw(page, kSettingsPageCap, &used,
+#if FLIGHTSCNR_HAS_KNOB_BUTTON
             "<p class=\"wifi-note\">Hold knob 5&nbsp;s clears all networks and opens the setup "
             "portal.</p></div></details>");
+#else
+            "<p class=\"wifi-note\">To forget every network and start Wi&#8209;Fi setup again: on "
+            "the device, swipe left on the radar, then on Settings 1/4 tap <b>Reset Wi-Fi</b> "
+            "twice.</p></div></details>");
+#endif
+
+  // ---------- Advanced group (collapsed): route lookups, cache, disclaimer, firmware ----------
+  // Route-lookup inputs sit outside the <form>; form="fs-save" still saves them.
+  appendRaw(page, kSettingsPageCap, &used,
+            services::ota_github::updateAvailable()
+                ? "<details class=\"card grp\" open>"
+                : "<details class=\"card grp\">");
+  appendRaw(page, kSettingsPageCap, &used,
+            "<summary><span class=\"ico\">&#9881;</span>Advanced"
+            "<span class=\"sum\">route lookups, cache, firmware</span>"
+            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">");
+
+  // ---------- Route APIs card ----------
+  // Runtime order: AirLabs → FlightAware → FR24 → adsbdb → prefix.
+  appendRaw(page, kSettingsPageCap, &used,
+            "<details class=\"card\"><summary><span class=\"ico\">&#9992;</span>Route lookups"
+            "<span class=\"sum\">API keys, monthly limits</span><span class=\"chev\">&#9656;</span>"
+            "</summary><div class=\"body\">"
+            "<p class=\"note\">Where a flight comes from and goes to, shown on the flight "
+            "details screen (tap a plane). The free adsbdb source needs no key. Paid services "
+            "need a key: paste it and its switch turns on. They are tried in order "
+            "<b>AirLabs &rarr; FlightAware &rarr; FR24 &rarr; adsbdb</b>. Several keys: separate "
+            "them with commas; when one reaches its monthly limit the next is used. Leave a key "
+            "box empty to keep the saved key. Limits reset on the 1st of the month.</p>");
+
+  // AirLabs (1st priority)
+  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
+  appendInlineToggle(page, kSettingsPageCap, &used, "use_airlabs",
+                     services::apikeys::useAirLabs());
+  appendRaw(page, kSettingsPageCap, &used,
+            "<span class=\"name\">AirLabs</span><span class=\"badge\">1st</span></div>");
+
+  services::apikeys::maskedAirLabs(masked, sizeof(masked));
+  char al_used_note[64];
+  if (services::apikeys::airLabsMaxCalls() == 0) {
+    snprintf(al_used_note, sizeof(al_used_note), "Used this month: %u (unlimited cap)",
+             static_cast<unsigned>(services::apikeys::airLabsCallsUsed()));
+  } else {
+    snprintf(al_used_note, sizeof(al_used_note), "Used this month: %u / %u",
+             static_cast<unsigned>(services::apikeys::airLabsCallsUsed()),
+             static_cast<unsigned>(services::apikeys::airLabsMaxCalls()));
+  }
+  const int al_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"airlabs_key\">API keys: %s</label>"
+      "<input id=\"airlabs_key\" name=\"airlabs_key\" form=\"fs-save\" type=\"password\" "
+      "autocomplete=\"off\" placeholder=\"key1, key2, key3\">"
+      "<label for=\"airlabs_max_calls\">Max calls / month per key (0 = unlimited; "
+      "free tier 1,000/mo)</label>"
+      "<input id=\"airlabs_max_calls\" name=\"airlabs_max_calls\" form=\"fs-save\" type=\"number\" min=\"0\" "
+      "step=\"1\" value=\"%u\">"
+      "<p class=\"usage\">%s</p></div>",
+      masked, static_cast<unsigned>(services::apikeys::airLabsMaxCalls()), al_used_note);
+  appendClamped(page, kSettingsPageCap, &used, al_n);
+
+  // FlightAware (2nd priority)
+  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
+  appendInlineToggle(page, kSettingsPageCap, &used, "use_flightaware",
+                     services::apikeys::useFlightAware());
+  appendRaw(page, kSettingsPageCap, &used,
+            "<span class=\"name\">FlightAware</span><span class=\"badge\">2nd</span></div>");
+
+  services::apikeys::maskedFlightAware(masked, sizeof(masked));
+  char fa_budget[16];
+  char fa_cost[16];
+  char fa_spent[16];
+  formatUsdMicro(services::apikeys::flightAwareBudgetUsdMicro(), fa_budget, sizeof(fa_budget), 2);
+  formatUsdMicro(services::apikeys::flightAwareCostUsdMicro(), fa_cost, sizeof(fa_cost), 4);
+  formatUsdMicro(services::apikeys::flightAwareSpentUsdMicro(), fa_spent, sizeof(fa_spent), 4);
+  char fa_used_note[72];
+  if (services::apikeys::flightAwareBudgetUsdMicro() == 0) {
+    snprintf(fa_used_note, sizeof(fa_used_note), "Spent this month: $%s (unlimited budget)",
+             fa_spent);
+  } else {
+    snprintf(fa_used_note, sizeof(fa_used_note), "Spent this month: $%s of $%s", fa_spent,
+             fa_budget);
+  }
+  const int fa_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"flightaware_key\">AeroAPI keys: %s</label>"
+      "<input id=\"flightaware_key\" name=\"flightaware_key\" form=\"fs-save\" type=\"password\" "
+      "autocomplete=\"off\" placeholder=\"key1, key2, key3\">"
+      "<div class=\"row2\"><div>"
+      "<label for=\"flightaware_max_usd\">Max budget / key ($, 0 = unlimited)</label>"
+      "<input id=\"flightaware_max_usd\" name=\"flightaware_max_usd\" form=\"fs-save\" type=\"number\" min=\"0\" "
+      "step=\"0.01\" value=\"%s\">"
+      "</div><div>"
+      "<label for=\"flightaware_cost_usd\">Cost per call ($)</label>"
+      "<input id=\"flightaware_cost_usd\" name=\"flightaware_cost_usd\" form=\"fs-save\" type=\"number\" min=\"0\" "
+      "step=\"0.0001\" value=\"%s\">"
+      "</div></div>"
+      "<p class=\"hint\">AeroAPI GET /flights/{ident}; default $0.005 per result set.</p>"
+      "<p class=\"usage\">%s</p></div>",
+      masked, fa_budget, fa_cost, fa_used_note);
+  appendClamped(page, kSettingsPageCap, &used, fa_n);
+
+  // FlightRadar24 (3rd priority)
+  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\"><div class=\"api-head\">");
+  appendInlineToggle(page, kSettingsPageCap, &used, "use_fr24", services::apikeys::useFr24());
+  appendRaw(page, kSettingsPageCap, &used,
+            "<span class=\"name\">FlightRadar24</span><span class=\"badge\">3rd</span></div>");
+
+  services::apikeys::maskedFr24(masked, sizeof(masked));
+  char fr_budget[16];
+  char fr_cost[16];
+  char fr_spent[16];
+  formatUsdMicro(services::apikeys::fr24BudgetUsdMicro(), fr_budget, sizeof(fr_budget), 2);
+  formatUsdMicro(services::apikeys::fr24CostUsdMicro(), fr_cost, sizeof(fr_cost), 4);
+  formatUsdMicro(services::apikeys::fr24SpentUsdMicro(), fr_spent, sizeof(fr_spent), 4);
+  char fr_used_note[72];
+  if (services::apikeys::fr24BudgetUsdMicro() == 0) {
+    snprintf(fr_used_note, sizeof(fr_used_note), "Spent this month: $%s (unlimited budget)",
+             fr_spent);
+  } else {
+    snprintf(fr_used_note, sizeof(fr_used_note), "Spent this month: $%s of $%s", fr_spent,
+             fr_budget);
+  }
+  const int fr_n = snprintf(
+      page + used, kSettingsPageCap - used,
+      "<label for=\"fr24_key\">API tokens: %s</label>"
+      "<input id=\"fr24_key\" name=\"fr24_key\" form=\"fs-save\" type=\"password\" "
+      "autocomplete=\"off\" placeholder=\"token1, token2, token3\">"
+      "<div class=\"row2\"><div>"
+      "<label for=\"fr24_max_usd\">Max budget / key ($, 0 = unlimited)</label>"
+      "<input id=\"fr24_max_usd\" name=\"fr24_max_usd\" form=\"fs-save\" type=\"number\" min=\"0\" "
+      "step=\"0.01\" value=\"%s\">"
+      "</div><div>"
+      "<label for=\"fr24_cost_usd\">Cost per call ($)</label>"
+      "<input id=\"fr24_cost_usd\" name=\"fr24_cost_usd\" form=\"fs-save\" type=\"number\" min=\"0\" "
+      "step=\"0.0001\" value=\"%s\">"
+      "</div></div>"
+      "<p class=\"usage\">%s</p></div>",
+      masked, fr_budget, fr_cost, fr_used_note);
+  appendClamped(page, kSettingsPageCap, &used, fr_n);
+
+  // adsbdb.com (free, key-less; used after the paid APIs)
+  appendRaw(page, kSettingsPageCap, &used, "<div class=\"api\">");
+  appendToggle(page, kSettingsPageCap, &used, "use_adsbdb", "Use adsbdb (free)",
+               services::apikeys::useAdsbDb());
+  appendRaw(page, kSettingsPageCap, &used,
+            "<p class=\"usage\">Free route source (adsbdb.com), no key needed. "
+            "Used after the paid APIs above (default on).</p></div>");
+
+  appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
   // ---------- Route cache card ----------
   appendRaw(page, kSettingsPageCap, &used,
             "<details class=\"card\"><summary><span class=\"ico\">&#8681;</span>Route cache"
-            "<span class=\"sum\">export / clear</span><span class=\"chev\">&#9656;</span>"
+            "<span class=\"sum\">download / clear</span><span class=\"chev\">&#9656;</span>"
             "</summary><div class=\"body\">"
-            "<p class=\"note\">Airline/route lookups are cached on flash (written about every "
-            "10&nbsp;min) so repeat callsigns don't re-bill an API. Clear the cache if routes "
-            "look stuck after changing API settings.</p>"
+            "<p class=\"note\">Routes already looked up are kept on the device (saved about "
+            "every 10&nbsp;min), so the same flight is not looked up (and billed) again. Clear "
+            "it if routes look wrong after changing route-lookup settings.</p>"
             "<a class=\"dl\" href=\"/route_cache.csv\" download=\"route_cache.csv\">"
             "&#8681;&nbsp; Download route_cache.csv</a>"
             "<form method=\"POST\" action=\"/route_cache/clear\" style=\"margin-top:.75rem\""
@@ -1401,19 +1515,19 @@ void handleSettingsPage() {
         "<details class=\"card\"><summary><span class=\"ico\">&#9878;</span>Disclaimer"
         "<span class=\"sum\">%s</span><span class=\"chev\">&#9656;</span>"
         "</summary><div class=\"body\">"
-        "<p class=\"note\">The safety disclaimer always appears on boot. "
-        "<b>Don&rsquo;t show again</b> can only be enabled on the device touchscreen "
-        "(tap the checkbox, then tap <b>Accept</b>). When remembered, the screen shows "
-        "a five-second countdown with no Accept button before continuing. "
-        "Knob/encoder cannot accept or remember."
+        "<p class=\"note\">The safety disclaimer appears at every start. "
+        "<b>Don&rsquo;t show again</b> can only be turned on at the device "
+        "(tap the checkbox, then <b>Accept</b>). After that, the screen shows a "
+        "five-second countdown instead of the Accept button."
+#if FLIGHTSCNR_HAS_ENCODER
+        " Knob/encoder cannot accept or remember."
+#endif
         "</p>"
         "<p id=\"disclaimer_status\">Status: <b>%s</b></p>",
         remembered ? "remembered" : "ask every boot",
         remembered ? "Remembered on this device (5&nbsp;s countdown)"
                    : "Not remembered &mdash; wait for Accept each boot");
-    if (disc_n > 0) {
-      used += static_cast<size_t>(disc_n);
-    }
+    appendClamped(page, kSettingsPageCap, &used, disc_n);
     if (remembered) {
       appendRaw(page, kSettingsPageCap, &used,
                 "<form method=\"POST\" action=\"/disclaimer/clear\" style=\"margin-top:.75rem\""
@@ -1427,112 +1541,98 @@ void handleSettingsPage() {
 
   appendFirmwareUpdateCard(page, &used);
 
+  appendRaw(page, kSettingsPageCap, &used, "</div></details>");
+
+  // Live sync with the device. Rules (the page must never lose or silently revert an edit):
+  //  - a field the user touched (input/change) is "dirty" and is never overwritten;
+  //  - the focused field is not overwritten (it is retried after it loses focus);
+  //  - if the device changed a dirty field, a note says so instead of overwriting it;
+  //  - polls 1 s, backs off to 3 s after ~10 s without changes, stops while hidden;
+  //  - leaving the page with unsaved edits (or during Make map) asks first.
+  // Save reloads the page, which clears the dirty flags.
   const int tail_n = snprintf(
       page + used, kSettingsPageCap - used,
       "<p class=\"foot\"><a href=\"%s\" target=\"_blank\" rel=\"noopener\">"
-      "github.com/yashmulgaonkar/FlightScnr</a></p>"
+      "github.com/yashmulgaonkar/FlightScnr</a> &middot; CC BY-NC-SA 4.0</p>"
       "</div>"
       "<div class=\"savebar\"><div class=\"inner\">"
+      "<p id=\"dev_note\" class=\"dev\" role=\"status\" style=\"display:none;margin:0 0 .5rem\"></p>"
       "<button class=\"save\" type=\"submit\" form=\"fs-save\">Save</button></div></div>"
-      "<div id=\"sync_note\" style=\"display:none;position:fixed;left:50%%;bottom:4.6rem;"
-      "transform:translateX(-50%%);z-index:25;background:#143d22;border:1px solid #1a9c3c;"
-      "color:#d8ffe4;border-radius:999px;padding:.35rem .75rem;font-size:.78rem\">"
-      "Updated from device</div>"
+      "<div id=\"sync_note\" role=\"status\" style=\"display:none;position:fixed;left:50%%;"
+      "bottom:4.6rem;transform:translateX(-50%%);z-index:25;background:#143d22;"
+      "border:1px solid #1a9c3c;color:#d8ffe4;border-radius:999px;padding:.35rem .75rem;"
+      "font-size:.78rem\">Updated from the device</div>"
       "<script>"
       "(function(){"
-      "var lastRev=null,timer=null,PASSWORD_IDS={"
-      "airlabs_key:1,flightaware_key:1,fr24_key:1,weather_key:1,carto_key:1"
-      "};"
-      "function setVal(id,v){"
-      "var el=document.getElementById(id);if(!el||PASSWORD_IDS[id])return;"
-      "if(el.type==='checkbox'){el.checked=!!v;return;}"
-      "if(v===null||v===undefined)return;"
-      "el.value=String(v);"
-      "}"
+      "var IDS=('radar_center range_mi dist_unit min_height max_height radar_accent "
+      "show_cardinals facing_deg show_sweep plane_labels use_basemap bm_contrast_dark "
+      "bm_contrast_light bm_wash_vfr bright_pct detail_timeout clock_timeout idle_clock "
+      "clock_24h date_numeric auto_timezone night_en night_mode night_start night_end ui_beep "
+      "beep_tone alert_mil alert_emrg alert_heli alert_ga alert_appr alert_ovh type_colors "
+      "alert_hide alert_watch alert_watch_type alert_watch_reg use_airlabs use_flightaware "
+      "use_fr24 use_adsbdb airlabs_max_calls flightaware_max_usd flightaware_cost_usd "
+      "fr24_max_usd fr24_cost_usd use_weather use_openmeteo weather_units"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      " overhead_sign hide_airliners use_rain alert_notbl sky_launch sky_iss"
+#endif
+      "').split(' ');"
+      "var F=document.getElementById('fs-save'),dirty=window.fsDirty={},base={},last=null,"
+      "quiet=0,seq=0,timer=null,saving=false;"
+      // basemap_style is a choice for the next Make map, not a saved setting.
+      "function mark(e){var t=e.target;"
+      "if(t&&t.id&&t.form===F&&t.id!=='basemap_style'){dirty[t.id]=1;quiet=0;}}"
+      "document.addEventListener('input',mark,true);"
+      "document.addEventListener('change',mark,true);"
+      "F.addEventListener('submit',function(){saving=true;});"
+      "window.addEventListener('beforeunload',function(e){"
+      "if(saving)return;"
+      "if(window.fsBusy||Object.keys(dirty).length){e.preventDefault();e.returnValue='';}});"
+      "function val(el){return el.type==='checkbox'?el.checked:el.value;}"
+      "function lbl(id){var el=document.getElementById(id),"
+      "a=el&&el.closest?el.closest('.api'):null,n=a&&a.querySelector('.name');"
+      "if(n)return n.textContent;"
+      "var l=document.querySelector('label[for=\"'+id+'\"]');"
+      "return l?l.textContent.replace(/\\s*\\(.*$/,''):id;}"
       "function apply(j){"
-      "if(!j||typeof j.rev!=='number')return;"
-      "if(lastRev!==null&&j.rev===lastRev)return;"
-      "var first=lastRev===null;lastRev=j.rev;"
-      "setVal('radar_center',j.radar_center);"
-      "setVal('range_mi',j.range_mi);"
-      "setVal('dist_unit',j.dist_unit);"
-      "setVal('min_height',j.min_height);"
-      "setVal('max_height',j.max_height);"
-      "setVal('radar_accent',j.radar_accent);"
-      "setVal('show_cardinals',j.show_cardinals);"
-      "setVal('facing_deg',j.facing_deg);"
-      "setVal('show_sweep',j.show_sweep);"
-      "setVal('hide_blip_details',j.hide_blip_details);"
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      "setVal('overhead_sign',j.overhead_sign);"
-      "setVal('hide_airliners',j.hide_airliners);"
-#endif
-      "setVal('use_basemap',j.use_basemap);"
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      "setVal('use_rain',j.use_rain);"
-#endif
-      // Not basemap_style: it is a choice for the next Generate, not a live setting.
-      // Syncing it reset the user's pick every time the device changed anything
-      // (even a zoom on the touchscreen), so Voyager silently became Dark Matter.
-      "setVal('bm_contrast_dark',j.bm_contrast_dark);"
-      "setVal('bm_contrast_light',j.bm_contrast_light);"
-      "setVal('bm_wash_vfr',j.bm_wash_vfr);"
-      "setVal('bright_pct',j.bright_pct);"
-      "setVal('detail_timeout',j.detail_timeout);"
-      "setVal('clock_timeout',j.clock_timeout);"
-      "setVal('idle_clock',j.idle_clock);"
-      "setVal('clock_24h',j.clock_24h);"
-      "setVal('date_numeric',j.date_numeric);"
-      "setVal('auto_timezone',j.auto_timezone);"
-      "setVal('night_en',j.night_en);"
-      "setVal('night_mode',j.night_mode);"
-      "setVal('night_start',j.night_start);"
-      "setVal('night_end',j.night_end);"
-      "setVal('ui_beep',j.ui_beep);"
-      "setVal('beep_tone',j.beep_tone);"
-      "setVal('alert_mil',j.alert_mil);"
-      "setVal('alert_emrg',j.alert_emrg);"
-      "setVal('alert_hide',j.alert_hide);"
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      "setVal('sky_launch',j.sky_launch);"
-      "setVal('sky_iss',j.sky_iss);"
-#endif
-      "setVal('alert_watch',j.alert_watch);"
-      "setVal('alert_watch_type',j.alert_watch_type);"
-      "setVal('alert_watch_reg',j.alert_watch_reg);"
-      "setVal('alert_watch_post',j.alert_watch);"
-      "setVal('alert_watch_type_post',j.alert_watch_type);"
-      "setVal('alert_watch_reg_post',j.alert_watch_reg);"
-      "setVal('use_airlabs',j.use_airlabs);"
-      "setVal('use_flightaware',j.use_flightaware);"
-      "setVal('use_fr24',j.use_fr24);"
-      "setVal('use_adsbdb',j.use_adsbdb);"
-      "setVal('airlabs_max_calls',j.airlabs_max_calls);"
-      "setVal('flightaware_max_usd',j.flightaware_max_usd);"
-      "setVal('flightaware_cost_usd',j.flightaware_cost_usd);"
-      "setVal('fr24_max_usd',j.fr24_max_usd);"
-      "setVal('fr24_cost_usd',j.fr24_cost_usd);"
-      "setVal('use_weather',j.use_weather);"
-      "setVal('use_openmeteo',j.use_openmeteo);"
-      "setVal('weather_units',j.weather_units);"
+      "window.fsDev=j;var chg=0,conf=[];"
+      "IDS.forEach(function(id){"
+      "var el=document.getElementById(id);if(!el||!(id in j))return;"
+      "var v=el.type==='checkbox'?!!j[id]:String(j[id]);"
+      "if(base[id]===v)return;"
+      "if(dirty[id]){if(val(el)===v){base[id]=v;delete dirty[id];}"
+      "else if(id in base)conf.push(lbl(id));return;}"
+      "if(el===document.activeElement)return;"
+      "base[id]=v;"
+      "if(val(el)!==v){if(el.type==='checkbox')el.checked=v;else el.value=v;chg=1;}});"
+      "var dn=document.getElementById('dev_note');"
+      "if(conf.length){dn.textContent='Also changed on the device: '+conf.join(', ')+"
+      "'. Save keeps what you entered here; reload the page to see the device\\u2019s values.';"
+      "dn.style.display='block';}"
+      "var bs=document.getElementById('bm_status');"
+      "if(bs&&typeof j.bm_status==='string')bs.textContent=j.bm_status;"
       "var ds=document.getElementById('disclaimer_status');"
       "if(ds&&typeof j.disclaimer_remembered==='boolean'){"
       "ds.innerHTML=j.disclaimer_remembered"
       "?'Status: <b>Remembered on this device (5&nbsp;s countdown)</b>'"
       ":'Status: <b>Not remembered &mdash; wait for Accept each boot</b>';}"
-      "if(!first){var n=document.getElementById('sync_note');if(n){"
+      "if(chg){var n=document.getElementById('sync_note');"
       "n.style.display='block';clearTimeout(n._t);"
-      "n._t=setTimeout(function(){n.style.display='none';},1200);}}"
+      "n._t=setTimeout(function(){n.style.display='none';},1500);}"
       "}"
-      "function poll(){"
-      "if(document.visibilityState==='hidden')return;"
-      "fetch('/api/settings').then(function(r){return r.json();}).then(apply)"
-      ".catch(function(){});"
+      "function poll(s){"
+      "if(s!==seq)return;"
+      "if(document.visibilityState==='hidden'){timer=null;return;}"
+      "fetch('/api/settings',{cache:'no-store'}).then(function(r){return r.text();})"
+      ".then(function(t){if(t!==last){var j=JSON.parse(t);last=t;quiet=0;apply(j);}"
+      "else quiet++;})"
+      ".catch(function(){quiet++;})"
+      ".then(function(){if(s===seq)timer=setTimeout(function(){poll(s);},"
+      "quiet>10?3000:1000);});"
       "}"
-      "function arm(){if(timer)clearInterval(timer);poll();timer=setInterval(poll,1000);}"
+      "function arm(){if(timer)clearTimeout(timer);timer=null;seq++;quiet=0;poll(seq);}"
       "document.addEventListener('visibilitychange',function(){"
       "if(document.visibilityState==='visible')arm();"
-      "else if(timer){clearInterval(timer);timer=null;}"
+      "else{if(timer)clearTimeout(timer);timer=null;seq++;}"
       "});"
       "arm();"
       "})();"
@@ -1592,7 +1692,9 @@ void handleSave() {
   services::apikeys::saveAdsbDbEnabledFromForm(s_server->arg("use_adsbdb").c_str());
   services::weather::saveUnitsFromForm(s_server->arg("weather_units").c_str());
   ui::displayPrefsSaveClockWeatherTimeoutFromForm(s_server->arg("clock_timeout").c_str());
-  ui::displayPrefsSaveHideBlipDetailsFromForm(s_server->arg("hide_blip_details").c_str());
+  // The page shows "Plane labels" (on = labels shown); the stored setting is the
+  // inverse ("hide blip details"). An unchecked box is simply absent from the form.
+  ui::displayPrefsSaveHideBlipDetailsFromForm(s_server->hasArg("plane_labels") ? "" : "T");
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   ui::displayPrefsSaveOverheadSignFromForm(s_server->arg("overhead_sign").c_str());
   services::alert::saveHideAirlinersFromForm(s_server->arg("hide_airliners").c_str());
@@ -1792,8 +1894,10 @@ void handleBasemapClear() {
     s_server->send(405, "text/plain", "Method Not Allowed");
     return;
   }
+  // Called from the page's script (fetch), so answer plainly instead of redirecting:
+  // a redirect made the browser download the whole settings page again for nothing.
   const bool ok = services::basemap::clear();
-  redirectToSettings(ok ? "saved=1" : "error=basemap");
+  s_server->send(ok ? 200 : 500, "text/plain", ok ? "ok" : "basemap clear failed");
   if (ok) {
     settingsNotifySaved();
   }
@@ -2141,7 +2245,9 @@ const char* distUnitKey(ui::radar::DistanceUnit unit) {
 }
 
 void handleSettingsApi() {
-  services::apikeys::load();
+  // Polled every 1-3 s while the page is open: everything here is read from RAM.
+  // (apikeys::load() used to run here: ~20 NVS reads per poll, String temporaries,
+  // a possible NVS write from the monthly reset, and a race with the route worker.)
 
   char watch_buf[160];
   char watch_type_buf[96];
@@ -2198,7 +2304,7 @@ void handleSettingsApi() {
       "\"show_cardinals\":%s,"
       "\"facing_deg\":\"%u\","
       "\"show_sweep\":%s,"
-      "\"hide_blip_details\":%s,"
+      "\"plane_labels\":%s,"
       "\"use_basemap\":%s,"
       "\"basemap_style\":\"%s\","
       "\"bm_contrast_dark\":\"%u\","
@@ -2221,7 +2327,12 @@ void handleSettingsApi() {
 #endif
       "\"alert_mil\":%s,"
       "\"alert_emrg\":%s,"
-      "\"alert_hide\":%s,",
+      "\"alert_hide\":%s,"
+      "\"alert_heli\":%s,"
+      "\"alert_ga\":%s,"
+      "\"alert_appr\":%s,"
+      "\"alert_ovh\":%s,"
+      "\"type_colors\":%s,",
       static_cast<unsigned long>(settingsStateRev()),
       static_cast<unsigned long>(settingsStateUpdatedMs()),
       services::map_center::latitude(), services::map_center::longitude(),
@@ -2232,7 +2343,7 @@ void handleSettingsApi() {
       ui::radar::showCompassRose() ? "true" : "false",
       static_cast<unsigned>(ui::radar::facingDeg()),
       ui::displayPrefsSweepLineEnabled() ? "true" : "false",
-      ui::displayPrefsHideBlipDetails() ? "true" : "false",
+      ui::displayPrefsHideBlipDetails() ? "false" : "true",
       services::basemap::enabled() ? "true" : "false", basemapStyleKey(bm_style),
       static_cast<unsigned>(services::basemap::contrastPercentDark()),
       static_cast<unsigned>(services::basemap::contrastPercentLight()),
@@ -2252,7 +2363,12 @@ void handleSettingsApi() {
 #endif
       services::alert::militaryAlertEnabled() ? "true" : "false",
       services::alert::emergencyAlertEnabled() ? "true" : "false",
-      services::alert::hideNonAlertedEnabled() ? "true" : "false");
+      services::alert::hideNonAlertedEnabled() ? "true" : "false",
+      services::alert::helicopterAlertEnabled() ? "true" : "false",
+      services::alert::privateAlertEnabled() ? "true" : "false",
+      services::alert::alertOnApproachEnabled() ? "true" : "false",
+      services::alert::overheadAnyEnabled() ? "true" : "false",
+      services::alert::typeColorsEnabled() ? "true" : "false");
   if (head_n <= 0) {
     s_server->send(500, "text/plain", "json error");
     return;
@@ -2275,7 +2391,10 @@ void handleSettingsApi() {
     return true;
   };
 
-  if (!appendKeyString("alert_watch", watch_buf) ||
+  char bm_status[192];
+  services::basemap::statusText(bm_status, sizeof(bm_status));
+  if (!appendKeyString("bm_status", bm_status) ||
+      !appendKeyString("alert_watch", watch_buf) ||
       !appendKeyString("alert_watch_type", watch_type_buf) ||
       !appendKeyString("alert_watch_reg", watch_reg_buf)) {
     s_server->send(500, "text/plain", "json overflow");
@@ -2296,9 +2415,10 @@ void handleSettingsApi() {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   {
     const int n = snprintf(s_api_buf + used, kApiCap - used,
-                           "\"overhead_sign\":%s,\"hide_airliners\":%s,",
+                           "\"overhead_sign\":%s,\"hide_airliners\":%s,\"alert_notbl\":%s,",
                            ui::displayPrefsOverheadSignEnabled() ? "true" : "false",
-                           services::alert::airlinersHidden() ? "true" : "false");
+                           services::alert::airlinersHidden() ? "true" : "false",
+                           services::alert::notableAlertEnabled() ? "true" : "false");
     if (n <= 0 || static_cast<size_t>(n) >= kApiCap - used) {
       s_server->send(500, "text/plain", "json overflow");
       return;
@@ -2384,11 +2504,15 @@ void settingsWebStart() {
     return;
   }
 
+  // The only NVS read of the keys for the web page: the handlers serve from RAM
+  // afterwards (every save path updates RAM as well as NVS).
   services::apikeys::load();
 
   settingsWebStop();
 
   s_server = new WebServer(80);
+  // Without this, handleClient() sleeps 1 ms on every idle loop pass.
+  s_server->enableDelay(false);
   registerRoutes();
   s_server->begin();
   s_active = true;
