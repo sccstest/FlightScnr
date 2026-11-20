@@ -1,27 +1,51 @@
 // Touch-only input for the Waveshare ESP32-P4-WIFI6-Touch-LCD-4C (GT9271, GT911 register map).
 // Same public API and gesture rules as input.cpp; there is no encoder or knob button.
+//
+// The GT9271 is sampled by a small task ("touch", core 1, priority above loop(), every
+// 10 ms), not by loop(): a loop pass can take hundreds of ms (map redraws, TLS setup),
+// and a quick tap that went down and up between two loop passes used to be lost, and
+// swipes started late. The task owns the I2C traffic and the gesture state below; it
+// only hands finished gestures to loop() through s_input_mux.
+//
+// I2C sharing: after setup() the touch chip is the only thing on the Wire bus at run
+// time (the ES8311 codec is configured once in buzzerInit(); the panel probe runs
+// once at boot). The task is started by the first inputPoll() call, which comes from
+// loop(), i.e. after setup() has finished with the bus. Arduino's Wire also takes its
+// own per-transaction lock, so a later run-time user would be serialized anyway.
 #include "hardware/pin_config.h"
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 #include "hardware/input.h"
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 
 #include "hardware/buzzer.h"
+#include "util/loop_watchdog.h"
 
 namespace {
 
+// --- Shared with loop(): every access below holds s_input_mux. ---
 portMUX_TYPE s_input_mux = portMUX_INITIALIZER_UNLOCKED;
-volatile int16_t s_tap_x = -1;
-volatile int16_t s_tap_y = -1;
-volatile SwipeGesture s_swipe_pending = SwipeNone;
-volatile int8_t s_pinch_pending = 0;
-volatile int16_t s_long_x = -1;
-volatile int16_t s_long_y = -1;
+// A few taps can queue up while loop() is busy, so rapid taps (e.g. stepping through
+// planes on flight detail during a fetch) each count. Oldest first.
+constexpr int kTapQueueLen = 4;
+int16_t s_tap_qx[kTapQueueLen] = {};
+int16_t s_tap_qy[kTapQueueLen] = {};
+int s_tap_head = 0;   // index of the oldest queued tap
+int s_tap_count = 0;  // queued taps
+SwipeGesture s_swipe_pending = SwipeNone;
+int8_t s_pinch_pending = 0;
+int16_t s_long_x = -1;
+int16_t s_long_y = -1;
 
+// --- Touch task only (after inputInit()). ---
+std::atomic<bool> s_task_started{false};
 uint8_t s_gt_addr = 0;
 bool s_touch_ready = false;
 bool s_touch_was_down = false;
@@ -30,7 +54,6 @@ int16_t s_touch_start_x = 0;
 int16_t s_touch_start_y = 0;
 int16_t s_touch_last_x = 0;
 int16_t s_touch_last_y = 0;
-unsigned long s_last_poll_ms = 0;
 
 // Long-press: one finger held still for kLongPressMs. It fires while the finger is
 // still down (so the user gets feedback without lifting) and then ends tracking, so
@@ -55,7 +78,12 @@ constexpr unsigned long kPostPinchTapLockMs = 400;
 constexpr int kSwipeMinPx = 70 * LCD_WIDTH / 360;
 // Finger jitter allowed during a long-press (~3 mm on the 4C).
 constexpr int kLongPressSlopPx = kSwipeMinPx / 4;
-constexpr unsigned long kPollIntervalMs = 15;
+constexpr uint32_t kPollIntervalMs = 10;
+// Touch task: core 1 with loop(), one step above loop()'s priority 1 so a busy loop
+// pass never delays a sample. It runs for well under 1 ms per 10 ms.
+constexpr uint32_t kTouchTaskStackBytes = 4096;
+constexpr UBaseType_t kTouchTaskPriority = 2;
+constexpr BaseType_t kTouchTaskCore = 1;
 
 constexpr uint16_t kGtRegStatus = 0x814E;
 constexpr uint16_t kGtRegPoint1 = 0x814F;
@@ -99,13 +127,26 @@ void queueSwipe(SwipeGesture gesture) {
   portEXIT_CRITICAL(&s_input_mux);
 }
 
+/** Call with s_input_mux held. */
+void clearTapQueueLocked() {
+  s_tap_head = 0;
+  s_tap_count = 0;
+}
+
 void queueTap(int16_t x, int16_t y) {
   if (s_pinch_end_ms != 0 && millis() - s_pinch_end_ms < kPostPinchTapLockMs) {
     return;
   }
   portENTER_CRITICAL(&s_input_mux);
-  s_tap_x = x;
-  s_tap_y = y;
+  if (s_tap_count == kTapQueueLen) {
+    // Full: drop the oldest so the newest tap is never lost.
+    s_tap_head = (s_tap_head + 1) % kTapQueueLen;
+    --s_tap_count;
+  }
+  const int slot = (s_tap_head + s_tap_count) % kTapQueueLen;
+  s_tap_qx[slot] = x;
+  s_tap_qy[slot] = y;
+  ++s_tap_count;
   portEXIT_CRITICAL(&s_input_mux);
 }
 
@@ -146,8 +187,7 @@ void trackPinch(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
     s_touch_tracking = false;  // the first finger's touch is not a tap/swipe
     // Drop anything the first finger may already have queued.
     portENTER_CRITICAL(&s_input_mux);
-    s_tap_x = -1;
-    s_tap_y = -1;
+    clearTapQueueLocked();
     s_long_x = -1;
     s_long_y = -1;
     s_swipe_pending = SwipeNone;
@@ -277,21 +317,34 @@ void checkLongPress() {
   portEXIT_CRITICAL(&s_input_mux);
 }
 
+void touchTask(void*) {
+  const TickType_t period = pdMS_TO_TICKS(kPollIntervalMs) > 0 ? pdMS_TO_TICKS(kPollIntervalMs) : 1;
+  for (;;) {
+    pollTouchGt911();
+    checkLongPress();
+    vTaskDelay(period);
+  }
+}
+
 }  // namespace
 
 void inputInit() { initTouchGt911(); }
 
 void inputPoll() {
-  if (!s_touch_ready) {
+  // The first call (from loop(), after setup() is done with the I2C bus) starts the
+  // touch task; from then on this is a no-op and the task does the sampling.
+  if (!s_touch_ready || s_task_started.load()) {
     return;
   }
-  const unsigned long now = millis();
-  if (now - s_last_poll_ms < kPollIntervalMs) {
+  s_task_started.store(true);
+  if (xTaskCreatePinnedToCore(touchTask, "touch", kTouchTaskStackBytes, nullptr,
+                              kTouchTaskPriority, nullptr, kTouchTaskCore) != pdPASS) {
+    Serial.println("Touch: task create failed; touch is off");
+    s_touch_ready = false;
     return;
   }
-  s_last_poll_ms = now;
-  pollTouchGt911();
-  checkLongPress();
+  Serial.printf("Touch: sampled every %lu ms by its own task\n",
+                static_cast<unsigned long>(kPollIntervalMs));
 }
 
 int8_t inputConsumeEncoderDelta() { return 0; }
@@ -300,12 +353,12 @@ bool inputConsumeKnobPress() { return false; }
 
 bool inputConsumeScreenTap(int16_t* x, int16_t* y) {
   portENTER_CRITICAL(&s_input_mux);
-  const bool tap = s_tap_x >= 0 && s_tap_y >= 0;
+  const bool tap = s_tap_count > 0;
   if (tap) {
-    if (x != nullptr) *x = s_tap_x;
-    if (y != nullptr) *y = s_tap_y;
-    s_tap_x = -1;
-    s_tap_y = -1;
+    if (x != nullptr) *x = s_tap_qx[s_tap_head];
+    if (y != nullptr) *y = s_tap_qy[s_tap_head];
+    s_tap_head = (s_tap_head + 1) % kTapQueueLen;
+    --s_tap_count;
   }
   portEXIT_CRITICAL(&s_input_mux);
   return tap;
@@ -344,15 +397,16 @@ void inputDiscardPendingInteractions() {
   portENTER_CRITICAL(&s_input_mux);
   s_swipe_pending = SwipeNone;
   s_pinch_pending = 0;
-  s_tap_x = -1;
-  s_tap_y = -1;
+  clearTapQueueLocked();
   s_long_x = -1;
   s_long_y = -1;
   portEXIT_CRITICAL(&s_input_mux);
 }
 
-// No knob: Wi-Fi wipe is available from the web settings page.
-void inputPollLongPress() {}
+// No knob: Wi-Fi wipe is available from the web settings page. The Wi-Fi connect
+// screen and the setup portal call this every few ms while they block loop(), so it
+// tells the loop watchdog that those waits are alive.
+void inputPollLongPress() { util::loopwdt::keepAlive(); }
 bool inputConsumeWifiResetUiCancelled() { return false; }
 
 #endif  // FLIGHTSCNR_BOARD_WAVESHARE_P4_4C

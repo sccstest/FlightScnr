@@ -6,8 +6,11 @@
 #include <WebServer.h>
 
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 
@@ -24,9 +27,55 @@ constexpr char kHeader[] = "callsign,airline,origin,dest,source,cached_unix,api_
 enum class MountState : uint8_t { kPending, kOk, kFailed };
 
 MountState s_mount = MountState::kPending;
-bool s_dirty = false;
+// Set by the route worker (markDirty), cleared by tick() when it hands a snapshot to
+// the flush task, set again by the task if the write failed.
+std::atomic<bool> s_dirty{false};
 unsigned long s_last_flush_ms = 0;
 SemaphoreHandle_t s_fs_mutex = nullptr;
+
+/** Flush runs in a one-shot low-priority task, not on the loop: it reads the whole
+ *  CSV, merges and rewrites it (flash writes stall both cores in bursts; the loop gets
+ *  the CPU between them). Its stack is internal RAM and only exists during a flush. */
+constexpr uint32_t kFlushTaskStackBytes = 6144;
+constexpr UBaseType_t kFlushTaskPriority = 1;
+std::atomic<bool> s_flush_running{false};
+
+struct FlushJob {
+  Entry* ram = nullptr;  // PSRAM snapshot of the RAM cache rows worth keeping
+  size_t ram_count = 0;
+  uint32_t now_sec = 0;
+  uint32_t ttl_sec = 0;
+};
+FlushJob s_flush_job;  // owned by the flush task while s_flush_running
+
+// Cached LittleFS usage for the [diag] line: usedBytes() walks the whole file system.
+constexpr unsigned long kUsageRefreshMs = 30UL * 60UL * 1000UL;
+std::atomic<uint32_t> s_usage_used{0};
+std::atomic<uint32_t> s_usage_total{0};
+std::atomic<unsigned long> s_usage_at_ms{0};
+std::atomic<bool> s_usage_valid{false};
+
+void refreshUsage() {
+  const size_t total = LittleFS.totalBytes();
+  const size_t used = LittleFS.usedBytes();
+  s_usage_used.store(static_cast<uint32_t>(used));
+  s_usage_total.store(static_cast<uint32_t>(total));
+  s_usage_at_ms.store(millis());
+  s_usage_valid.store(total > 0);
+}
+
+bool fillUsage(size_t* used_bytes, size_t* total_bytes) {
+  if (!s_usage_valid.load()) {
+    return false;
+  }
+  if (used_bytes != nullptr) {
+    *used_bytes = s_usage_used.load();
+  }
+  if (total_bytes != nullptr) {
+    *total_bytes = s_usage_total.load();
+  }
+  return true;
+}
 
 /**
  * Merge buffer for flush (~84 KB at 1500 rows). Too big for the loop task stack,
@@ -83,6 +132,22 @@ void ensureCacheFile() {
   }
 }
 
+/** A flush always writes the tmp file completely before it replaces the cache, so a
+ *  tmp file next to a missing cache is a finished copy (power cut between the old
+ *  remove and rename): keep it. Any other leftover tmp is partial: drop it. */
+void recoverInterruptedFlush() {
+  if (!LittleFS.exists(kTmpPath)) {
+    return;
+  }
+  if (!LittleFS.exists(kPath)) {
+    if (LittleFS.rename(kTmpPath, kPath)) {
+      Serial.println("[route_cache] restored cache from an interrupted save");
+      return;
+    }
+  }
+  LittleFS.remove(kTmpPath);
+}
+
 bool ensureMounted() {
   if (s_mount == MountState::kOk) {
     return true;
@@ -93,6 +158,7 @@ bool ensureMounted() {
 
   if (LittleFS.begin(false)) {
     s_mount = MountState::kOk;
+    recoverInterruptedFlush();
     ensureCacheFile();
     return true;
   }
@@ -511,49 +577,51 @@ bool lookupPermanent(const char* callsign, Entry* out) {
   return false;
 }
 
-void markDirty() { s_dirty = true; }
+void markDirty() { s_dirty.store(true); }
 
-void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
-          uint32_t now_sec, uint32_t ttl_sec) {
-  if (!s_dirty) {
+namespace {
+
+/** Append `e`, or overwrite the oldest row when the file limit is reached. */
+void appendOrEvict(Entry* entries, size_t* count, const Entry& e) {
+  if (*count < config::kRouteCacheFileMaxEntries) {
+    entries[*count] = e;
+    ++(*count);
     return;
   }
-
-  if (s_last_flush_ms == 0) {
-    s_last_flush_ms = now_ms;
-    return;
+  size_t oldest = 0;
+  for (size_t i = 1; i < *count; ++i) {
+    if (entries[i].cached_at_sec < entries[oldest].cached_at_sec) {
+      oldest = i;
+    }
   }
-  if ((now_ms - s_last_flush_ms) < config::kRouteCacheFlushIntervalMs) {
-    return;
-  }
+  entries[oldest] = e;
+}
 
+/** The merge-and-rewrite. Runs in the flush task. Returns true when the cache file was
+ *  replaced (or nothing needed writing), false to retry on the next interval. */
+bool flushNow(const FlushJob& job) {
   FsLock lock;
-  if (!lock.acquire(0)) {
-    return;
+  if (!lock.acquire(pdMS_TO_TICKS(5000))) {
+    return false;
   }
-
-  if (read_slot == nullptr || !ensureMounted()) {
-    return;
+  if (!ensureMounted()) {
+    return false;
   }
 
   MergeBuffer merge;
   if (merge.entries == nullptr) {
-    noteFlushAttempt(now_ms);  // no PSRAM headroom now; retry on the next interval
-    return;
+    return false;  // no PSRAM headroom now; retry on the next interval
   }
   Entry* const merged = merge.entries;
   size_t merged_count = 0;
 
-  for (size_t i = 0; i < max_slots; ++i) {
-    Entry slot;
-    if (!read_slot(i, &slot, max_slots) || slot.callsign[0] == '\0') {
-      continue;
-    }
-    if (!entryKeepInFlash(slot, now_sec, ttl_sec)) {
-      continue;
-    }
-    upsertMerged(merged, &merged_count, slot);
+  // RAM rows first (newest data). They are unique callsigns (upsert over <= 64 rows).
+  for (size_t i = 0; i < job.ram_count; ++i) {
+    upsertMerged(merged, &merged_count, job.ram[i]);
   }
+  const size_t ram_rows = merged_count;
+  const uint32_t now_sec = job.now_sec;
+  const uint32_t ttl_sec = job.ttl_sec;
 
   // Rows already on flash. Loaded in one read (see readWholeFile) and parsed from
   // memory. If the file cannot be read, do not overwrite it with a RAM-only set:
@@ -562,8 +630,7 @@ void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
     static uint8_t s_read_fail_streak = 0;
     PsramBlock in(kMaxFileBytes);
     if (in.data == nullptr) {
-      noteFlushAttempt(now_ms);
-      return;
+      return false;
     }
     size_t in_len = 0;
     const ReadResult rr = readWholeFile(kPath, in.data, kMaxFileBytes, &in_len);
@@ -573,8 +640,7 @@ void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
                     static_cast<unsigned>(s_read_fail_streak),
                     s_read_fail_streak >= 3 ? ", rebuilding from RAM" : ", flush skipped");
       if (s_read_fail_streak < 3) {
-        noteFlushAttempt(now_ms);
-        return;
+        return false;
       }
     } else {
       s_read_fail_streak = 0;
@@ -600,10 +666,12 @@ void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
       if (!entryKeepInFlash(parsed, now_sec, ttl_sec)) {
         continue;
       }
-      if (findMergedIndex(merged, merged_count, parsed.callsign) >= 0) {
+      // The file was written deduplicated, so a flash row can only collide with a
+      // RAM row: check those few (was a scan of every merged row, O(n^2) at 1500).
+      if (findMergedIndex(merged, ram_rows, parsed.callsign) >= 0) {
         continue;
       }
-      upsertMerged(merged, &merged_count, parsed);
+      appendOrEvict(merged, &merged_count, parsed);
     }
   }
 
@@ -611,8 +679,7 @@ void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
   const size_t out_cap = sizeof(kHeader) + merged_count * kMaxRowBytes;
   PsramBlock out_block(out_cap);
   if (out_block.data == nullptr) {
-    noteFlushAttempt(now_ms);
-    return;
+    return false;
   }
   char* const out = reinterpret_cast<char*>(out_block.data);
   size_t out_len = sizeof(kHeader) - 1;
@@ -627,30 +694,103 @@ void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
     Serial.printf("[route_cache] not enough flash space (%u free, need %u), flush skipped\n",
                   static_cast<unsigned>(fs_total - fs_used),
                   static_cast<unsigned>(out_len + kFreeSpaceMarginBytes));
-    noteFlushAttempt(now_ms);
-    return;
+    return false;
   }
 
   if (!writeFileChecked(kTmpPath, out_block.data, out_len)) {
-    noteFlushAttempt(now_ms);  // keep s_dirty: retried next interval, old cache untouched
-    return;
+    return false;  // retried next interval, old cache untouched
   }
 
-  if (LittleFS.exists(kPath) && !LittleFS.remove(kPath)) {
-    Serial.println("[route_cache] remove failed (file busy?)");
-    LittleFS.remove(kTmpPath);
-    noteFlushAttempt(now_ms);
-    return;
-  }
+  // Power-safe replace: LittleFS renames over an existing file atomically, so the old
+  // cache stays readable until the new one is complete. Only if that is refused
+  // (some VFS layers do) fall back to remove + rename; a cut between those two is
+  // repaired at the next mount (recoverInterruptedFlush keeps the finished tmp).
   if (!LittleFS.rename(kTmpPath, kPath)) {
-    Serial.println("[route_cache] rename failed");
-    noteFlushAttempt(now_ms);
+    if (LittleFS.exists(kPath) && !LittleFS.remove(kPath)) {
+      Serial.println("[route_cache] remove failed (file busy?)");
+      LittleFS.remove(kTmpPath);
+      return false;
+    }
+    if (!LittleFS.rename(kTmpPath, kPath)) {
+      Serial.println("[route_cache] rename failed");
+      return false;
+    }
+  }
+
+  refreshUsage();
+  Serial.printf("[route_cache] saved %u entries\n", static_cast<unsigned>(merged_count));
+  return true;
+}
+
+void flushTask(void*) {
+  const unsigned long started = millis();
+  const bool ok = flushNow(s_flush_job);
+  if (!ok) {
+    s_dirty.store(true);  // try again on the next interval
+  }
+  if (config::kSerialTraceDebug || !ok) {
+    Serial.printf("[route_cache] flush %s in %lums\n", ok ? "done" : "failed",
+                  millis() - started);
+  }
+  heap_caps_free(s_flush_job.ram);
+  s_flush_job = {};
+  s_flush_running.store(false);
+  vTaskDelete(nullptr);
+}
+
+}  // namespace
+
+void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots,
+          uint32_t now_sec, uint32_t ttl_sec) {
+  if (!s_dirty.load()) {
     return;
   }
 
-  s_dirty = false;
-  noteFlushAttempt(now_ms);
-  Serial.printf("[route_cache] saved %u entries\n", static_cast<unsigned>(merged_count));
+  if (s_last_flush_ms == 0) {
+    s_last_flush_ms = now_ms;
+    return;
+  }
+  if ((now_ms - s_last_flush_ms) < config::kRouteCacheFlushIntervalMs) {
+    return;
+  }
+  if (read_slot == nullptr || s_flush_running.load()) {
+    return;
+  }
+  noteFlushAttempt(now_ms);  // next try one interval from now, whatever happens
+
+  // Snapshot the RAM rows here (64 small copies); the task does the file work.
+  Entry* snap = static_cast<Entry*>(
+      heap_caps_malloc(sizeof(Entry) * (max_slots > 0 ? max_slots : 1),
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (snap == nullptr) {
+    return;
+  }
+  size_t count = 0;
+  for (size_t i = 0; i < max_slots; ++i) {
+    Entry slot;
+    if (!read_slot(i, &slot, max_slots) || slot.callsign[0] == '\0') {
+      continue;
+    }
+    if (!entryKeepInFlash(slot, now_sec, ttl_sec)) {
+      continue;
+    }
+    snap[count++] = slot;
+  }
+
+  s_flush_job.ram = snap;
+  s_flush_job.ram_count = count;
+  s_flush_job.now_sec = now_sec;
+  s_flush_job.ttl_sec = ttl_sec;
+  s_dirty.store(false);  // a markDirty() during the flush re-arms the next one
+  s_flush_running.store(true);
+  if (xTaskCreatePinnedToCore(flushTask, "rc_flush", kFlushTaskStackBytes, nullptr,
+                              kFlushTaskPriority, nullptr, 0) != pdPASS) {
+    Serial.println("[route_cache] flush task create failed; retry next interval");
+    heap_caps_free(snap);
+    s_flush_job = {};
+    s_flush_running.store(false);
+    s_dirty.store(true);
+  }
 }
 
 void sendDownload(WebServer* server) {
@@ -684,7 +824,7 @@ bool clear() {
   if (!lock.acquire(pdMS_TO_TICKS(5000))) {
     return false;
   }
-  s_dirty = false;
+  s_dirty.store(false);
   if (!ensureMounted()) {
     return true;
   }
@@ -696,6 +836,7 @@ bool clear() {
     return false;
   }
   ensureCacheFile();
+  refreshUsage();
   Serial.println("[route_cache] cleared");
   return true;
 }
@@ -707,27 +848,22 @@ bool flashUsage(size_t* used_bytes, size_t* total_bytes) {
   if (total_bytes != nullptr) {
     *total_bytes = 0;
   }
-  FsLock lock;
-  if (!lock.acquire(0)) {
-    return false;
+  // Cached: LittleFS.usedBytes() walks the whole file system. Refreshed after each
+  // cache save (in the flush task) and otherwise at most every 30 min; other writers
+  // (map bake, sky caches) show up by then.
+  const bool stale = !s_usage_valid.load() ||
+                     millis() - s_usage_at_ms.load() >= kUsageRefreshMs;
+  if (stale) {
+    if (s_flush_running.load()) {
+      return s_usage_valid.load() && fillUsage(used_bytes, total_bytes);
+    }
+    FsLock lock;
+    if (!lock.acquire(0) || !ensureMounted()) {
+      return false;
+    }
+    refreshUsage();
   }
-  if (!ensureMounted()) {
-    return false;
-  }
-  size_t used = 0;
-  size_t total = 0;
-  used = LittleFS.usedBytes();
-  total = LittleFS.totalBytes();
-  if (total == 0) {
-    return false;
-  }
-  if (used_bytes != nullptr) {
-    *used_bytes = used;
-  }
-  if (total_bytes != nullptr) {
-    *total_bytes = total;
-  }
-  return true;
+  return fillUsage(used_bytes, total_bytes);
 }
 
 }  // namespace services::route_cache

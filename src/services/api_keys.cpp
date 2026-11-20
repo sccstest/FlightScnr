@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include <cctype>
 #include <cstdio>
@@ -76,6 +78,25 @@ uint32_t s_usage_reset_ym = 0;
 bool s_warned_al_limit = false;
 bool s_warned_fa_limit = false;
 bool s_warned_fr24_limit = false;
+/** load() has parsed the stored keys once; later loads keep RAM as the master copy. */
+bool s_loaded = false;
+
+// Threads: the loop and the web server (load, saves, status) and the route detail
+// worker (key lookups, usage counters) share all of the above. Every public function
+// takes this recursive lock. *KeyAt() return pointers into s_*.keys: those buffers are
+// only rewritten when the user saves different keys (load() leaves them alone when the
+// stored keys did not change), so a worker request in flight keeps a stable key.
+SemaphoreHandle_t apiMutex() {
+  static SemaphoreHandle_t s_mutex = xSemaphoreCreateRecursiveMutex();  // thread-safe init
+  return s_mutex;
+}
+
+struct ApiLock {
+  ApiLock() { xSemaphoreTakeRecursive(apiMutex(), portMAX_DELAY); }
+  ~ApiLock() { xSemaphoreGiveRecursive(apiMutex()); }
+  ApiLock(const ApiLock&) = delete;
+  ApiLock& operator=(const ApiLock&) = delete;
+};
 
 bool portalCheckboxChecked(const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -358,13 +379,29 @@ void warnLimitOnce(bool* warned, const char* provider, const char* detail) {
   Serial.printf("Route API limit: %s — %s\n", provider, detail);
 }
 
-void loadProviderKeys(Preferences& prefs, const char* pref_key, ProviderState* state) {
+/** Reads the stored key list. Returns true when it differs from RAM (or on the first
+ *  load) and was applied: keys re-parsed, usage counters must be reloaded. */
+bool loadProviderKeys(Preferences& prefs, const char* pref_key, ProviderState* state) {
+  char stored[kMaxKeysBlobLen + 1];
   if (prefs.isKey(pref_key)) {
-    copyBlob(state->blob, prefs.getString(pref_key).c_str(), sizeof(state->blob));
+    copyBlob(stored, prefs.getString(pref_key).c_str(), sizeof(stored));
   } else {
-    state->blob[0] = '\0';
+    stored[0] = '\0';
   }
+  if (s_loaded && strcmp(stored, state->blob) == 0) {
+    return false;  // unchanged: keep keys and live usage counters as they are
+  }
+  copyBlob(state->blob, stored, sizeof(state->blob));
   parseKeyList(state->blob, state);
+  return true;
+}
+
+/** Copy only when the text changed, so a reader of the old pointer never sees a
+ *  half-rewritten buffer for an unchanged key. */
+void copyBlobIfChanged(char* dest, const char* src, size_t cap) {
+  if (strncmp(dest, src != nullptr ? src : "", cap - 1) != 0) {
+    copyBlob(dest, src, cap);
+  }
 }
 
 void loadProviderUsage(Preferences& prefs, const char* per_key_pref,
@@ -431,8 +468,12 @@ bool canUseFr24AtImpl(size_t index) {
 }  // namespace
 
 void load() {
+  ApiLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, true)) {
+    if (s_loaded) {
+      return;  // NVS busy for a moment: keep the keys already in RAM
+    }
     s_airlabs.blob[0] = s_flightaware.blob[0] = s_fr24.blob[0] = '\0';
     parseKeyList(nullptr, &s_airlabs);
     parseKeyList(nullptr, &s_flightaware);
@@ -441,25 +482,29 @@ void load() {
     return;
   }
 
-  loadProviderKeys(prefs, kAirLabs, &s_airlabs);
-  loadProviderKeys(prefs, kFlightAware, &s_flightaware);
-  loadProviderKeys(prefs, kFr24, &s_fr24);
-
-  loadProviderUsage(prefs, kAlUsedKeys, kAlUsedCalls, &s_airlabs);
-  loadProviderUsage(prefs, kFaSpentKeys, kFaSpentMicro, &s_flightaware);
-  loadProviderUsage(prefs, kFr24SpentKeys, kFr24SpentMicro, &s_fr24);
+  // Usage counters are persisted on every change, so RAM is the master copy once
+  // loaded; they are re-read only for a provider whose stored keys changed.
+  if (loadProviderKeys(prefs, kAirLabs, &s_airlabs)) {
+    loadProviderUsage(prefs, kAlUsedKeys, kAlUsedCalls, &s_airlabs);
+  }
+  if (loadProviderKeys(prefs, kFlightAware, &s_flightaware)) {
+    loadProviderUsage(prefs, kFaSpentKeys, kFaSpentMicro, &s_flightaware);
+  }
+  if (loadProviderKeys(prefs, kFr24, &s_fr24)) {
+    loadProviderUsage(prefs, kFr24SpentKeys, kFr24SpentMicro, &s_fr24);
+  }
 
   s_use_airlabs = prefs.getBool(kUseAirLabs, false);
   s_use_flightaware = prefs.getBool(kUseFlightAware, false);
   s_use_fr24 = prefs.getBool(kUseFr24, false);
 
   if (prefs.isKey(kWeather)) {
-    copyBlob(s_weather_key, prefs.getString(kWeather).c_str(), sizeof(s_weather_key));
+    copyBlobIfChanged(s_weather_key, prefs.getString(kWeather).c_str(), sizeof(s_weather_key));
   } else {
     s_weather_key[0] = '\0';
   }
   if (prefs.isKey(kCarto)) {
-    copyBlob(s_carto_key, prefs.getString(kCarto).c_str(), sizeof(s_carto_key));
+    copyBlobIfChanged(s_carto_key, prefs.getString(kCarto).c_str(), sizeof(s_carto_key));
   } else {
     s_carto_key[0] = '\0';
   }
@@ -472,13 +517,17 @@ void load() {
   s_fa_cost_micro = prefs.getUInt(kFaCostMicro, config::kDefaultFlightAwareCostUsdMicro);
   s_fr24_budget_micro = prefs.getUInt(kFr24BudgetMicro, config::kDefaultFr24BudgetUsdMicro);
   s_fr24_cost_micro = prefs.getUInt(kFr24CostMicro, config::kDefaultFr24CostUsdMicro);
-  s_usage_reset_ym = prefs.getUInt(kUsageResetYm, 0);
+  if (!s_loaded) {
+    s_usage_reset_ym = prefs.getUInt(kUsageResetYm, 0);
+  }
   prefs.end();
+  s_loaded = true;
 
   maybeResetMonthlyUsage();
 }
 
 bool saveFromForm(const char* airlabs, const char* flightaware, const char* fr24) {
+  ApiLock lock;
   bool any = false;
   bool enable_al = false;
   bool enable_fa = false;
@@ -538,6 +587,7 @@ bool saveFromForm(const char* airlabs, const char* flightaware, const char* fr24
 
 void saveEnabledFromForm(const char* use_airlabs, const char* use_flightaware,
                          const char* use_fr24) {
+  ApiLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -560,6 +610,7 @@ void saveEnabledFromForm(const char* use_airlabs, const char* use_flightaware,
 void saveLimitsFromForm(const char* airlabs_max_calls, const char* flightaware_max_usd,
                         const char* flightaware_cost_usd, const char* fr24_max_usd,
                         const char* fr24_cost_usd) {
+  ApiLock lock;
   bool changed = false;
 
   if (airlabs_max_calls != nullptr && airlabs_max_calls[0] != '\0') {
@@ -608,19 +659,20 @@ void saveLimitsFromForm(const char* airlabs_max_calls, const char* flightaware_m
   }
 }
 
-bool hasAirLabs() { return s_airlabs.key_count > 0; }
-bool hasFlightAware() { return s_flightaware.key_count > 0; }
-bool hasFr24() { return s_fr24.key_count > 0; }
+bool hasAirLabs() { ApiLock lock; return s_airlabs.key_count > 0; }
+bool hasFlightAware() { ApiLock lock; return s_flightaware.key_count > 0; }
+bool hasFr24() { ApiLock lock; return s_fr24.key_count > 0; }
 
-bool useAirLabs() { return s_use_airlabs; }
-bool useFlightAware() { return s_use_flightaware; }
-bool useFr24() { return s_use_fr24; }
+bool useAirLabs() { ApiLock lock; return s_use_airlabs; }
+bool useFlightAware() { ApiLock lock; return s_use_flightaware; }
+bool useFr24() { ApiLock lock; return s_use_fr24; }
 
-size_t airLabsKeyCount() { return s_airlabs.key_count; }
-size_t flightAwareKeyCount() { return s_flightaware.key_count; }
-size_t fr24KeyCount() { return s_fr24.key_count; }
+size_t airLabsKeyCount() { ApiLock lock; return s_airlabs.key_count; }
+size_t flightAwareKeyCount() { ApiLock lock; return s_flightaware.key_count; }
+size_t fr24KeyCount() { ApiLock lock; return s_fr24.key_count; }
 
 const char* airLabsKeyAt(size_t index) {
+  ApiLock lock;
   if (index >= s_airlabs.key_count) {
     return "";
   }
@@ -628,6 +680,7 @@ const char* airLabsKeyAt(size_t index) {
 }
 
 const char* flightAwareKeyAt(size_t index) {
+  ApiLock lock;
   if (index >= s_flightaware.key_count) {
     return "";
   }
@@ -635,19 +688,21 @@ const char* flightAwareKeyAt(size_t index) {
 }
 
 const char* fr24KeyAt(size_t index) {
+  ApiLock lock;
   if (index >= s_fr24.key_count) {
     return "";
   }
   return s_fr24.keys[index];
 }
 
-bool canUseAirLabsAt(size_t index) { return canUseAirLabsAtImpl(index); }
+bool canUseAirLabsAt(size_t index) { ApiLock lock; return canUseAirLabsAtImpl(index); }
 
-bool canUseFlightAwareAt(size_t index) { return canUseFlightAwareAtImpl(index); }
+bool canUseFlightAwareAt(size_t index) { ApiLock lock; return canUseFlightAwareAtImpl(index); }
 
-bool canUseFr24At(size_t index) { return canUseFr24AtImpl(index); }
+bool canUseFr24At(size_t index) { ApiLock lock; return canUseFr24AtImpl(index); }
 
 bool canUseAirLabs() {
+  ApiLock lock;
   for (size_t i = 0; i < s_airlabs.key_count; ++i) {
     if (canUseAirLabsAtImpl(i)) {
       return true;
@@ -661,6 +716,7 @@ bool canUseAirLabs() {
 }
 
 bool canUseFlightAware() {
+  ApiLock lock;
   for (size_t i = 0; i < s_flightaware.key_count; ++i) {
     if (canUseFlightAwareAtImpl(i)) {
       return true;
@@ -674,6 +730,7 @@ bool canUseFlightAware() {
 }
 
 bool canUseFr24() {
+  ApiLock lock;
   for (size_t i = 0; i < s_fr24.key_count; ++i) {
     if (canUseFr24AtImpl(i)) {
       return true;
@@ -687,6 +744,7 @@ bool canUseFr24() {
 }
 
 void recordAirLabsCallAt(size_t index) {
+  ApiLock lock;
   if (index >= s_airlabs.key_count) {
     return;
   }
@@ -698,6 +756,7 @@ void recordAirLabsCallAt(size_t index) {
 }
 
 void exhaustAirLabsKeyAt(size_t index) {
+  ApiLock lock;
   if (index >= s_airlabs.key_count) {
     return;
   }
@@ -714,6 +773,7 @@ void exhaustAirLabsKeyAt(size_t index) {
 }
 
 void recordFlightAwareCallAt(size_t index) {
+  ApiLock lock;
   if (index >= s_flightaware.key_count) {
     return;
   }
@@ -723,6 +783,7 @@ void recordFlightAwareCallAt(size_t index) {
 }
 
 void recordFr24CallAt(size_t index) {
+  ApiLock lock;
   if (index >= s_fr24.key_count) {
     return;
   }
@@ -731,29 +792,33 @@ void recordFr24CallAt(size_t index) {
   persistUsageCounters();
 }
 
-uint32_t airLabsMaxCalls() { return s_al_max_calls; }
+uint32_t airLabsMaxCalls() { ApiLock lock; return s_al_max_calls; }
 uint32_t airLabsCallsUsed() {
+  ApiLock lock;
   maybeResetMonthlyUsage();
   return sumUsage(s_airlabs.used, s_airlabs.key_count);
 }
-uint32_t flightAwareBudgetUsdMicro() { return s_fa_budget_micro; }
-uint32_t flightAwareCostUsdMicro() { return s_fa_cost_micro; }
+uint32_t flightAwareBudgetUsdMicro() { ApiLock lock; return s_fa_budget_micro; }
+uint32_t flightAwareCostUsdMicro() { ApiLock lock; return s_fa_cost_micro; }
 uint32_t flightAwareSpentUsdMicro() {
+  ApiLock lock;
   maybeResetMonthlyUsage();
   return sumUsage(s_flightaware.used, s_flightaware.key_count);
 }
-uint32_t fr24BudgetUsdMicro() { return s_fr24_budget_micro; }
-uint32_t fr24CostUsdMicro() { return s_fr24_cost_micro; }
+uint32_t fr24BudgetUsdMicro() { ApiLock lock; return s_fr24_budget_micro; }
+uint32_t fr24CostUsdMicro() { ApiLock lock; return s_fr24_cost_micro; }
 uint32_t fr24SpentUsdMicro() {
+  ApiLock lock;
   maybeResetMonthlyUsage();
   return sumUsage(s_fr24.used, s_fr24.key_count);
 }
 
-bool hasWeather() { return s_weather_key[0] != '\0'; }
+bool hasWeather() { ApiLock lock; return s_weather_key[0] != '\0'; }
 
-const char* weatherKey() { return s_weather_key; }
+const char* weatherKey() { ApiLock lock; return s_weather_key; }
 
 bool saveWeatherKeyFromForm(const char* weather) {
+  ApiLock lock;
   if (!saveIfNonEmpty(weather, kWeather)) {
     return false;
   }
@@ -761,11 +826,12 @@ bool saveWeatherKeyFromForm(const char* weather) {
   return true;
 }
 
-bool hasCarto() { return s_carto_key[0] != '\0'; }
+bool hasCarto() { ApiLock lock; return s_carto_key[0] != '\0'; }
 
-const char* cartoKey() { return s_carto_key; }
+const char* cartoKey() { ApiLock lock; return s_carto_key; }
 
 bool saveCartoKeyFromForm(const char* carto) {
+  ApiLock lock;
   if (!saveIfNonEmpty(carto, kCarto)) {
     return false;
   }
@@ -774,6 +840,7 @@ bool saveCartoKeyFromForm(const char* carto) {
 }
 
 void saveWeatherEnabledFromForm(const char* use_weather) {
+  ApiLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -783,11 +850,12 @@ void saveWeatherEnabledFromForm(const char* use_weather) {
   prefs.end();
 }
 
-bool useWeather() { return s_use_weather; }
+bool useWeather() { ApiLock lock; return s_use_weather; }
 
-bool canUseWeather() { return s_use_weather && s_weather_key[0] != '\0'; }
+bool canUseWeather() { ApiLock lock; return s_use_weather && s_weather_key[0] != '\0'; }
 
 void saveAdsbDbEnabledFromForm(const char* use_adsbdb) {
+  ApiLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -797,9 +865,10 @@ void saveAdsbDbEnabledFromForm(const char* use_adsbdb) {
   prefs.end();
 }
 
-bool useAdsbDb() { return s_use_adsbdb; }
+bool useAdsbDb() { ApiLock lock; return s_use_adsbdb; }
 
 void saveOpenMeteoEnabledFromForm(const char* use_openmeteo) {
+  ApiLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -809,13 +878,13 @@ void saveOpenMeteoEnabledFromForm(const char* use_openmeteo) {
   prefs.end();
 }
 
-bool useOpenMeteo() { return s_use_openmeteo; }
+bool useOpenMeteo() { ApiLock lock; return s_use_openmeteo; }
 
-void maskedWeather(char* out, size_t len) { maskedPreviewSingle(s_weather_key, out, len); }
-void maskedCarto(char* out, size_t len) { maskedPreviewSingle(s_carto_key, out, len); }
+void maskedWeather(char* out, size_t len) { ApiLock lock; maskedPreviewSingle(s_weather_key, out, len); }
+void maskedCarto(char* out, size_t len) { ApiLock lock; maskedPreviewSingle(s_carto_key, out, len); }
 
-void maskedAirLabs(char* out, size_t len) { maskedPreviewProvider(s_airlabs, out, len); }
-void maskedFlightAware(char* out, size_t len) { maskedPreviewProvider(s_flightaware, out, len); }
-void maskedFr24(char* out, size_t len) { maskedPreviewProvider(s_fr24, out, len); }
+void maskedAirLabs(char* out, size_t len) { ApiLock lock; maskedPreviewProvider(s_airlabs, out, len); }
+void maskedFlightAware(char* out, size_t len) { ApiLock lock; maskedPreviewProvider(s_flightaware, out, len); }
+void maskedFr24(char* out, size_t len) { ApiLock lock; maskedPreviewProvider(s_fr24, out, len); }
 
 }  // namespace services::apikeys
