@@ -586,6 +586,14 @@ bool overheadSignUpdate() {
   if (displayPrefsOverheadSignEnabled()) {
     float d = 0.0f;
     const services::adsb::Aircraft* ac = pickAircraft(&d);
+    // Read it from a copy taken under the list mutex: the route worker task fills
+    // route and airline fields in place while this runs on the loop task.
+    services::adsb::Aircraft snap;
+    if (ac != nullptr &&
+        services::adsb::copyAircraftAt(static_cast<size_t>(ac - services::adsb::aircraftList()),
+                                       &snap)) {
+      ac = &snap;
+    }
     if (ac != nullptr) {
       next.visible = true;
       copyStr(next.hex, sizeof(next.hex), ac->hex);
