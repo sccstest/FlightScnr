@@ -368,7 +368,9 @@ void runInstall() {
   client.setHandshakeTimeout(30);
 
   HTTPClient http;
-  http.setTimeout(static_cast<int>(kInstallTimeoutMs));
+  // Per-read timeout. HTTPClient takes a uint16_t: the old 600000 ms wrapped to
+  // ~10 s. The whole download is bounded by kInstallTimeoutMs in the loop below.
+  http.setTimeout(30000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
   http.setReuse(false);
