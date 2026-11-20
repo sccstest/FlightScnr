@@ -29,9 +29,15 @@ constexpr size_t kScaleBandCount = kRangeMileOptionCount;
 enum class DistanceUnit : uint8_t { Km = 0, StatuteMile = 1, NauticalMile = 2 };
 
 void scaleBootLoad();
+/** Radar pinch / encoder steps: RAM at once, NVS about 2 s after the last step. */
 void scaleIncrease();
 void scaleDecrease();
+/** Settings-screen step: saved right away. */
 void scaleStep(int8_t delta);
+/** Poll often (radar frame, main loop): writes a deferred range save once it is due. */
+void scaleTick();
+/** Write a deferred range save now, if one is waiting. */
+void scaleFlushPendingSave();
 void scaleSelect(uint8_t option_index);
 bool scaleSetMiles(uint8_t miles);
 bool scaleSaveMilesFromForm(const char* miles_str);

@@ -115,14 +115,42 @@ void recomputeActiveBand() {
   s_active_band.coverage_km = s_active_band.label_km * kLabelToCoverageKm;
 }
 
-void applyMiles(uint8_t miles) {
+/** Pinch zoom steps write NVS only this long after the last step (flash wear, and a
+ *  Preferences write stalls the loop for a few ms on every step). */
+constexpr unsigned long kRangeSaveDelayMs = 2000;
+bool s_range_save_pending = false;
+unsigned long s_range_changed_ms = 0;
+
+void applyMiles(uint8_t miles, bool defer_save = false) {
   if (!isAllowedMile(miles)) {
     return;
   }
   s_active_miles = miles;
   recomputeActiveBand();
-  persistU8(kRangeMiKey, s_active_miles);
+  if (defer_save) {
+    s_range_save_pending = true;
+    s_range_changed_ms = millis();
+  } else {
+    s_range_save_pending = false;
+    persistU8(kRangeMiKey, s_active_miles);
+  }
   settingsStateBump();
+}
+
+void stepMiles(int8_t delta, bool defer_save) {
+  if (delta == 0) {
+    return;
+  }
+  int idx = optionIndexForMiles(s_active_miles);
+  if (idx < 0) {
+    idx = 0;
+  }
+  if (delta > 0) {
+    idx = static_cast<int>((static_cast<size_t>(idx) + 1) % kRangeMileOptionCount);
+  } else {
+    idx = (idx == 0) ? static_cast<int>(kRangeMileOptionCount - 1) : idx - 1;
+  }
+  applyMiles(kRangeMileOptions[static_cast<size_t>(idx)], defer_save);
 }
 
 uint8_t migrateLegacyRangeIndex(uint8_t legacy_index) {
@@ -187,24 +215,26 @@ void scaleBootLoad() {
   recomputeActiveBand();
 }
 
-void scaleIncrease() { scaleStep(1); }
+// Pinch / encoder on the radar: the save waits for the gesture to settle.
+void scaleIncrease() { stepMiles(1, true); }
 
-void scaleDecrease() { scaleStep(-1); }
+void scaleDecrease() { stepMiles(-1, true); }
 
-void scaleStep(int8_t delta) {
-  if (delta == 0) {
+void scaleStep(int8_t delta) { stepMiles(delta, false); }
+
+void scaleTick() {
+  if (s_range_save_pending && millis() - s_range_changed_ms >= kRangeSaveDelayMs) {
+    scaleFlushPendingSave();
+  }
+}
+
+void scaleFlushPendingSave() {
+  if (!s_range_save_pending) {
     return;
   }
-  int idx = optionIndexForMiles(s_active_miles);
-  if (idx < 0) {
-    idx = 0;
-  }
-  if (delta > 0) {
-    idx = static_cast<int>((static_cast<size_t>(idx) + 1) % kRangeMileOptionCount);
-  } else {
-    idx = (idx == 0) ? static_cast<int>(kRangeMileOptionCount - 1) : idx - 1;
-  }
-  applyMiles(kRangeMileOptions[static_cast<size_t>(idx)]);
+  s_range_save_pending = false;
+  persistU8(kRangeMiKey, s_active_miles);
+  Serial.printf("Range saved: %u mi\n", static_cast<unsigned>(s_active_miles));
 }
 
 void scaleSelect(uint8_t option_index) {
