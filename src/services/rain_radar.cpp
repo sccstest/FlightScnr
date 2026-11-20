@@ -335,9 +335,15 @@ bool httpGet(const String& url, Payload* out, size_t max_bytes) {
   }
   WiFiClient* stream = http.getStreamPtr();
   bool ok = stream != nullptr;
+  // Stop at Content-Length instead of reading until the server closes: waiting for
+  // the close is what logged the mbedTLS -76 lines, and it holds the shared worker.
+  const int content_len = http.getSize();
   const unsigned long read_start = millis();
   uint8_t buf[1024];
   while (ok && (http.connected() || stream->available() > 0)) {
+    if (content_len > 0 && out->len >= static_cast<size_t>(content_len)) {
+      break;
+    }
     if (millis() - read_start > kTimeoutMs) {  // wrap-safe
       Serial.println("[rain] read timeout");
       ok = false;
@@ -348,13 +354,21 @@ bool httpGet(const String& url, Payload* out, size_t max_bytes) {
       vTaskDelay(1);
       continue;
     }
-    const size_t got = stream->readBytes(buf, avail < static_cast<int>(sizeof(buf))
-                                                  ? static_cast<size_t>(avail)
-                                                  : sizeof(buf));
+    size_t want = avail < static_cast<int>(sizeof(buf)) ? static_cast<size_t>(avail)
+                                                         : sizeof(buf);
+    if (content_len > 0 && out->len + want > static_cast<size_t>(content_len)) {
+      want = static_cast<size_t>(content_len) - out->len;
+    }
+    const size_t got = stream->readBytes(buf, want);
     if (got > 0 && !payloadAppend(out, buf, got, max_bytes)) {
       Serial.println("[rain] payload too large / alloc failed");
       ok = false;
     }
+  }
+  if (ok && content_len > 0 && out->len < static_cast<size_t>(content_len)) {
+    Serial.printf("[rain] short read %u/%d bytes\n", static_cast<unsigned>(out->len),
+                  content_len);
+    ok = false;
   }
   http.end();
   client.stop();

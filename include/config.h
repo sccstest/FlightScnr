@@ -350,3 +350,47 @@ constexpr uint16_t kColorBlack = 0x0000;
 constexpr uint16_t kTextOnBlack = 0xFFFF;
 
 }  // namespace config
+
+// --- Network resilience (owned by the network code; appended here on purpose) ---
+namespace config {
+
+/** P4: a Wi-Fi recycle is only worth it when internal DMA-capable RAM is really
+ *  short (the largest free block is below this). Normal is ~90-120 KB. HTTP
+ *  errors, parse errors and one host's connect failures never recycle. */
+constexpr uint32_t kTlsRecycleDmaBlockBytes = 16u * 1024u;
+
+/** adsb.fi poll back-off while polls keep failing (feed fail streak). */
+constexpr uint32_t kAdsbBackoffFails1 = 2;
+constexpr unsigned long kAdsbBackoff1Ms = 15000UL;
+constexpr uint32_t kAdsbBackoffFails2 = 6;
+constexpr unsigned long kAdsbBackoff2Ms = 60000UL;
+constexpr uint32_t kAdsbBackoffFails3 = 10;
+constexpr unsigned long kAdsbBackoff3Ms = 5UL * 60UL * 1000UL;
+
+/** Non-blocking Wi-Fi reconnect: how often the loop looks at the link (ms). */
+constexpr unsigned long kWifiReconnectPollMs = 500UL;
+/** Settings web server: check this often that it is running while connected (ms). */
+constexpr unsigned long kWebServerRestartCheckMs = 5000UL;
+
+/** Escalation to esp_restart() (only a P4 reset re-initializes the C6). */
+constexpr unsigned long kEscalateWifiDownMs = 30UL * 60UL * 1000UL;
+constexpr unsigned long kEscalateNoAdsbMs = 20UL * 60UL * 1000UL;
+/** At most one escalation restart per hour of uptime... */
+constexpr unsigned long kEscalateMinUptimeMs = 60UL * 60UL * 1000UL;
+/** ...except the first one after a power-on / non-software reset. */
+constexpr unsigned long kEscalateFirstMinUptimeMs = 3UL * 60UL * 1000UL;
+
+/** If SNTP has not set the clock this long after Wi-Fi came up, take the time
+ *  from adsb.fi's HTTP Date header instead (ms). */
+constexpr unsigned long kHttpDateClockFallbackMs = 10UL * 60UL * 1000UL;
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** Built-in time zone for the preset (Odessa FL) when the online lookup fails or
+ *  comes back without a DST rule. Used only near the preset location. */
+constexpr char kPresetFallbackPosixTz[] = "EST5EDT,M3.2.0,M11.1.0";
+constexpr char kPresetFallbackIanaTz[] = "America/New_York";
+/** "Near the preset": within this many degrees of kFactoryLatitude/Longitude. */
+constexpr double kPresetFallbackTzRadiusDeg = 2.0;
+#endif
+
+}  // namespace config

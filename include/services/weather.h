@@ -42,6 +42,10 @@ void init();
  *  task) and print the parsed result to serial. For use at boot to isolate the
  *  API/network path from the screen/worker scheduling. Caches the result. */
 void bootSanityCheck();
+/** The same boot check, queued on the shared HTTPS worker instead of blocking the
+ *  caller. Returns false if no weather source is set up or the worker is busy
+ *  (requestRefresh() covers the first screen visit anyway). */
+bool queueBootCheck();
 
 bool useImperial();
 void setUseImperial(bool imperial);
