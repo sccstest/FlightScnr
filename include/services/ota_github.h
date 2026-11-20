@@ -10,18 +10,29 @@ void init();
 
 /**
  * If Wi‑Fi is up and either this boot has not checked yet, or 24h of uptime
- * have passed since the last successful check, fetch GitHub releases/latest.
- * No-op when HTTPS is busy or heap is tight. Safe to call from the main loop.
+ * have passed since the last successful check, queue a GitHub releases/latest
+ * check on the shared HTTPS worker. Never blocks. Safe to call every loop pass.
  */
 void pollIfDue();
 
 /**
- * Query GitHub for the latest release. When force is false, skips the network
- * if a successful check already ran this boot and is still within the daily
- * window. Returns true when the cache is valid after the call; false on
- * network/parse failure (previous cache retained).
+ * Never blocks. With force, queues a GitHub release check on the shared HTTPS
+ * worker (unless one is already queued). Returns true when a check succeeded this
+ * boot and is still within the daily window (HTTP 404 "no release" counts as a
+ * success); poll checkInProgress() / call again for the result.
  */
 bool checkLatest(bool force);
+
+/** True while a release check is queued or running. */
+bool checkInProgress();
+
+/**
+ * After an OTA install the new image boots "pending verify"; this marks it good so
+ * the bootloader keeps it (call after the first good adsb.fi fetch; pollIfDue also
+ * calls it after 30 min uptime). Safe to call often and from any task; no-op for a
+ * serial-flashed image.
+ */
+void confirmRunningImage(const char* why);
 
 /** True when cached latest tag is newer than the running firmware version. */
 bool updateAvailable();

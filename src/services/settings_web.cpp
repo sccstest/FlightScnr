@@ -238,10 +238,21 @@ void appendFirmwareUpdateCard(char* page, size_t* used) {
       "bar.style.background='linear-gradient(90deg,#22c24c 0 '+p+'%%,#333 '+p+'%%)';"
       "}"
       "function fmtMb(n){return(n/1048576).toFixed(1);}"
+      // The check runs in the background on the device; poll until it is done.
+      "function ghPoll(url,tries){"
+      "fetch(url).then(function(r){return r.json();})"
+      ".then(function(j){"
+      "if(j.checking&&tries>0){setTimeout(function(){ghPoll('/ota/github/status',tries-1);},1500);"
+      "return;}"
+      "ghShow(j);setBusy(false);"
+      "if(st&&st.innerHTML.indexOf('Update available')>=0){ins.disabled=false;}"
+      "}).catch(function(e){m.textContent='Check error: '+e;setBusy(false);});"
+      "}"
       "chk.addEventListener('click',function(){"
       "m.textContent='Checking GitHub\\u2026';setBusy(true);"
-      "fetch('/ota/github/status?force=1').then(function(r){return r.json();})"
-      ".then(function(j){"
+      "ghPoll('/ota/github/status?force=1',20);"
+      "});"
+      "function ghShow(j){"
       "if(!j.ok&&!j.latest){m.textContent='Check failed: '+(j.error||'unknown');return;}"
       "if(j.available){st.innerHTML='Update available: <b>'+j.latest+"
       "'</b> (running '+j.current+').';"
@@ -251,10 +262,7 @@ void appendFirmwareUpdateCard(char* page, size_t* used) {
       "else{st.textContent='Up to date (running '+j.current+', latest '+(j.latest||'?')+').';"
       "m.textContent=j.refreshed?'Already on the latest release.':"
       "'Cached result: up to date. '+(j.warning||'');}"
-      "}).catch(function(e){m.textContent='Check error: '+e;})"
-      ".finally(function(){setBusy(false);if(st&&st.innerHTML.indexOf('Update available')>=0)"
-      "{ins.disabled=false;}});"
-      "});"
+      "}"
       "function pollInstall(tries){"
       "fetch('/ota/github/progress').then(function(r){return r.json();})"
       ".then(function(j){"
@@ -2017,9 +2025,21 @@ void handleNotFound() {
 void handleOtaGithubStatus() {
   const bool force =
       s_server->hasArg("force") && s_server->arg("force") == "1";
+  // Never blocks: a forced check is queued on the HTTPS worker and the page polls
+  // this URL again while "checking" is true.
   const bool refreshed = services::ota_github::checkLatest(force);
+  const bool checking = services::ota_github::checkInProgress();
   const bool have_cache = services::ota_github::latestTag()[0] != '\0';
-  char body[360];
+  char body[380];
+  if (checking) {
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"checking\":true,\"refreshed\":false,\"current\":\"%s\","
+             "\"latest\":\"%s\",\"available\":%s}",
+             services::ota_github::currentVersion(), services::ota_github::latestTag(),
+             services::ota_github::updateAvailable() ? "true" : "false");
+    s_server->send(200, "application/json; charset=utf-8", body);
+    return;
+  }
   if (!refreshed && !have_cache) {
     snprintf(body, sizeof(body),
              "{\"ok\":false,\"refreshed\":false,\"error\":\"check failed\","

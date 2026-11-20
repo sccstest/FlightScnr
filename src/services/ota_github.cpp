@@ -48,7 +48,15 @@ constexpr char kUserAgent[] = "FlightScnr-OTA";
 constexpr unsigned long kCheckIntervalMs = 24UL * 60UL * 60UL * 1000UL;
 /** After a failed GitHub check (e.g. HTTP 403), wait before retrying. */
 constexpr unsigned long kCheckRetryOnFailMs = 60UL * 60UL * 1000UL;
-constexpr uint32_t kCheckTimeoutMs = 20000;
+constexpr uint32_t kCheckTimeoutMs = 12000;
+/** How long the background check waits for the shared HTTPS lock. */
+constexpr uint32_t kCheckLockWaitMs = 15000;
+/** No release check in the first minutes after boot: planes, weather and the time
+ *  zone go first. */
+constexpr unsigned long kFirstCheckAfterBootMs = 2UL * 60UL * 1000UL;
+/** A new OTA image is also kept (marked valid) after this much uptime without a
+ *  crash, so an internet outage right after an update can't roll it back. */
+constexpr unsigned long kConfirmImageAfterMs = 30UL * 60UL * 1000UL;
 constexpr uint32_t kInstallTimeoutMs = 10UL * 60UL * 1000UL;
 constexpr size_t kStreamChunk = 4096;
 constexpr size_t kOtaBreatherBytes = 16u * 1024u;
@@ -65,6 +73,10 @@ volatile uint32_t s_install_bytes = 0;
 volatile uint32_t s_install_total = 0;
 char s_install_error[96] = {};
 TaskHandle_t s_install_task = nullptr;
+
+// Background release check (runs on the shared HTTPS worker).
+volatile bool s_check_queued = false;  // queued or running
+volatile bool s_check_last_ok = false;
 
 const char* skipVersionPrefix(const char* s) {
   if (s == nullptr) {
@@ -160,16 +172,13 @@ bool cacheFresh() {
   if (s_last_check_ms == 0) {
     return false;
   }
-  const unsigned long now = millis();
-  if (now < s_last_check_ms) {
-    return false;
-  }
-  return (now - s_last_check_ms) < s_check_cooldown_ms;
+  return (millis() - s_last_check_ms) < s_check_cooldown_ms;  // wrap-safe
 }
 
 void markCheckAttempt(bool success) {
-  s_last_check_ms = millis();
+  s_last_check_ms = millis() != 0 ? millis() : 1;
   s_check_cooldown_ms = success ? kCheckIntervalMs : kCheckRetryOnFailMs;
+  s_check_last_ok = success;
 }
 
 size_t otaAppPartitionSize() {
@@ -177,34 +186,23 @@ size_t otaAppPartitionSize() {
   return next != nullptr ? static_cast<size_t>(next->size) : 0;
 }
 
-bool fetchLatestFromGitHub(bool wait_for_link) {
+/** Runs on the shared HTTPS worker (core 0) via queueBackgroundJob, never on the
+ *  loop: a TLS session to api.github.com takes seconds and used to freeze touch. */
+bool fetchLatestFromGitHub() {
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
-
-  if (wait_for_link) {
-    const unsigned long deadline = millis() + 12000UL;
-    while (millis() < deadline) {
-      if (!services::adsb::fetchInProgress() && !services::https::busy() &&
-          services::https::heapReadyForRouteApi()) {
-        break;
-      }
-      delay(50);
-    }
-  } else if (services::adsb::fetchInProgress() || services::https::busy() ||
-             !services::https::heapReadyForRouteApi()) {
+  if (!services::https::heapReadyForRouteApi()) {
+    Serial.println("[ota_gh] skip: low heap (retry later)");
+    markCheckAttempt(false);
     return false;
   }
 
-  if (services::adsb::fetchInProgress() || services::https::busy() ||
-      !services::https::heapReadyForRouteApi()) {
-    Serial.println("[ota_gh] skip: https/adsb busy or low heap");
-    return false;
-  }
-
-  services::https::ScopedLock tls(kCheckTimeoutMs + 4000);
+  // Waiting here only delays the worker's next job, not the UI.
+  services::https::ScopedLock tls(kCheckLockWaitMs);
   if (!tls.held()) {
     Serial.println("[ota_gh] skip: could not take https lock");
+    markCheckAttempt(false);
     return false;
   }
   services::https::drainTlsHeapAfterSession(400);
@@ -212,27 +210,46 @@ bool fetchLatestFromGitHub(bool wait_for_link) {
   services::https::SecureClient client;
   client.setInsecure();
   client.setTimeout(kCheckTimeoutMs / 1000);
+  client.setHandshakeTimeout(kCheckTimeoutMs / 1000);
 
   HTTPClient http;
+  http.setConnectTimeout(kCheckTimeoutMs);
   http.setTimeout(kCheckTimeoutMs);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setUserAgent(kUserAgent);
+  http.setReuse(false);
   http.addHeader("Accept", "application/vnd.github+json");
 
   char url[128];
   snprintf(url, sizeof(url), "https://%s%s", kApiHost, kApiPath);
   if (!http.begin(client, url)) {
     markCheckAttempt(false);
+    client.stop();
     services::https::drainTlsHeapAfterSession();
     return false;
   }
 
   const int code = http.GET();
+  if (code == HTTP_CODE_NOT_FOUND) {
+    // The repo has no published release (the gift's fork has none): a normal
+    // answer, so check again in a day, not every hour.
+    http.end();
+    client.stop();
+    services::https::drainTlsHeapAfterSession();
+    s_latest_tag[0] = '\0';
+    s_asset_url[0] = '\0';
+    s_available = false;
+    markCheckAttempt(true);
+    persistCache();
+    Serial.println("[ota_gh] no release published (HTTP 404); next check in 24h");
+    return true;
+  }
   if (code != HTTP_CODE_OK) {
     Serial.printf("[ota_gh] releases HTTP %d (retry in %luh)\n", code,
                   static_cast<unsigned long>(kCheckRetryOnFailMs / 3600000UL));
     markCheckAttempt(false);
     http.end();
+    client.stop();
     services::https::drainTlsHeapAfterSession();
     return false;
   }
@@ -247,6 +264,7 @@ bool fetchLatestFromGitHub(bool wait_for_link) {
   const DeserializationError err =
       deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
   http.end();
+  client.stop();
   services::https::drainTlsHeapAfterSession();
 
   if (err) {
@@ -322,23 +340,24 @@ void updateInstallProgress(size_t written, int content_len, size_t max_part) {
   s_install_pct = static_cast<uint8_t>(pct);
 }
 
-void installTaskThunk(void*) {
+/** The whole install. Returns normally on every path, so the HTTPS lock (ScopedLock),
+ *  HTTPClient and TLS client destructors always run; the task deletes itself only
+ *  after this returns. Calling vTaskDelete(nullptr) in here skipped them, so any
+ *  failed install left the HTTPS lock held forever (no more planes) and leaked a
+ *  socket. */
+void runInstall() {
   char url[256];
   strncpy(url, s_asset_url, sizeof(url) - 1);
   url[sizeof(url) - 1] = '\0';
 
   if (url[0] == '\0') {
     setInstallFailed("no asset url");
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   services::https::ScopedLock tls(kInstallTimeoutMs);
   if (!tls.held()) {
     setInstallFailed("https busy");
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
   services::https::drainTlsHeapAfterSession(600);
@@ -346,6 +365,7 @@ void installTaskThunk(void*) {
   services::https::SecureClient client;
   client.setInsecure();
   client.setTimeout(60);
+  client.setHandshakeTimeout(30);
 
   HTTPClient http;
   http.setTimeout(static_cast<int>(kInstallTimeoutMs));
@@ -353,11 +373,19 @@ void installTaskThunk(void*) {
   http.setUserAgent(kUserAgent);
   http.setReuse(false);
 
+  // Closes the connection on every exit path below (runs before tls is released).
+  struct SessionCleanup {
+    HTTPClient& http;
+    services::https::SecureClient& client;
+    ~SessionCleanup() {
+      http.end();
+      client.stop();
+      services::https::drainTlsHeapAfterSession();
+    }
+  } cleanup{http, client};
+
   if (!http.begin(client, url)) {
     setInstallFailed("http begin failed");
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
@@ -366,33 +394,20 @@ void installTaskThunk(void*) {
     char msg[48];
     snprintf(msg, sizeof(msg), "download HTTP %d", code);
     setInstallFailed(msg);
-    http.end();
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   const int content_len = http.getSize();
   const size_t max_part = otaAppPartitionSize();
   if (content_len > 0 &&
-      !services::ota::firmwareSizeLooksValid(static_cast<size_t>(content_len),
-                                             max_part)) {
+      !services::ota::firmwareSizeLooksValid(static_cast<size_t>(content_len), max_part)) {
     setInstallFailed("image size invalid");
-    http.end();
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   if (!Update.begin(content_len > 0 ? static_cast<size_t>(content_len)
                                     : UPDATE_SIZE_UNKNOWN)) {
     setInstallFailed("Update.begin failed");
-    http.end();
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
@@ -404,24 +419,23 @@ void installTaskThunk(void*) {
     buf_psram = false;
     buf = static_cast<uint8_t*>(malloc(kStreamChunk));
   }
-  if (buf == nullptr) {
+  if (buf == nullptr || stream == nullptr) {
     Update.abort();
+    if (buf != nullptr) {
+      free(buf);
+    }
     setInstallFailed("no buffer");
-    http.end();
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   bool header_ok = false;
   size_t written = 0;
   size_t since_breather = 0;
-  const unsigned long deadline = millis() + kInstallTimeoutMs;
+  const unsigned long started = millis();
   bool failed = false;
 
   while (http.connected() && (content_len < 0 || written < static_cast<size_t>(content_len))) {
-    if (millis() > deadline) {
+    if (millis() - started > kInstallTimeoutMs) {  // wrap-safe
       setInstallFailed("download timeout");
       failed = true;
       break;
@@ -466,30 +480,20 @@ void installTaskThunk(void*) {
   } else {
     free(buf);
   }
-  http.end();
 
   if (failed) {
     Update.abort();
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   if (!services::ota::firmwareSizeLooksValid(written, max_part)) {
     Update.abort();
     setInstallFailed("final size invalid");
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
   if (!Update.end(true)) {
     setInstallFailed("Update.end failed");
-    services::https::drainTlsHeapAfterSession();
-    s_install_task = nullptr;
-    vTaskDelete(nullptr);
     return;
   }
 
@@ -504,12 +508,55 @@ void installTaskThunk(void*) {
   persistCache();
   Serial.printf("[ota_gh] install ok %u bytes — reset device\n",
                 static_cast<unsigned>(written));
-  services::https::drainTlsHeapAfterSession();
+}
+
+void installTaskThunk(void*) {
+  runInstall();  // every object in there is destroyed before the task ends
+  if (s_install_state == InstallState::Failed) {
+    Serial.printf("[ota_gh] install failed: %s (HTTPS lock released)\n", s_install_error);
+  }
   s_install_task = nullptr;
   vTaskDelete(nullptr);
 }
 
+void checkJob() {
+  fetchLatestFromGitHub();
+  s_check_queued = false;
+}
+
 }  // namespace
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+// Arduino-ESP32 calls this from initArduino(). Returning true means the app itself
+// decides when a freshly installed OTA image is good (confirmRunningImage); if it
+// crashes or resets before that, the bootloader rolls back to the previous image.
+// Needs CONFIG_APP_ROLLBACK_ENABLE (set in the P4 core's sdkconfig).
+extern "C" bool verifyRollbackLater() { return true; }
+#endif
+
+void confirmRunningImage(const char* why) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+  static volatile bool s_done = false;
+  if (s_done) {
+    return;
+  }
+  s_done = true;
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (running == nullptr || esp_ota_get_state_partition(running, &state) != ESP_OK) {
+    return;  // serial-flashed image: no OTA state, nothing to confirm
+  }
+  if (state != ESP_OTA_IMG_PENDING_VERIFY) {
+    return;
+  }
+  if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+    Serial.printf("[ota_gh] new firmware confirmed (%s); rollback cancelled\n",
+                  why != nullptr ? why : "");
+  }
+#else
+  (void)why;
+#endif
+}
 
 void init() {
   loadCache();
@@ -518,24 +565,36 @@ void init() {
 }
 
 void pollIfDue() {
+  if (millis() >= kConfirmImageAfterMs) {
+    confirmRunningImage("30 min uptime");
+  }
+  if (s_check_queued || s_install_state == InstallState::Running) {
+    return;
+  }
+  if (millis() < kFirstCheckAfterBootMs || cacheFresh()) {
+    return;
+  }
   if (WiFi.status() != WL_CONNECTED) {
     return;
   }
-  if (cacheFresh()) {
-    return;
+  // Cheap when the worker's job slot is busy: just try again next pass.
+  if (services::adsb::queueBackgroundJob(&checkJob)) {
+    s_check_queued = true;
   }
-  if (s_install_state == InstallState::Running) {
-    return;
-  }
-  (void)fetchLatestFromGitHub(false);
 }
 
 bool checkLatest(bool force) {
-  if (!force && cacheFresh()) {
-    return true;
+  if (force && !s_check_queued && s_install_state != InstallState::Running &&
+      WiFi.status() == WL_CONNECTED) {
+    // Non-blocking: queue the check; the web page polls /ota/github/status.
+    if (services::adsb::queueBackgroundJob(&checkJob)) {
+      s_check_queued = true;
+    }
   }
-  return fetchLatestFromGitHub(force);
+  return s_check_last_ok && cacheFresh();
 }
+
+bool checkInProgress() { return s_check_queued; }
 
 bool updateAvailable() { return s_available && s_latest_tag[0] != '\0'; }
 
@@ -552,10 +611,14 @@ bool startInstall() {
     return false;
   }
   if (s_asset_url[0] == '\0') {
-    if (!checkLatest(true) || s_asset_url[0] == '\0') {
-      setInstallFailed("no release asset");
-      return false;
-    }
+    checkLatest(true);  // non-blocking: queues a check for the next try
+    setInstallFailed(s_check_queued ? "checking GitHub, try again in a moment"
+                                    : "no release asset");
+    return false;
+  }
+  if (s_check_queued) {
+    setInstallFailed("checking GitHub, try again in a moment");
+    return false;
   }
   s_install_error[0] = '\0';
   s_install_pct = 0;
