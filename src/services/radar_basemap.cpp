@@ -22,6 +22,8 @@
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM) && \
     defined(CONFIG_SOC_JPEG_DECODE_SUPPORTED) && __has_include(<driver/jpeg_decode.h>)
 #include <driver/jpeg_decode.h>
+#include <driver/ppa.h>
+#include <esp_cache.h>
 #define FS_BASEMAP_HW_JPEG 1
 #else
 #define FS_BASEMAP_HW_JPEG 0
@@ -96,6 +98,19 @@ struct CacheSlot {
 };
 CacheSlot s_slots[kCacheSlots];
 uint32_t s_slot_clock = 0;
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** The compressed bake files (60-110 KB each) kept in PSRAM after their first read:
+ *  reading one from LittleFS took 47-66 ms on the device, as long as the hardware
+ *  decode and the blit together. Dropped with the decoded cache on any bake change. */
+struct RawJpeg {
+  char path[24] = "";
+  uint8_t* data = nullptr;
+  size_t len = 0;
+};
+constexpr size_t kRawCacheEntries = 8;  // the main bake + one per range preset
+RawJpeg s_raw[kRawCacheEntries];
+#endif
 
 constexpr size_t kSlotPixels = static_cast<size_t>(kPixelSize) * static_cast<size_t>(kPixelSize);
 constexpr size_t kSlotBytes = kSlotPixels * sizeof(uint16_t);
@@ -257,6 +272,12 @@ void freeCache() {
   for (CacheSlot& slot : s_slots) {
     freeSlot(&slot);
   }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  for (RawJpeg& raw : s_raw) {
+    psramFree(raw.data);
+    raw = RawJpeg{};
+  }
+#endif
 }
 
 CacheSlot* findSlot(uint8_t mi) {
@@ -425,8 +446,22 @@ bool softDecode(uint8_t* jpeg, size_t len, uint16_t* out) {
 // order). Any later error falls back to JPEGDEC; three in a row turn it off until
 // reboot. The engine is created per decode and deleted right after, so it holds no
 // interrupt or DMA memory between zooms.
-enum class HwState : uint8_t { Untested, Ok, OkSwapped, Off };
+// The engine's own YUV->RGB step (2D-DMA colour conversion) came out 1-2 steps too
+// bright against JPEGDEC on the device (bias -134/-163/-202 x100), consistent with a
+// limited-range (video) matrix applied to full-range JFIF data. OkYuv asks the engine
+// for raw YUV 4:4:4 and converts it here with the JFIF full-range formula instead.
+// OkPpa: raw YUV 4:2:0 from the engine, then the pixel accelerator (PPA) converts it
+// with the full-range matrix (the PPA takes full range only for YUV420 input).
+enum class HwState : uint8_t { Untested, Ok, OkSwapped, OkYuv, OkPpa, Off };
 HwState s_hw_state = HwState::Untested;
+bool s_ppa_rgb_swap = false;
+bool s_ppa_byte_swap = false;
+/** Byte positions of Y, Cb, Cr inside each 3-byte YUV444 pixel (found by the self-check). */
+uint8_t s_yuv_pos[3] = {0, 1, 2};
+/** YUV444 scratch for OkYuv (720*720*3 bytes, PSRAM, DMA-aligned), kept between decodes. */
+uint8_t* s_yuv_buf = nullptr;
+constexpr size_t kYuvBytes = kSlotPixels * 3u;
+constexpr size_t kYuv420Bytes = kSlotPixels * 3u / 2u;
 uint8_t s_hw_failures = 0;
 /** Internal DMA-capable RAM the decoder may use (descriptors, header tables) must not
  *  starve the Wi-Fi link: skip the hardware below this much free. */
@@ -441,9 +476,19 @@ uint8_t* allocJpegInput(size_t len) {
   return static_cast<uint8_t*>(jpeg_alloc_decoder_mem(len, &cfg, &got));
 }
 
-/** 1 = decoded into `out` (a cache-line aligned slot), 0 = not attempted (size or
- *  memory precondition), -1 = the hardware failed. */
-int hwDecode(const uint8_t* jpeg, size_t len, uint16_t* out) {
+/** 1 = decoded into `out` (cache-line aligned, `out_bytes` long) in `format`, 0 = not
+ *  attempted (size or memory precondition), -1 = the hardware failed. */
+/** Before a DMA engine writes `buf`: write back and drop any cached lines of it, so a
+ *  dirty line (the CPU wrote these slots before: JPEGDEC, memset) evicted mid-transfer
+ *  can't land on top of the new pixels. */
+void cacheCleanForDma(void* buf, size_t bytes) {
+  esp_cache_msync(buf, bytes,
+                  ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE |
+                      ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+int hwDecodeRaw(const uint8_t* jpeg, size_t len, jpeg_dec_output_format_t format, uint8_t* out,
+                size_t out_bytes) {
   jpeg_decode_picture_info_t info = {};
   if (jpeg_decoder_get_info(jpeg, static_cast<uint32_t>(len), &info) != ESP_OK) {
     return -1;
@@ -467,21 +512,183 @@ int hwDecode(const uint8_t* jpeg, size_t len, uint16_t* out) {
     Serial.printf("[basemap] hw jpeg engine: %s\n", esp_err_to_name(err));
     return -1;
   }
+  cacheCleanForDma(out, out_bytes);
   jpeg_decode_cfg_t dec_cfg = {};
-  dec_cfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
+  dec_cfg.output_format = format;
   dec_cfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;  // little-endian RGB565
   dec_cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;      // JFIF
   uint32_t out_size = 0;
-  err = jpeg_decoder_process(eng, &dec_cfg, jpeg, static_cast<uint32_t>(len),
-                             reinterpret_cast<uint8_t*>(out), static_cast<uint32_t>(kSlotBytes),
-                             &out_size);
+  err = jpeg_decoder_process(eng, &dec_cfg, jpeg, static_cast<uint32_t>(len), out,
+                             static_cast<uint32_t>(out_bytes), &out_size);
   jpeg_del_decoder_engine(eng);
-  if (err != ESP_OK || out_size < kSlotBytes) {
-    Serial.printf("[basemap] hw jpeg decode: %s out=%lu\n", esp_err_to_name(err),
-                  static_cast<unsigned long>(out_size));
+  if (err != ESP_OK || out_size < out_bytes) {
+    Serial.printf("[basemap] hw jpeg decode fmt=%d: %s out=%lu\n", static_cast<int>(format),
+                  esp_err_to_name(err), static_cast<unsigned long>(out_size));
     return -1;
   }
   return 1;
+}
+
+/** JFIF (full-range BT.601) YCbCr -> RGB565 tables, built once. */
+struct YuvTables {
+  int16_t r_cr[256];
+  int16_t b_cb[256];
+  int16_t g_cbcr_cb[256];
+  int16_t g_cbcr_cr[256];
+  uint8_t clamp[256 + 512];  // index v + 256 for v in [-256, 511]
+  bool ready = false;
+};
+YuvTables* s_yuv_tables = nullptr;
+YuvTables s_yuv_tables_store;  // ~2.3 KB internal RAM: looked up 4x per pixel
+
+bool ensureYuvTables() {
+  if (s_yuv_tables != nullptr) {
+    return true;
+  }
+  YuvTables* t = &s_yuv_tables_store;
+  for (int i = 0; i < 256; ++i) {
+    const int c = i - 128;
+    // 16.16 fixed point, rounded.
+    t->r_cr[i] = static_cast<int16_t>((91881 * c + 32768) >> 16);       // 1.402
+    t->b_cb[i] = static_cast<int16_t>((116130 * c + 32768) >> 16);      // 1.772
+    t->g_cbcr_cb[i] = static_cast<int16_t>((-22554 * c) >> 16);          // -0.344136
+    t->g_cbcr_cr[i] = static_cast<int16_t>((-46802 * c + 32768) >> 16);  // -0.714136
+  }
+  for (int v = -256; v < 512; ++v) {
+    t->clamp[v + 256] = static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+  }
+  t->ready = true;
+  s_yuv_tables = t;
+  return true;
+}
+
+/** YUV444 (byte order s_yuv_pos-style `pos`) -> native RGB565, truncating like JPEGDEC. */
+void yuv444To565(const uint8_t* yuv, uint16_t* out, size_t n, const uint8_t pos[3]) {
+  const YuvTables& t = *s_yuv_tables;
+  const uint8_t* clamp = t.clamp + 256;
+  const uint8_t py = pos[0];
+  const uint8_t pu = pos[1];
+  const uint8_t pv = pos[2];
+  if (py == 2 && pu == 1 && pv == 0) {
+    // The order the device reports (Cr, Cb, Y): constant offsets, two pixels per pass,
+    // one 32-bit store.
+    uint32_t* out32 = reinterpret_cast<uint32_t*>(out);
+    const size_t pairs = n / 2;
+    for (size_t i = 0; i < pairs; ++i, yuv += 6) {
+      const int y0 = yuv[2];
+      const int y1 = yuv[5];
+      const int rc0 = t.r_cr[yuv[0]];
+      const int gc0 = t.g_cbcr_cb[yuv[1]] + t.g_cbcr_cr[yuv[0]];
+      const int bc0 = t.b_cb[yuv[1]];
+      const int rc1 = t.r_cr[yuv[3]];
+      const int gc1 = t.g_cbcr_cb[yuv[4]] + t.g_cbcr_cr[yuv[3]];
+      const int bc1 = t.b_cb[yuv[4]];
+      const uint32_t p0 = ((clamp[y0 + rc0] & 0xF8u) << 8) | ((clamp[y0 + gc0] & 0xFCu) << 3) |
+                          (clamp[y0 + bc0] >> 3);
+      const uint32_t p1 = ((clamp[y1 + rc1] & 0xF8u) << 8) | ((clamp[y1 + gc1] & 0xFCu) << 3) |
+                          (clamp[y1 + bc1] >> 3);
+      out32[i] = p0 | (p1 << 16);
+    }
+    return;
+  }
+  for (size_t i = 0; i < n; ++i, yuv += 3) {
+    const int y = yuv[py];
+    const uint8_t cb = yuv[pu];
+    const uint8_t cr = yuv[pv];
+    const uint8_t r = clamp[y + t.r_cr[cr]];
+    const uint8_t g = clamp[y + t.g_cbcr_cb[cb] + t.g_cbcr_cr[cr]];
+    const uint8_t b = clamp[y + t.b_cb[cb]];
+    out[i] = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+  }
+}
+
+bool ensureYuvBuf() {
+  if (s_yuv_buf != nullptr) {
+    return true;
+  }
+  jpeg_decode_memory_alloc_cfg_t cfg = {};
+  cfg.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER;
+  size_t got = 0;
+  s_yuv_buf = static_cast<uint8_t*>(jpeg_alloc_decoder_mem(kYuvBytes, &cfg, &got));
+  return s_yuv_buf != nullptr && ensureYuvTables();
+}
+
+void swapBytes(uint16_t* px, size_t n);
+
+/** PPA: YUV 4:2:0 (full range, BT.601) -> RGB565 into a cache-aligned 720x720 slot. */
+bool ppaYuv420To565(const uint8_t* yuv, uint16_t* out, bool rgb_swap) {
+  ppa_client_config_t cc = {};
+  cc.oper_type = PPA_OPERATION_SRM;
+  cc.max_pending_trans_num = 1;
+  ppa_client_handle_t client = nullptr;
+  esp_err_t err = ppa_register_client(&cc, &client);
+  if (err != ESP_OK || client == nullptr) {
+    Serial.printf("[basemap] ppa client: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  ppa_srm_oper_config_t op = {};
+  op.in.buffer = yuv;
+  op.in.pic_w = kPixelSize;
+  op.in.pic_h = kPixelSize;
+  op.in.block_w = kPixelSize;
+  op.in.block_h = kPixelSize;
+  op.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;
+  op.in.yuv_range = PPA_COLOR_RANGE_FULL;
+  op.in.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+  op.out.buffer = out;
+  op.out.buffer_size = kSlotBytes;
+  op.out.pic_w = kPixelSize;
+  op.out.pic_h = kPixelSize;
+  op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+  op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+  op.scale_x = 1.0f;
+  op.scale_y = 1.0f;
+  op.rgb_swap = rgb_swap;
+  op.mode = PPA_TRANS_MODE_BLOCKING;
+  cacheCleanForDma(out, kSlotBytes);
+  err = ppa_do_scale_rotate_mirror(client, &op);
+  ppa_unregister_client(client);
+  if (err != ESP_OK) {
+    Serial.printf("[basemap] ppa srm: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+/** Decode into a 720x720 RGB565 slot with whichever hardware path the self-check chose. */
+int hwDecode(const uint8_t* jpeg, size_t len, uint16_t* out) {
+  if (s_hw_state == HwState::OkPpa) {
+    if (!ensureYuvBuf()) {
+      return 0;
+    }
+    const int r = hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_YUV420, s_yuv_buf, kYuv420Bytes);
+    if (r <= 0) {
+      return r;
+    }
+    if (!ppaYuv420To565(s_yuv_buf, out, s_ppa_rgb_swap)) {
+      return -1;
+    }
+    if (s_ppa_byte_swap) {
+      swapBytes(out, kSlotPixels);
+    }
+    return 1;
+  }
+  if (s_hw_state == HwState::OkYuv) {
+    if (!ensureYuvBuf()) {
+      return 0;
+    }
+    const int r = hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_YUV444, s_yuv_buf, kYuvBytes);
+    if (r > 0) {
+      yuv444To565(s_yuv_buf, out, kSlotPixels, s_yuv_pos);
+    }
+    return r;
+  }
+  const int r = hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_RGB565,
+                            reinterpret_cast<uint8_t*>(out), kSlotBytes);
+  if (r > 0 && s_hw_state == HwState::OkSwapped) {
+    swapBytes(out, kSlotPixels);
+  }
+  return r;
 }
 
 void swapBytes(uint16_t* px, size_t n) {
@@ -553,37 +760,119 @@ void hwSelfCheck(const uint8_t* jpeg, size_t len, const uint16_t* ref) {
   }
   const size_t dma_before = dmaFree();
   const unsigned long t0 = millis();
-  const int r = hwDecode(jpeg, len, tmp);
+  const int r = hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_RGB565,
+                            reinterpret_cast<uint8_t*>(tmp), kSlotBytes);
   const unsigned long hw_ms = millis() - t0;
   if (r == 0) {
     psramFree(tmp);
     return;  // not applicable to this bake; try the next one
   }
-  if (r < 0) {
-    s_hw_state = HwState::Off;
-    Serial.println("[basemap] hw jpeg self-check: decoder error, using JPEGDEC");
-    psramFree(tmp);
-    return;
-  }
-  const Diff direct = compare565(ref, tmp, false);
-  const Diff swapped = compare565(ref, tmp, true);
   const char* verdict = "off (no match), using JPEGDEC";
-  if (diffAcceptable(direct)) {
-    s_hw_state = HwState::Ok;
-    verdict = "ok";
-  } else if (diffAcceptable(swapped)) {
-    s_hw_state = HwState::OkSwapped;
-    verdict = "ok (byte-swapped)";
-  } else {
-    s_hw_state = HwState::Off;
+  Diff direct{};
+  Diff swapped{};
+  if (r > 0) {
+    direct = compare565(ref, tmp, false);
+    swapped = compare565(ref, tmp, true);
+    if (diffAcceptable(direct)) {
+      s_hw_state = HwState::Ok;
+      verdict = "ok";
+    } else if (diffAcceptable(swapped)) {
+      s_hw_state = HwState::OkSwapped;
+      verdict = "ok (byte-swapped)";
+    }
   }
   Serial.printf(
-      "[basemap] hw jpeg self-check: %s hw_ms=%lu diff=%ld bias=%ld/%ld/%ld swapped_diff=%ld "
-      "(x100, 5-bit steps) dma_free=%u->%u\n",
-      verdict, hw_ms, static_cast<long>(direct.mean_abs_x100),
-      static_cast<long>(direct.bias_r_x100), static_cast<long>(direct.bias_g_x100),
-      static_cast<long>(direct.bias_b_x100), static_cast<long>(swapped.mean_abs_x100),
-      static_cast<unsigned>(dma_before), static_cast<unsigned>(dmaFree()));
+      "[basemap] hw jpeg self-check rgb565: %s hw_ms=%lu diff=%ld bias=%ld/%ld/%ld "
+      "swapped_diff=%ld (x100, 5-bit steps) dma_free=%u->%u\n",
+      r > 0 ? (s_hw_state == HwState::Untested ? "no match" : verdict) : "decoder error", hw_ms,
+      static_cast<long>(direct.mean_abs_x100), static_cast<long>(direct.bias_r_x100),
+      static_cast<long>(direct.bias_g_x100), static_cast<long>(direct.bias_b_x100),
+      static_cast<long>(swapped.mean_abs_x100), static_cast<unsigned>(dma_before),
+      static_cast<unsigned>(dmaFree()));
+
+  // The engine's own colour conversion did not match. First choice: raw YUV 4:2:0 and
+  // the PPA's full-range conversion (hardware end to end).
+  if (s_hw_state == HwState::Untested && ensureYuvBuf()) {
+    const unsigned long tp = millis();
+    const int rp =
+        hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_YUV420, s_yuv_buf, kYuv420Bytes);
+    const unsigned long dec_ms = millis() - tp;
+    if (rp > 0) {
+      for (int sw = 0; sw < 2 && s_hw_state == HwState::Untested; ++sw) {
+        const unsigned long tc = millis();
+        if (!ppaYuv420To565(s_yuv_buf, tmp, sw == 1)) {
+          break;
+        }
+        const unsigned long ppa_ms = millis() - tc;
+        const Diff d = compare565(ref, tmp, false);
+        const Diff ds = compare565(ref, tmp, true);
+        Serial.printf(
+            "[basemap] hw jpeg yuv420+ppa rgb_swap=%d: hw_ms=%lu ppa_ms=%lu diff=%ld "
+            "bias=%ld/%ld/%ld swapped_diff=%ld\n",
+            sw, dec_ms, ppa_ms, static_cast<long>(d.mean_abs_x100),
+            static_cast<long>(d.bias_r_x100), static_cast<long>(d.bias_g_x100),
+            static_cast<long>(d.bias_b_x100), static_cast<long>(ds.mean_abs_x100));
+        if (diffAcceptable(d) || diffAcceptable(ds)) {
+          s_hw_state = HwState::OkPpa;
+          s_ppa_rgb_swap = sw == 1;
+          s_ppa_byte_swap = !diffAcceptable(d);
+          verdict = "ok (yuv420 + PPA colour)";
+        }
+      }
+    } else {
+      Serial.println("[basemap] hw jpeg yuv420: decoder error");
+    }
+  }
+
+  // Fallback: raw YUV 4:4:4 converted in software. The byte order inside each pixel is
+  // not documented, so test all six.
+  if (s_hw_state == HwState::Untested && ensureYuvBuf()) {
+    const unsigned long ty = millis();
+    const int ry = hwDecodeRaw(jpeg, len, JPEG_DECODE_OUT_FORMAT_YUV444, s_yuv_buf, kYuvBytes);
+    const unsigned long yuv_hw_ms = millis() - ty;
+    if (ry > 0) {
+      static const uint8_t kPerms[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                           {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+      int best = -1;
+      Diff best_d{};
+      unsigned long conv_ms = 0;
+      for (int p = 0; p < 6; ++p) {
+        const unsigned long tc = millis();
+        yuv444To565(s_yuv_buf, tmp, kSlotPixels, kPerms[p]);
+        conv_ms = millis() - tc;
+        const Diff d = compare565(ref, tmp, false);
+        Serial.printf("[basemap] hw jpeg yuv444 order=%u%u%u diff=%ld bias=%ld/%ld/%ld\n",
+                      kPerms[p][0], kPerms[p][1], kPerms[p][2],
+                      static_cast<long>(d.mean_abs_x100), static_cast<long>(d.bias_r_x100),
+                      static_cast<long>(d.bias_g_x100), static_cast<long>(d.bias_b_x100));
+        if (best < 0 || d.mean_abs_x100 < best_d.mean_abs_x100) {
+          best = p;
+          best_d = d;
+        }
+      }
+      const uint8_t* c = s_yuv_buf + (static_cast<size_t>(360) * kPixelSize + 360) * 3;
+      Serial.printf(
+          "[basemap] hw jpeg yuv444: hw_ms=%lu conv_ms=%lu center bytes=%02x %02x %02x "
+          "ref565=%04x best=%d diff=%ld\n",
+          yuv_hw_ms, conv_ms, c[0], c[1], c[2], ref[360 * kPixelSize + 360], best,
+          static_cast<long>(best_d.mean_abs_x100));
+      if (best >= 0 && diffAcceptable(best_d)) {
+        memcpy(s_yuv_pos, kPerms[best], sizeof(s_yuv_pos));
+        s_hw_state = HwState::OkYuv;
+        verdict = "ok (yuv444 + software colour)";
+      }
+    } else {
+      Serial.println("[basemap] hw jpeg yuv444: decoder error");
+    }
+  }
+  if (s_hw_state == HwState::Untested) {
+    s_hw_state = HwState::Off;
+  }
+  if (s_hw_state != HwState::OkYuv && s_hw_state != HwState::OkPpa && s_yuv_buf != nullptr) {
+    psramFree(s_yuv_buf);  // only the YUV paths keep the 1.5 MB scratch
+    s_yuv_buf = nullptr;
+  }
+  Serial.printf("[basemap] hw jpeg self-check: %s\n", verdict);
   psramFree(tmp);
 }
 #endif  // FS_BASEMAP_HW_JPEG
@@ -591,46 +880,73 @@ void hwSelfCheck(const uint8_t* jpeg, size_t len, const uint16_t* ref) {
 /** Decode the bake at `path` (coverage `mi` miles) into a cache slot. */
 CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   const unsigned long t0 = millis();
-  if (!ensureFs() || !LittleFS.exists(path)) {
-    return nullptr;
-  }
-
-  File f = LittleFS.open(path, "r");
-  if (!f) {
-    return nullptr;
-  }
-  const size_t len = f.size();
-  if (len < 64 || len > kMaxJpegBytes) {
-    f.close();
-    Serial.printf("[basemap] reject size %u\n", static_cast<unsigned>(len));
-    return nullptr;
-  }
-
   uint8_t* jpeg = nullptr;
-#if FS_BASEMAP_HW_JPEG
-  if (s_hw_state != HwState::Off) {
-    jpeg = allocJpegInput(len);  // DMA-readable input for the hardware decoder
+  size_t len = 0;
+  bool jpeg_cached = false;  // owned by s_raw: do not free here
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  RawJpeg* raw_free = nullptr;
+  for (RawJpeg& raw : s_raw) {
+    if (raw.data != nullptr && strcmp(raw.path, path) == 0) {
+      jpeg = raw.data;
+      len = raw.len;
+      jpeg_cached = true;
+      break;
+    }
+    if (raw.data == nullptr && raw_free == nullptr) {
+      raw_free = &raw;
+    }
   }
 #endif
+
   if (jpeg == nullptr) {
-    jpeg = static_cast<uint8_t*>(psramAlloc(len));
-  }
-  if (jpeg == nullptr) {
+    if (!ensureFs() || !LittleFS.exists(path)) {
+      return nullptr;
+    }
+    File f = LittleFS.open(path, "r");
+    if (!f) {
+      return nullptr;
+    }
+    len = f.size();
+    if (len < 64 || len > kMaxJpegBytes) {
+      f.close();
+      Serial.printf("[basemap] reject size %u\n", static_cast<unsigned>(len));
+      return nullptr;
+    }
+#if FS_BASEMAP_HW_JPEG
+    if (s_hw_state != HwState::Off) {
+      jpeg = allocJpegInput(len);  // DMA-readable input for the hardware decoder
+    }
+#endif
+    if (jpeg == nullptr) {
+      jpeg = static_cast<uint8_t*>(psramAlloc(len));
+    }
+    if (jpeg == nullptr) {
+      f.close();
+      Serial.println("[basemap] jpeg alloc failed");
+      return nullptr;
+    }
+    const size_t got = f.read(jpeg, len);
     f.close();
-    Serial.println("[basemap] jpeg alloc failed");
-    return nullptr;
-  }
-  const size_t got = f.read(jpeg, len);
-  f.close();
-  if (got != len) {
-    psramFree(jpeg);
-    return nullptr;
+    if (got != len) {
+      psramFree(jpeg);
+      return nullptr;
+    }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (raw_free != nullptr && strlen(path) < sizeof(raw_free->path)) {
+      strncpy(raw_free->path, path, sizeof(raw_free->path) - 1);
+      raw_free->data = jpeg;
+      raw_free->len = len;
+      jpeg_cached = true;
+    }
+#endif
   }
   const unsigned long read_ms = millis() - t0;
 
   CacheSlot* slot = claimSlot();
   if (slot == nullptr) {
-    psramFree(jpeg);
+    if (!jpeg_cached) {
+      psramFree(jpeg);
+    }
     Serial.println("[basemap] pixel alloc failed");
     return nullptr;
   }
@@ -639,12 +955,10 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   bool ok = false;
   bool used_hw = false;
 #if FS_BASEMAP_HW_JPEG
-  if (s_hw_state == HwState::Ok || s_hw_state == HwState::OkSwapped) {
+  if (s_hw_state == HwState::Ok || s_hw_state == HwState::OkSwapped ||
+      s_hw_state == HwState::OkYuv || s_hw_state == HwState::OkPpa) {
     const int r = hwDecode(jpeg, len, slot->px);
     if (r > 0) {
-      if (s_hw_state == HwState::OkSwapped) {
-        swapBytes(slot->px, kSlotPixels);
-      }
       ok = true;
       used_hw = true;
       s_hw_failures = 0;
@@ -663,7 +977,9 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
     hwSelfCheck(jpeg, len, slot->px);
   }
 #endif
-  psramFree(jpeg);
+  if (!jpeg_cached) {
+    psramFree(jpeg);
+  }
   if (!ok) {
     freeSlot(slot);
     return nullptr;
@@ -673,8 +989,8 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   slot->stamp = ++s_slot_clock;
   Serial.printf("[basemap] decoded %dx%d jpeg=%uB decode_ms=%lu total_ms=%lu\n", kPixelSize,
                 kPixelSize, static_cast<unsigned>(len), decode_ms, millis() - t0);
-  Serial.printf("[perf] decode ms=%lu read_ms=%lu hw=%d bake=%u mi\n", decode_ms, read_ms,
-                used_hw ? 1 : 0, static_cast<unsigned>(mi));
+  Serial.printf("[perf] decode ms=%lu read_ms=%lu hw=%d bake=%u mi file_cached=%d\n", decode_ms,
+                read_ms, used_hw ? 1 : 0, static_cast<unsigned>(mi), jpeg_cached ? 1 : 0);
   return slot;
 }
 
@@ -982,19 +1298,31 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
     }
 #endif
     slot = decodeFileToSlot(path, baked_mi);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    static uint8_t s_detail_fails[8] = {};
+    const int fail_idx = rangeIndex(baked_mi);
+#endif
     if (slot == nullptr) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      if (path != kPath) {
-        // Missing / bad detail bake: forget it so the next frame uses the main one.
-        const int idx = rangeIndex(baked_mi);
-        if (idx >= 0) {
-          s_detail_mask = static_cast<uint8_t>(s_detail_mask & ~(1U << idx));
+      if (path != kPath && fail_idx >= 0 && fail_idx < 8) {
+        // Missing or repeatedly bad detail bake: forget it so the next frame uses the
+        // main one. A one-off failure (a passing memory shortage) keeps it: dropping
+        // the bit is saved to flash, which disabled a good bake until the next Make map.
+        const bool missing = !ensureFs() || !LittleFS.exists(path);
+        if (missing || ++s_detail_fails[fail_idx] >= 3) {
+          s_detail_fails[fail_idx] = 0;
+          s_detail_mask = static_cast<uint8_t>(s_detail_mask & ~(1U << fail_idx));
           persistDetailMask();
         }
       }
 #endif
       return false;
     }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (fail_idx >= 0 && fail_idx < 8) {
+      s_detail_fails[fail_idx] = 0;
+    }
+#endif
   } else {
     slot->stamp = ++s_slot_clock;
   }
