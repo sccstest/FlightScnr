@@ -203,9 +203,10 @@ void weatherScreenDraw() {
 
   if (!any_source) {
     drawCentered("No weather source", kCenterY - ui::sc(12), displayFontDetail(), dim, bg);
-    drawCentered("enable it in web settings", kCenterY + ui::sc(12), displayFontDetail(), dim, bg);
+    drawCentered("turn it on in Phone settings", kCenterY + ui::sc(12), displayFontDetail(), dim,
+                 bg);
   } else if (!services::weather::hasData()) {
-    drawCentered(services::weather::fetchInProgress() ? "Loading weather…"
+    drawCentered(services::weather::fetchInProgress() ? "Loading weather..."
                                                       : "No weather data",
                  kCenterY - 8, displayFontBody(), dim, bg);
   } else {
