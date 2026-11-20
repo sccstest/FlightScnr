@@ -8,8 +8,13 @@
 #include <cstring>
 #include <ctime>
 
+#if !defined(FLIGHTSCNR_SIM)
+#include <sys/time.h>
+#endif
+
 #include "config.h"
 #include "services/clock_format.h"
+#include "services/map_center.h"
 #include "services/settings_state.h"
 
 namespace services::clock {
@@ -40,6 +45,10 @@ char s_posix_tz[kMaxPosixLen + 1] = {0};
 char s_iana_name[kMaxIanaLen + 1] = {0};
 double s_resolved_lat = 0.0;
 double s_resolved_lon = 0.0;
+/** millis() when NTP was started (0 = not yet); for the HTTP Date fallback. */
+volatile unsigned long s_ntp_started_ms = 0;
+/** True while the built-in preset zone is in use (no usable online lookup yet). */
+bool s_preset_fallback_active = false;
 
 bool portalCheckboxChecked(const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -128,7 +137,35 @@ void applyManualNtpConfig() {
   configTime(s_tz_offset_sec, 0, config::kNtpServer1, config::kNtpServer2);
 }
 
+/** Built-in zone for the preset location when auto mode has no usable rule: the
+ *  online lookup failed, or it returned a zone without a DST rule. nullptr when the
+ *  radar center is not near the preset (or on boards without a preset zone). */
+const char* presetFallbackPosix() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const double dlat = std::fabs(services::map_center::latitude() - config::kFactoryLatitude);
+  const double dlon = std::fabs(services::map_center::longitude() - config::kFactoryLongitude);
+  if (dlat > config::kPresetFallbackTzRadiusDeg || dlon > config::kPresetFallbackTzRadiusDeg) {
+    return nullptr;
+  }
+  if (s_posix_tz[0] == '\0' || strchr(s_posix_tz, ',') == nullptr) {
+    return config::kPresetFallbackPosixTz;
+  }
+#endif
+  return nullptr;
+}
+
 void applyAutoNtpConfig() {
+  const char* fallback = presetFallbackPosix();
+  if (fallback != nullptr) {
+    if (!s_preset_fallback_active) {
+      Serial.printf("Clock: built-in time zone %s until the online lookup succeeds\n",
+                    fallback);
+    }
+    s_preset_fallback_active = true;
+    configTzTime(fallback, config::kNtpServer1, config::kNtpServer2);
+    return;
+  }
+  s_preset_fallback_active = false;
   if (s_posix_tz[0] == '\0') {
     applyManualNtpConfig();
     return;
@@ -137,11 +174,23 @@ void applyAutoNtpConfig() {
 }
 
 void applyNtpConfig() {
-  if (s_auto_timezone && s_posix_tz[0] != '\0') {
+  if (s_auto_timezone) {
     applyAutoNtpConfig();
   } else {
+    s_preset_fallback_active = false;
     applyManualNtpConfig();
   }
+}
+
+int monthFromAbbrev(const char* m) {
+  static const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  for (int i = 0; i < 12; ++i) {
+    if (strncmp(m, kMonths[i], 3) == 0) {
+      return i + 1;
+    }
+  }
+  return 0;
 }
 
 bool timeValid() {
@@ -225,6 +274,9 @@ void bootLoad() {
 }
 
 void startNtp() {
+  if (s_ntp_started_ms == 0) {
+    s_ntp_started_ms = millis() != 0 ? millis() : 1;
+  }
   applyNtpConfig();
   if (s_auto_timezone && s_posix_tz[0] != '\0') {
     Serial.printf("Clock: NTP %s / %s (auto %s)\n", config::kNtpServer1, config::kNtpServer2,
@@ -298,6 +350,41 @@ void stepTimezoneHours(int8_t delta) {
   setTimezoneOffsetSec(s_tz_offset_sec + static_cast<int32_t>(delta) * 3600);
 }
 
+void noteHttpDate(const char* http_date) {
+  if (http_date == nullptr || http_date[0] == '\0' || timeValid()) {
+    return;
+  }
+  const unsigned long started = s_ntp_started_ms;
+  if (started == 0 || millis() - started < config::kHttpDateClockFallbackMs) {
+    return;  // give SNTP its chance first
+  }
+  // RFC 7231 IMF-fixdate: "Thu, 20 Nov 2026 15:04:05 GMT"
+  int day = 0, year = 0, hour = 0, minute = 0, sec = 0;
+  char mon[4] = {};
+  if (sscanf(http_date, "%*3s, %d %3s %d %d:%d:%d", &day, mon, &year, &hour, &minute, &sec) !=
+      6) {
+    return;
+  }
+  const int month = monthFromAbbrev(mon);
+  if (month == 0 || year < 2024 || day < 1 || day > 31 || hour > 23 || minute > 59 ||
+      sec > 60) {
+    return;
+  }
+  const int64_t epoch =
+      daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 +
+      hour * 3600 + minute * 60 + sec;
+  if (epoch < static_cast<int64_t>(kMinValidEpoch)) {
+    return;
+  }
+#if !defined(FLIGHTSCNR_SIM)
+  struct timeval tv {};
+  tv.tv_sec = static_cast<time_t>(epoch);
+  settimeofday(&tv, nullptr);
+#endif
+  Serial.printf("Clock: SNTP not synced after %lus, set from HTTP Date: %s\n",
+                (millis() - started) / 1000UL, http_date);
+}
+
 bool use24Hour() { return s_use_24h; }
 
 void toggleHourFormat() {
@@ -345,6 +432,10 @@ void formatTimezoneLabel(char* out, size_t len) {
     return;
   }
   if (s_auto_timezone) {
+    if (s_preset_fallback_active) {
+      snprintf(out, len, "Auto: New York");
+      return;
+    }
     if (s_iana_name[0] != '\0') {
       const char* slash = strrchr(s_iana_name, '/');
       const char* label = slash != nullptr ? slash + 1 : s_iana_name;
@@ -357,7 +448,7 @@ void formatTimezoneLabel(char* out, size_t len) {
       snprintf(out, len, "Auto: %s", pretty);
       return;
     }
-    snprintf(out, len, "Auto…");
+    snprintf(out, len, "Auto...");
     return;
   }
   char manual[16];
@@ -393,7 +484,7 @@ void formatDateLine(char* out, size_t len) {
   }
   out[0] = '\0';
   if (!timeValid()) {
-    strncpy(out, "Syncing time…", len - 1);
+    strncpy(out, "Syncing time...", len - 1);
     out[len - 1] = '\0';
     return;
   }

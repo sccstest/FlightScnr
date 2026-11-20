@@ -242,7 +242,8 @@ bool fetchTimezoneBlocking(double lat, double lon) {
     return false;
   }
 
-  Serial.printf("[tz] resolved %.5f,%.5f -> %s (%s)\n", lat, lon, iana, posix);
+  Serial.printf("[tz] resolved %.5f,%.5f -> %s (%s)%s\n", lat, lon, iana, posix,
+                strchr(posix, ',') == nullptr ? " - no DST rule in the reply" : "");
   return true;
 }
 
@@ -280,8 +281,11 @@ void queueLookup(double lat, double lon) {
     return;
   }
   const unsigned long now = millis();
-  if (s_retry_after_ms != 0 && now < s_retry_after_ms) {
-    return;
+  if (s_retry_after_ms != 0) {
+    if (static_cast<long>(now - s_retry_after_ms) < 0) {  // wrap-safe
+      return;
+    }
+    s_retry_after_ms = 0;
   }
   if (services::clock::autoTimezoneMatchesCoords(lat, lon)) {
     s_resolved = true;

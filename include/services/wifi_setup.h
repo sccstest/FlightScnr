@@ -9,11 +9,30 @@ void wifiResetCredentialsAndReboot();
 /** Boot flow: connect with UI, open portal only if saved creds fail. */
 bool wifiSetupConnect();
 /** Reconnect using saved credentials. After repeated all-SSID failures, opens
- *  the setup portal (keeps saved networks) so a new network can be added. */
+ *  the setup portal (keeps saved networks) so a new network can be added.
+ *  BLOCKS (scan + up to 3 x 15 s per network): never call it from loop(); use
+ *  wifiReconnectStart() / wifiReconnectPoll(). */
 bool wifiReconnect();
 
-/** Disconnect and reconnect STA without erasing saved credentials (TLS recovery). */
+/** Start a non-blocking reconnect round over the saved networks (no-op while one
+ *  runs). With no saved network at all it opens the setup portal (blocking, as
+ *  before). */
+bool wifiReconnectStart();
+/** Advance the reconnect round; cheap, call every loop pass. Returns true once when
+ *  the link is back (web server restarted). After kWifiPortalAfterReconnectFails
+ *  failed rounds it opens the setup portal (blocking, as before). */
+bool wifiReconnectPoll();
+/** True while a reconnect round is in progress. */
+bool wifiReconnectActive();
+
+/** Disconnect and reconnect STA without erasing saved credentials (TLS recovery).
+ *  Non-blocking: starts a reconnect round that wifiReconnectPoll() finishes. */
 bool wifiSoftRecycle();
+
+/** Last-resort recovery: log `why` and esp_restart(), at most once per hour of
+ *  uptime (or once a few minutes after a power-on/crash reset). Returns false when
+ *  held back by that limit. Only a P4 reset re-initializes the C6 Wi-Fi chip. */
+bool wifiEscalationRestart(const char* why);
 
 /** Number of saved networks (0..kWifiMaxNetworks). */
 uint8_t wifiNetsCount();

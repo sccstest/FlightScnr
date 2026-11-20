@@ -12,6 +12,7 @@
 
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <cmath>
@@ -57,7 +58,30 @@ struct CacheSlot {
 
 CacheSlot s_cache[kCacheSize];
 
+// s_cache is written by the loop (enrichAircraft, prefix fallback) and by the route
+// worker on core 0, and read by the flash flush. Recursive: storeCache() calls
+// findCache(). Created in init(), before either side runs.
+SemaphoreHandle_t s_cache_mutex = nullptr;
+
+struct CacheLock {
+  CacheLock() {
+    if (s_cache_mutex != nullptr) {
+      xSemaphoreTakeRecursive(s_cache_mutex, portMAX_DELAY);
+    }
+  }
+  ~CacheLock() {
+    if (s_cache_mutex != nullptr) {
+      xSemaphoreGiveRecursive(s_cache_mutex);
+    }
+  }
+  CacheLock(const CacheLock&) = delete;
+  CacheLock& operator=(const CacheLock&) = delete;
+};
+
 TaskHandle_t s_detail_task = nullptr;
+// Guards s_detail_task / s_detail_exit_requested between the loop and the worker.
+portMUX_TYPE s_detail_task_mux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool s_detail_exit_requested = false;
 char s_detail_selection_callsign[9] = "";
 char s_detail_worker_callsign[9] = "";
 volatile bool s_detail_requested = false;
@@ -127,7 +151,26 @@ struct RouteJsonAllocator : ArduinoJson::Allocator {
 RouteJsonAllocator s_route_json_allocator;
 
 volatile bool s_route_tls_hard_fail = false;
+volatile unsigned long s_route_tls_hard_fail_ms = 0;
 volatile bool s_tls_recover_requested = false;
+
+/** Route APIs pause after a transport error. That pause used to end only with a
+ *  Wi-Fi recycle; recycles are now rare (P4: real DMA-RAM shortage only), so it
+ *  also ends on its own after a minute. */
+constexpr unsigned long kRouteTlsHardFailHoldMs = 60000UL;
+
+void noteRouteTlsHardFail() {
+  s_route_tls_hard_fail_ms = millis() != 0 ? millis() : 1;
+  s_route_tls_hard_fail = true;
+}
+
+void expireRouteTlsHardFail() {
+  if (s_route_tls_hard_fail && s_route_tls_hard_fail_ms != 0 &&
+      millis() - s_route_tls_hard_fail_ms >= kRouteTlsHardFailHoldMs) {
+    s_route_tls_hard_fail = false;
+    s_route_tls_hard_fail_ms = 0;
+  }
+}
 
 bool apiAvailable();
 DetailStep firstLiveApiStep();
@@ -439,6 +482,7 @@ uint32_t nowSec() {
 }
 
 int findCache(const char* callsign) {
+  CacheLock lock;
   for (size_t i = 0; i < kCacheSize; ++i) {
     if (s_cache[i].callsign[0] != '\0' && strcmp(s_cache[i].callsign, callsign) == 0) {
       return static_cast<int>(i);
@@ -449,6 +493,7 @@ int findCache(const char* callsign) {
 
 void storeCache(const char* callsign, const RouteInfo& info, ApiSource src, bool api_done,
                 uint32_t cached_at_sec, bool mark_flash_dirty) {
+  CacheLock lock;
   int slot = findCache(callsign);
   if (slot < 0) {
     slot = -1;
@@ -543,12 +588,15 @@ int loadCacheSlotForCallsign(const char* callsign) {
  * Always fills out/src_out when cache data exists, even if a live upgrade is still needed.
  */
 bool cacheResolve(const char* callsign, RouteInfo* out, ApiSource* src_out) {
-  const int idx = loadCacheSlotForCallsign(callsign);
+  if (loadCacheSlotForCallsign(callsign) < 0) {
+    return false;
+  }
+  CacheLock lock;
+  const int idx = findCache(callsign);  // the other task may have moved it
   if (idx < 0) {
     return false;
   }
-
-  const CacheSlot& slot = s_cache[idx];
+  const CacheSlot slot = s_cache[idx];
   if (out != nullptr) {
     *out = slot.route;
   }
@@ -565,12 +613,13 @@ bool cacheResolve(const char* callsign, RouteInfo* out, ApiSource* src_out) {
 
 /** RAM-only cache resolve for the detail worker (never blocks on LittleFS). */
 bool cacheResolveRam(const char* callsign, RouteInfo* out, ApiSource* src_out) {
+  CacheLock lock;
   const int idx = findCache(callsign);
   if (idx < 0) {
     return false;
   }
 
-  const CacheSlot& slot = s_cache[idx];
+  const CacheSlot slot = s_cache[idx];
   if (out != nullptr) {
     *out = slot.route;
   }
@@ -589,6 +638,7 @@ bool apiLookupAlreadyDoneRam(const char* callsign) {
   if (!apiAvailable()) {
     return true;
   }
+  CacheLock lock;
   const int idx = findCache(callsign);
   if (idx < 0) {
     return false;
@@ -600,6 +650,7 @@ bool readRamCacheSlot(size_t index, route_cache::Entry* out, size_t max_index) {
   if (out == nullptr || index >= max_index || index >= kCacheSize) {
     return false;
   }
+  CacheLock lock;
   const CacheSlot& slot = s_cache[index];
   if (slot.callsign[0] == '\0') {
     return false;
@@ -656,7 +707,7 @@ bool waitForRouteTlsHeap(const char* worker_callsign, uint32_t timeout_ms) {
   s_detail_sprite_release_pending = true;
   const unsigned long deadline =
       millis() + (timeout_ms < 3500U ? timeout_ms : 3500U);
-  while (millis() < deadline) {
+  while (static_cast<long>(millis() - deadline) < 0) {  // wrap-safe
     if (worker_callsign != nullptr && !isCurrentDetailSelection(worker_callsign)) {
       s_detail_sprite_release_pending = false;
       return false;
@@ -680,6 +731,7 @@ bool prepareRouteHttp(const char* worker_callsign, uint32_t timeout_ms) {
       !isCurrentDetailSelection(worker_callsign)) {
     return false;
   }
+  expireRouteTlsHardFail();
   if (s_route_tls_hard_fail) {
     return false;
   }
@@ -774,11 +826,20 @@ bool httpGetJson(const char* url, JsonDocument& doc, const char* worker_callsign
       // Pause route APIs on any transport error, but only ask for a WiFi
       // recycle on connect/alloc failures — read timeouts are usually just a
       // slow server and don't justify tearing the link down.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      // P4: a failed connect asks for a recycle only when DMA-capable RAM is
+      // really short (one unreachable API host must not drop the Wi-Fi link).
+      if (http_code == HTTPC_ERROR_TOO_LESS_RAM ||
+          (http_code == HTTPC_ERROR_CONNECTION_REFUSED && services::https::tlsDmaRamLow())) {
+        s_tls_recover_requested = true;
+      }
+#else
       if (http_code == HTTPC_ERROR_CONNECTION_REFUSED ||
           http_code == HTTPC_ERROR_TOO_LESS_RAM) {
         s_tls_recover_requested = true;
       }
-      s_route_tls_hard_fail = true;
+#endif
+      noteRouteTlsHardFail();
       if ((config::kSerialTraceDebug || config::kRadarResumeDebug) && worker_callsign != nullptr) {
         Serial.printf("[detail] http tls fail %s code=%d free=%u max_blk=%u\n", worker_callsign,
                       http_code, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -1952,6 +2013,29 @@ void detailWorkerRunStep() {
 
 void detailWorkerTask(void* /*arg*/) {
   for (;;) {
+    // Exit point for shutdownDetailWorker(). Here, between steps, no HTTPClient,
+    // TLS socket or HTTPS lock is held, so ending the task leaks nothing (deleting
+    // it from outside mid-request skipped those destructors and leaked a socket).
+    if (s_detail_exit_requested) {
+      bool exiting = false;
+      taskENTER_CRITICAL(&s_detail_task_mux);
+      if (s_detail_exit_requested) {
+        s_detail_exit_requested = false;
+        s_detail_task = nullptr;
+        exiting = true;
+      }
+      taskEXIT_CRITICAL(&s_detail_task_mux);
+      if (exiting) {
+        // No detailWorkerCancelWork() here: shutdown already cancelled, and a new
+        // worker may already have been started for the next flight detail.
+        if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
+          Serial.println("[detail] worker exited");
+        }
+        vTaskDelete(nullptr);
+        return;
+      }
+    }
+
     if (s_detail_requested && s_detail_step == DetailStep::kIdle) {
       s_detail_busy = true;
       s_detail_worker_start_ms = millis();
@@ -1979,7 +2063,13 @@ void detailWorkerTask(void* /*arg*/) {
 }
 
 void ensureDetailWorker() {
-  if (s_detail_task != nullptr) {
+  taskENTER_CRITICAL(&s_detail_task_mux);
+  const bool alive = s_detail_task != nullptr;
+  if (alive) {
+    s_detail_exit_requested = false;  // still running: keep it instead of exiting
+  }
+  taskEXIT_CRITICAL(&s_detail_task_mux);
+  if (alive) {
     return;
   }
   // Stack sized so a ~21KB detail-screen free heap still has room for TLS after
@@ -2081,6 +2171,7 @@ void tickDetailImmediateDefer() {
 }
 
 void onFlightDetailSelectedImpl(const char* callsign, const bool immediate) {
+  expireRouteTlsHardFail();
   if (callsign == nullptr || callsign[0] == '\0') {
     s_detail_selection_callsign[0] = '\0';
     clearDetailDebounce();
@@ -2149,7 +2240,7 @@ void tickDetailEnrichDebounceImpl(unsigned long now_ms) {
   if (!s_detail_debounce_pending || s_detail_debounce_callsign[0] == '\0') {
     return;
   }
-  if (now_ms < s_detail_debounce_deadline_ms) {
+  if (static_cast<long>(now_ms - s_detail_debounce_deadline_ms) < 0) {  // wrap-safe
     return;
   }
   if (!isCurrentDetailSelection(s_detail_debounce_callsign)) {
@@ -2191,31 +2282,18 @@ void cancelDetailEnrichmentImpl() {
 
 void shutdownDetailWorkerImpl() {
   cancelDetailEnrichmentImpl();
-  if (s_detail_task == nullptr) {
-    return;
+  // Cooperative and non-blocking: the worker ends itself at the top of its loop,
+  // after any request in flight has finished and closed its socket (the selection
+  // is cleared, so it skips the remaining steps). Its stack is freed then. This used
+  // to busy-wait 400 ms on the loop and vTaskDelete the worker mid-request.
+  taskENTER_CRITICAL(&s_detail_task_mux);
+  if (s_detail_task != nullptr) {
+    s_detail_exit_requested = true;
   }
-
-  // Brief grace so an in-flight httpGetJson can unlock cleanly. vTaskDelete
-  // skips C++ destructors, so a long wait just stalls radar resume; reclaim
-  // after delete covers mid-HTTP kills and Take/holder orphans.
-  const unsigned long deadline = millis() + 400UL;
-  while (services::https::heldBy(s_detail_task) &&
-         static_cast<long>(deadline - millis()) > 0) {
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-  detailWorkerCancelWork();
-
-  TaskHandle_t task = s_detail_task;
-  s_detail_task = nullptr;
-  vTaskDelete(task);
-  const bool reclaimed = services::https::reclaimAfterTaskDeleted(task);
-  if (reclaimed && (config::kSerialTraceDebug || config::kRadarResumeDebug)) {
-    Serial.println("[detail] worker shutdown reclaimed HTTPS");
-  }
+  taskEXIT_CRITICAL(&s_detail_task_mux);
   if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
-    Serial.printf("[detail] worker shutdown free=%u max_blk=%u https_busy=%d\n",
-                  ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
-                  services::https::busy() ? 1 : 0);
+    Serial.printf("[detail] worker shutdown requested free=%u max_blk=%u https_busy=%d\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap(), services::https::busy() ? 1 : 0);
   }
 }
 
@@ -2300,7 +2378,13 @@ void tickDetailWorkerWatchdogImpl(unsigned long now_ms) {
 void init() {
   services::https::init();
   apikeys::load();
-  memset(s_cache, 0, sizeof(s_cache));
+  if (s_cache_mutex == nullptr) {
+    s_cache_mutex = xSemaphoreCreateRecursiveMutex();
+  }
+  {
+    CacheLock lock;
+    memset(s_cache, 0, sizeof(s_cache));
+  }
   if (route_cache::mount()) {
     Serial.println("Route lookup: flash cache mounted (/route_cache.csv)");
   }
@@ -2313,13 +2397,17 @@ void init() {
   }
 }
 
-void clearRamCache() { memset(s_cache, 0, sizeof(s_cache)); }
+void clearRamCache() {
+  CacheLock lock;
+  memset(s_cache, 0, sizeof(s_cache));
+}
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 bool peekRamRoute(const char* callsign, RouteInfo* out) {
   if (callsign == nullptr || callsign[0] == '\0' || out == nullptr) {
     return false;
   }
+  CacheLock lock;
   const int idx = findCache(callsign);
   if (idx < 0) {
     return false;
@@ -2467,6 +2555,7 @@ bool consumeTlsRecoverRequest() {
 
 void resetTlsHardFail() {
   s_route_tls_hard_fail = false;
+  s_route_tls_hard_fail_ms = 0;
   s_tls_recover_requested = false;
 }
 

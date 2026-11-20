@@ -27,6 +27,7 @@
 #include "services/https_lock.h"
 #include "services/map_center.h"
 #include "services/open_meteo_parse.h"
+#include "util/millis_deadline.h"
 
 namespace services::weather {
 
@@ -204,7 +205,7 @@ void readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
 
   if (!chunked) {
     while (http.connected() || stream->available()) {
-      if (millis() >= deadline_ms) {
+      if (util::millisReached(deadline_ms)) {
         return;
       }
       if (stream->available() == 0) {
@@ -230,7 +231,7 @@ void readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
   // --- Chunked transfer decoding ---
   auto readByte = [&](uint8_t* out) -> bool {
     for (;;) {
-      if (millis() >= deadline_ms) {
+      if (util::millisReached(deadline_ms)) {
         return false;
       }
       if (stream->available() > 0) {
@@ -267,7 +268,7 @@ void readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
     }
     long remaining = chunk_size;
     while (remaining > 0) {
-      if (millis() >= deadline_ms) {
+      if (util::millisReached(deadline_ms)) {
         return;
       }
       if (stream->available() == 0) {
@@ -590,7 +591,7 @@ bool fetchWeatherBlocking(WeatherData* out) {
 
   const char* key = services::apikeys::weatherKey();
   const bool now_in_tomorrow_backoff =
-      s_tomorrow_retry_after_ms != 0 && millis() < s_tomorrow_retry_after_ms;
+      s_tomorrow_retry_after_ms != 0 && !util::millisReached(s_tomorrow_retry_after_ms);
   const bool tomorrow_ready = services::apikeys::canUseWeather() && key != nullptr &&
                               key[0] != '\0' && !now_in_tomorrow_backoff;
 
@@ -678,7 +679,7 @@ void weatherJob() {
     // Back off so a failure / heap-tight defer doesn't retry every loop. Don't
     // shorten a longer back-off already set (e.g. the 429 rate-limit window).
     const unsigned long base = millis() + config::kWeatherRetryBackoffMs;
-    if (s_retry_after_ms < base) {
+    if (s_retry_after_ms == 0 || static_cast<long>(s_retry_after_ms - base) < 0) {
       s_retry_after_ms = base;
     }
     if (config::kOvernightPerfLog) {
@@ -744,6 +745,27 @@ void bootSanityCheck() {
                     fresh.days[i].weather_code);
     }
   }
+}
+
+namespace {
+void bootCheckJob() {
+  bootSanityCheck();
+  s_pending = false;
+}
+}  // namespace
+
+bool queueBootCheck() {
+  if (!anyWeatherSourceAvailable() || s_pending) {
+    return false;
+  }
+  // Same check as bootSanityCheck(), but on the ADS-B worker (core 0) so the
+  // loop (and touch) never waits on TLS.
+  if (!services::adsb::queueBackgroundJob(&bootCheckJob)) {
+    return false;
+  }
+  s_pending = true;
+  s_last_attempt_ms = millis();
+  return true;
 }
 
 bool useImperial() { return s_imperial; }
@@ -831,8 +853,11 @@ void requestRefresh(bool force) {
   const unsigned long now = millis();
   // Back-off and anti-burst throttle are honored even on a forced refresh, so a
   // rate-limit window or a flurry of screen opens can't hammer the API.
-  if (s_retry_after_ms != 0 && now < s_retry_after_ms) {
-    return;
+  if (s_retry_after_ms != 0) {
+    if (!util::millisReached(now, s_retry_after_ms)) {
+      return;
+    }
+    s_retry_after_ms = 0;
   }
   if (s_last_attempt_ms != 0 && (now - s_last_attempt_ms) < config::kWeatherMinFetchIntervalMs) {
     return;
@@ -896,7 +921,7 @@ uint32_t retryBackoffMs() {
     return 0;
   }
   const unsigned long now = millis();
-  if (now >= s_retry_after_ms) {
+  if (util::millisReached(now, s_retry_after_ms)) {
     return 0;
   }
   return static_cast<uint32_t>(s_retry_after_ms - now);

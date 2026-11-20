@@ -44,6 +44,10 @@ void saveDateFormatFromForm(const char* numeric_checkbox);
 bool applyAutoTimezone(const char* iana, const char* posix, double lat, double lon);
 /** True when auto mode has a cached zone for the current map center. */
 bool autoTimezoneMatchesCoords(double lat, double lon);
+/** Call with each HTTP response's Date header (any task). If SNTP still has not set
+ *  the clock config::kHttpDateClockFallbackMs after startNtp(), sets it from this. */
+void noteHttpDate(const char* http_date);
+
 /** IANA zone name for display; empty when unknown. */
 const char* timezoneIanaName();
 

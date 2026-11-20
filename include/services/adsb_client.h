@@ -143,6 +143,10 @@ void fetchResetFailStreak();
  *  Drives the radar's "Flight data offline" badge. */
 bool feedLooksDown();
 
+/** Failed polls (any cause, including 429) since the last good one. Drives the
+ *  poll back-off; not cleared by a Wi-Fi recycle. */
+uint32_t feedFailStreak();
+
 /** Free stack space (bytes) on the adsb_fetch FreeRTOS task. */
 uint32_t fetchTaskStackFreeBytes();
 

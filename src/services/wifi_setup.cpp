@@ -113,23 +113,57 @@ void clearSlot(WifiNetSlot* slot) {
   slot->demoted = false;
 }
 
+void putStringIfChanged(Preferences& prefs, const char* key, const char* value) {
+  if (prefs.isKey(key) && prefs.getString(key, "") == value) {
+    return;
+  }
+  prefs.putString(key, value);
+}
+
+/** Save the network list. Writes only keys that changed and never clear()s the
+ *  namespace: the old clear-then-rewrite ran on every connect success/failure, and
+ *  a power cut between the two lost every saved network. The count is written
+ *  before the slots when the list shrinks and after them when it grows, so a cut
+ *  mid-way can at worst repeat a network, never drop one. fail_streak lives in RAM
+ *  only (it is per session anyway) so connect attempts no longer write flash. */
 void persistNets() {
   Preferences prefs;
   if (!prefs.begin(kNetsPrefsNamespace, false)) {
     return;
   }
-  prefs.clear();
-  prefs.putUChar(kNetsCountKey, s_nets_count);
+  const uint8_t stored_count = prefs.getUChar(kNetsCountKey, 0);
+  if (s_nets_count < stored_count) {
+    prefs.putUChar(kNetsCountKey, s_nets_count);
+  }
   for (uint8_t i = 0; i < s_nets_count; ++i) {
+    char sk[4];
+    char pk[4];
+    slotKey(sk, sizeof(sk), 's', i);
+    slotKey(pk, sizeof(pk), 'p', i);
+    putStringIfChanged(prefs, sk, s_nets[i].ssid);
+    putStringIfChanged(prefs, pk, s_nets[i].pass);
+  }
+  if (s_nets_count > stored_count) {
+    prefs.putUChar(kNetsCountKey, s_nets_count);
+  }
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
     char sk[4];
     char pk[4];
     char fk[4];
     slotKey(sk, sizeof(sk), 's', i);
     slotKey(pk, sizeof(pk), 'p', i);
     slotKey(fk, sizeof(fk), 'f', i);
-    prefs.putString(sk, s_nets[i].ssid);
-    prefs.putString(pk, s_nets[i].pass);
-    prefs.putUChar(fk, s_nets[i].fail_streak);
+    if (prefs.isKey(fk)) {
+      prefs.remove(fk);  // fail streaks are no longer stored
+    }
+    if (i >= s_nets_count) {
+      if (prefs.isKey(sk)) {
+        prefs.remove(sk);
+      }
+      if (prefs.isKey(pk)) {
+        prefs.remove(pk);
+      }
+    }
   }
   prefs.end();
 }
@@ -149,10 +183,8 @@ void loadNetsFromPrefs() {
   for (uint8_t i = 0; i < n && i < config::kWifiMaxNetworks; ++i) {
     char sk[4];
     char pk[4];
-    char fk[4];
     slotKey(sk, sizeof(sk), 's', i);
     slotKey(pk, sizeof(pk), 'p', i);
-    slotKey(fk, sizeof(fk), 'f', i);
     String ssid = prefs.getString(sk, "");
     if (ssid.length() == 0) {
       continue;
@@ -160,7 +192,7 @@ void loadNetsFromPrefs() {
     String pass = prefs.getString(pk, "");
     strncpy(s_nets[s_nets_count].ssid, ssid.c_str(), sizeof(s_nets[0].ssid) - 1);
     strncpy(s_nets[s_nets_count].pass, pass.c_str(), sizeof(s_nets[0].pass) - 1);
-    s_nets[s_nets_count].fail_streak = prefs.getUChar(fk, 0);
+    s_nets[s_nets_count].fail_streak = 0;  // RAM only, per session
     s_nets[s_nets_count].demoted = false;
     ++s_nets_count;
   }
@@ -231,6 +263,13 @@ void migrateStaIntoNetsIfNeeded() {
 }
 
 void mirrorActiveCredsToSta(const char* ssid, const char* pass) {
+  wifi_config_t cur = {};
+  if (esp_wifi_get_config(WIFI_IF_STA, &cur) == ESP_OK &&
+      strncmp(reinterpret_cast<const char*>(cur.sta.ssid), ssid, sizeof(cur.sta.ssid)) == 0 &&
+      strncmp(reinterpret_cast<const char*>(cur.sta.password), pass != nullptr ? pass : "",
+              sizeof(cur.sta.password)) == 0) {
+    return;  // already stored: skip the flash write (on the P4 also an RPC to the C6)
+  }
   WiFi.persistent(true);
   wifi_config_t conf = {};
   strncpy(reinterpret_cast<char*>(conf.sta.ssid), ssid, sizeof(conf.sta.ssid));
@@ -258,7 +297,7 @@ void noteConnectSuccess(uint8_t index) {
   }
   s_nets[index].fail_streak = 0;
   s_nets[index].demoted = false;
-  persistNets();
+  // fail_streak / demoted are RAM-only: nothing to write to flash here.
   mirrorActiveCredsToSta(s_nets[index].ssid, s_nets[index].pass);
 }
 
@@ -274,7 +313,6 @@ void noteConnectFailure(uint8_t index) {
     Serial.printf("[wifi] demoting SSID for this session: %s (fails=%u)\n",
                   s_nets[index].ssid, static_cast<unsigned>(s_nets[index].fail_streak));
   }
-  persistNets();
 }
 
 void buildTryOrder(uint8_t* out_indices, uint8_t* out_count) {
@@ -954,8 +992,8 @@ void startStaConnect(const char* ssid, const char* pass) {
 }
 
 bool waitForLinkWithUi(const char* ssid_for_ui, unsigned long attempt_ms) {
-  const unsigned long deadline = millis() + attempt_ms;
-  while (millis() < deadline) {
+  const unsigned long started = millis();
+  while (millis() - started < attempt_ms) {  // wrap-safe
     if (wifiLinkUp()) {
       return true;
     }
@@ -1010,8 +1048,8 @@ bool tryConnectOneSlot(uint8_t index, bool show_ui) {
     if (show_ui) {
       ok = waitForLinkWithUi(ssid, config::kWifiConnectAttemptMs);
     } else {
-      const unsigned long deadline = millis() + config::kWifiConnectAttemptMs;
-      while (millis() < deadline) {
+      const unsigned long started = millis();
+      while (millis() - started < config::kWifiConnectAttemptMs) {  // wrap-safe
         if (wifiLinkUp()) {
           ok = true;
           break;
@@ -1092,6 +1130,8 @@ PortalResult openConfigPortal(WiFiManager& wm) {
   wm.startConfigPortal(services::device_identity::portalApName());
   if (!wm.getConfigPortalActive()) {
     Serial.println("Config portal failed to start");
+    // Usually the C6 link is wedged; only a full reset re-initializes it.
+    wifiEscalationRestart("setup portal failed to start");
     return PortalResult::FailedToStart;
   }
 
@@ -1363,14 +1403,190 @@ bool wifiReconnect() {
   return false;
 }
 
+// --- Non-blocking reconnect (polled from loop) ---------------------------------
+//
+// wifiReconnect() above blocks: a synchronous scan, then up to 3 x 15 s waits per
+// saved network. Run from loop() that froze the radar and dropped taps for up to
+// minutes during an outage. This state machine does the same job one step per
+// call: WiFi.begin() for one saved network, then a look at the link at most every
+// kWifiReconnectPollMs, for up to kWifiConnectAttemptMs per network. No scan (the
+// scan only saved time on a blocking loop). After kWifiPortalAfterReconnectFails
+// failed rounds it opens the setup portal, exactly as before.
+namespace {
+
+enum class ReconnectState : uint8_t { Idle, Begin, Waiting };
+
+ReconnectState s_rc_state = ReconnectState::Idle;
+uint8_t s_rc_order[config::kWifiMaxNetworks];
+uint8_t s_rc_order_n = 0;
+uint8_t s_rc_pos = 0;
+unsigned long s_rc_begin_at_ms = 0;
+unsigned long s_rc_attempt_start_ms = 0;
+unsigned long s_rc_last_poll_ms = 0;
+unsigned long s_rc_round_start_ms = 0;
+bool s_rc_saw_down = false;
+
+/** Returns true if the portal path connected (it reboots on success, so rarely). */
+bool reconnectRoundFailed() {
+  s_rc_state = ReconnectState::Idle;
+  if (s_reconnect_fail_rounds < 255) {
+    ++s_reconnect_fail_rounds;
+  }
+  Serial.printf("[wifi] reconnect round failed (%u/%u, %lus)\n",
+                static_cast<unsigned>(s_reconnect_fail_rounds),
+                static_cast<unsigned>(config::kWifiPortalAfterReconnectFails),
+                (millis() - s_rc_round_start_ms) / 1000UL);
+  if (s_reconnect_fail_rounds >= config::kWifiPortalAfterReconnectFails) {
+    Serial.println("Opening WiFi setup portal (reconnect failed repeatedly; "
+                   "saved networks kept)");
+    s_reconnect_fail_rounds = 0;
+    bootScreenShowPortalHint();
+    return runConfigPortalFlow();  // blocking, as before: the portal owns the screen
+  }
+  return false;
+}
+
+void reconnectSucceeded(unsigned long now) {
+  int idx = -1;
+  if (s_rc_pos < s_rc_order_n) {
+    idx = s_rc_order[s_rc_pos];
+  }
+  // The driver's own auto-reconnect may have joined a different saved network.
+  const String ssid = WiFi.SSID();
+  const int by_ssid = findNetIndexBySsid(ssid.c_str());
+  if (by_ssid >= 0) {
+    idx = by_ssid;
+  }
+  if (idx >= 0) {
+    noteConnectSuccess(static_cast<uint8_t>(idx));
+  }
+  s_reconnect_fail_rounds = 0;
+  s_rc_state = ReconnectState::Idle;
+  Serial.printf("[wifi] reconnected to %s after %lus\n", ssid.c_str(),
+                (now - s_rc_round_start_ms) / 1000UL);
+  onStaLinkReady();
+}
+
+}  // namespace
+
+bool wifiReconnectActive() { return s_rc_state != ReconnectState::Idle; }
+
+bool wifiReconnectStart() {
+  if (s_rc_state != ReconnectState::Idle) {
+    return true;
+  }
+  migrateStaIntoNetsIfNeeded();
+  ensureNetsLoaded();
+  if (s_nets_count == 0 && !readStaCredentials(nullptr, nullptr)) {
+    Serial.println("No saved WiFi — opening setup portal");
+    s_reconnect_fail_rounds = 0;
+    return runConfigPortalFlow();  // blocking, as before
+  }
+  buildTryOrder(s_rc_order, &s_rc_order_n);
+  s_rc_pos = 0;
+  s_rc_saw_down = false;
+  s_rc_round_start_ms = millis();
+  s_rc_begin_at_ms = s_rc_round_start_ms;
+  s_rc_last_poll_ms = 0;
+  s_rc_state = ReconnectState::Begin;
+  Serial.printf("WiFi reconnecting (%u saved network%s, non-blocking)...\n",
+                static_cast<unsigned>(s_rc_order_n), s_rc_order_n == 1 ? "" : "s");
+  return true;
+}
+
+bool wifiReconnectPoll() {
+  if (s_rc_state == ReconnectState::Idle) {
+    return false;
+  }
+  const unsigned long now = millis();
+  if (s_rc_last_poll_ms != 0 && now - s_rc_last_poll_ms < config::kWifiReconnectPollMs) {
+    return false;
+  }
+  s_rc_last_poll_ms = now;
+  const bool link_up = wifiLinkUp();
+  if (!link_up) {
+    s_rc_saw_down = true;
+  }
+
+  if (s_rc_state == ReconnectState::Begin) {
+    if (static_cast<long>(now - s_rc_begin_at_ms) < 0) {
+      return false;
+    }
+    if (link_up && s_rc_saw_down) {
+      reconnectSucceeded(now);  // came back on its own before our next attempt
+      return true;
+    }
+    if (s_rc_pos >= s_rc_order_n) {
+      return reconnectRoundFailed() && wifiLinkUp();
+    }
+    const uint8_t idx = s_rc_order[s_rc_pos];
+    Serial.printf("[wifi] trying #%u %s%s\n", static_cast<unsigned>(idx + 1),
+                  s_nets[idx].ssid, s_nets[idx].demoted ? " (demoted)" : "");
+    s_rc_saw_down = !link_up;
+    startStaConnect(s_nets[idx].ssid, s_nets[idx].pass);
+    s_rc_attempt_start_ms = now;
+    s_rc_state = ReconnectState::Waiting;
+    return false;
+  }
+
+  // Waiting for this network. Right after a recycle's disconnect the status can
+  // still read "connected" for a moment, so only trust an "up" that followed a
+  // "down", or one that has held for a few seconds.
+  if (link_up && (s_rc_saw_down || now - s_rc_attempt_start_ms >= 3000UL)) {
+    reconnectSucceeded(now);
+    return true;
+  }
+  if (now - s_rc_attempt_start_ms >= config::kWifiConnectAttemptMs) {
+    if (s_rc_pos < s_rc_order_n) {
+      noteConnectFailure(s_rc_order[s_rc_pos]);
+    }
+    ++s_rc_pos;
+    s_rc_begin_at_ms = now;
+    s_rc_state = ReconnectState::Begin;
+  }
+  return false;
+}
+
 bool wifiSoftRecycle() {
   settingsWebStop();
 #ifdef WM_MDNS
   MDNS.end();
 #endif
   WiFi.disconnect(false, false);
-  delay(200);
-  return wifiReconnect();
+  // Non-blocking: the loop polls wifiReconnectPoll(); the first attempt starts in
+  // 300 ms so the disconnect lands first.
+  s_rc_state = ReconnectState::Idle;
+  const bool started = wifiReconnectStart();
+  if (s_rc_state == ReconnectState::Begin) {
+    s_rc_begin_at_ms = millis() + 300UL;
+    s_rc_saw_down = false;
+  }
+  return started;
+}
+
+bool wifiEscalationRestart(const char* why) {
+  const unsigned long up = millis();
+  // At most one escalation restart per hour of uptime, except right after a
+  // power-on or crash reset (not one of our own software restarts).
+  const bool first_since_power = esp_reset_reason() != ESP_RST_SW;
+  const bool allowed = up >= config::kEscalateMinUptimeMs ||
+                       (first_since_power && up >= config::kEscalateFirstMinUptimeMs);
+  if (!allowed) {
+    static unsigned long s_last_log_ms = 0;
+    if (s_last_log_ms == 0 || up - s_last_log_ms >= 10UL * 60UL * 1000UL) {
+      s_last_log_ms = up != 0 ? up : 1;
+      Serial.printf("[net] would restart (%s) but uptime is only %lus; holding\n",
+                    why != nullptr ? why : "?", up / 1000UL);
+    }
+    return false;
+  }
+  Serial.printf("[net] restarting the device: %s (uptime %lus, heap dma_blk=%u)\n",
+                why != nullptr ? why : "?", up / 1000UL,
+                static_cast<unsigned>(
+                    heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
+  delay(300);
+  esp_restart();
+  return true;
 }
 
 bool wifiSetupConnect() {

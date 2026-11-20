@@ -364,36 +364,14 @@ bool adsbFetchScreenActive() {
 }
 
 bool adsbDnsReady(unsigned long now) {
-  static unsigned long s_next_probe_ms = 0;
-  static bool s_resolved = false;
-
-  if (WiFi.status() != WL_CONNECTED) {
-    s_resolved = false;
-    s_next_probe_ms = 0;
-    g_adsb_dns_fail_since_ms = 0;
-    return false;
-  }
-  if (s_resolved) {
-    return true;
-  }
-  if (s_next_probe_ms != 0 && now < s_next_probe_ms) {
-    return false;
-  }
-
-  IPAddress ip;
-  s_resolved = WiFi.hostByName(config::kAdsbHost, ip);
-  s_next_probe_ms = now + (s_resolved ? 60000UL : 1500UL);
-  // No fetch is attempted while DNS fails (Wi-Fi up, internet down), so the
-  // feed's fail streak never grows; remember how long DNS has been failing.
-  if (s_resolved) {
-    g_adsb_dns_fail_since_ms = 0;
-  } else if (g_adsb_dns_fail_since_ms == 0) {
-    g_adsb_dns_fail_since_ms = now != 0 ? now : 1;
-  }
-  if (!s_resolved && config::kSerialTraceDebug) {
-    Serial.println("[fetch] defer: DNS not ready for " FLIGHTSCNR_ADSB_HOST);
-  }
-  return s_resolved;
+  (void)now;
+  // There used to be a WiFi.hostByName() probe here, on the loop. With Wi-Fi up but
+  // the internet down it blocked 5-15 s every 1.5 s, freezing the radar and dropping
+  // taps. The fetch worker resolves the name itself on core 0; a dead DNS / internet
+  // now shows up as failed polls (fail streak -> "Flight data offline" badge and
+  // poll back-off), so g_adsb_dns_fail_since_ms stays 0.
+  g_adsb_dns_fail_since_ms = 0;
+  return WiFi.status() == WL_CONNECTED;
 }
 
 void noteSecondaryActivity() {
@@ -2052,6 +2030,37 @@ void recycleWifiForTls(unsigned long now, const char* reason) {
 }
 
 void tryTlsWifiRefresh(unsigned long now) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // P4: recycle Wi-Fi only when internal DMA-capable RAM is really short. HTTP status
+  // codes, parse errors, DNS failures and one host's connect failures never recycle:
+  // tearing the link down cannot fix them, and the 15 s / 90 s recycles turned every
+  // internet or adsb.fi outage into a Wi-Fi storm. The S3-era 4 h proactive refresh
+  // is off here too. A dead C6 link is caught by the no-data escalation instead.
+  if (services::route::tlsRecoverRequested()) {
+    const bool dma_low = services::https::tlsDmaRamLow();
+    if (!dma_low) {
+      services::route::consumeTlsRecoverRequest();
+      static unsigned long s_last_log_ms = 0;
+      if (s_last_log_ms == 0 || now - s_last_log_ms >= 60000UL) {
+        s_last_log_ms = now != 0 ? now : 1;
+        Serial.printf("[adsb] TLS failure noted; DMA RAM ok (largest %u B) - no Wi-Fi recycle\n",
+                      static_cast<unsigned>(services::https::dmaLargestFreeBlock()));
+      }
+    } else if (canRecycleWifiForTlsMemory(now)) {
+      services::route::consumeTlsRecoverRequest();
+      recycleWifiForTls(now, "TLS memory pressure (DMA RAM low)");
+      return;
+    }
+  }
+  if (!canRecycleWifiForTls(now)) {
+    return;
+  }
+  if (services::adsb::fetchFailStreak() >= config::kTlsRecoverFailStreak &&
+      services::adsb::lastFetchOkAgeMs() > config::kTlsRecoverStaleMs &&
+      services::https::tlsDmaRamLow()) {
+    recycleWifiForTls(now, "repeated TLS failures with DMA RAM low");
+  }
+#else
   if (services::route::tlsRecoverRequested() && canRecycleWifiForTlsMemory(now)) {
     services::route::consumeTlsRecoverRequest();
     recycleWifiForTls(now, "TLS memory pressure");
@@ -2071,11 +2080,67 @@ void tryTlsWifiRefresh(unsigned long now) {
       services::adsb::lastFetchOkAgeMs() > config::kTlsRecoverStaleMs) {
     recycleWifiForTls(now, "repeated TLS failures");
   }
+#endif
+}
+
+/** Last-resort restarts, checked every loop pass (cheap; acts at most once a
+ *  minute). Wi-Fi down 30 min in a row, or Wi-Fi up but no adsb.fi data for 20 min
+ *  while the radar wants it: only a full P4 reset re-initializes the C6. */
+void tickNetworkEscalation(unsigned long now) {
+  static unsigned long s_no_data_since_ms = 0;
+  static unsigned long s_last_try_ms = 0;
+  const bool wifi_up = WiFi.status() == WL_CONNECTED;
+
+  if (!wifi_up || !adsbFetchScreenActive() ||
+      services::adsb::lastFetchOkAgeMs() < 60000UL) {
+    s_no_data_since_ms = 0;
+  } else if (s_no_data_since_ms == 0) {
+    s_no_data_since_ms = now != 0 ? now : 1;
+  }
+
+  const char* why = nullptr;
+  if (!wifi_up && g_wifi_down_since != 0 &&
+      now - g_wifi_down_since >= config::kEscalateWifiDownMs) {
+    why = "Wi-Fi down for 30 min";
+  } else if (s_no_data_since_ms != 0 && now - s_no_data_since_ms >= config::kEscalateNoAdsbMs) {
+    why = "Wi-Fi up but no adsb.fi data for 20 min";
+  }
+  if (why == nullptr || (s_last_try_ms != 0 && now - s_last_try_ms < 60000UL)) {
+    return;
+  }
+  s_last_try_ms = now != 0 ? now : 1;
+  wifiEscalationRestart(why);
+}
+
+/** Bring the settings web server back after a short link blip: it is stopped while
+ *  the link is down, and only a full reconnect used to restart it, so a blip the
+ *  driver healed by itself left the phone settings page dead until a reboot. */
+void tickSettingsWebKeepAlive(unsigned long now) {
+  static unsigned long s_last_check_ms = 0;
+  if (now - s_last_check_ms < config::kWebServerRestartCheckMs) {
+    return;
+  }
+  s_last_check_ms = now;
+  if (!settingsWebActive()) {
+    Serial.println("[wifi] link up but settings web server stopped - restarting it");
+    settingsWebStart();
+  }
 }
 
 unsigned long adsbFetchPollIntervalMs(bool on_detail) {
-  if (services::adsb::fetchFailStreak() >= 2) {
-    return config::kAdsbFetchBackoffMs;
+  // Back off while adsb.fi keeps failing (outage, blocked, rate limit): 15 s, then
+  // 60 s, then 5 min. The "Flight data offline" badge shows meanwhile; the first good
+  // poll resets the streak.
+  const uint32_t fails = services::adsb::feedFailStreak();
+  if (fails >= config::kAdsbBackoffFails3) {
+    return config::kAdsbBackoff3Ms;
+  }
+  if (fails >= config::kAdsbBackoffFails2) {
+    return config::kAdsbBackoff2Ms;
+  }
+  if (fails >= config::kAdsbBackoffFails1 ||
+      services::adsb::fetchFailStreak() >= config::kAdsbBackoffFails1) {
+    return config::kAdsbBackoff1Ms;
   }
   if (on_detail) {
     return config::kAdsbFetchPollIntervalDetailMs;
@@ -2452,7 +2517,7 @@ void loop() {
 #endif
   services::tzlookup::tick();
   settingsWebPoll();
-  services::ota_github::pollIfDue();
+  services::ota_github::pollIfDue();  // only queues the check on the HTTPS worker
   services::route::tickCacheFlush(millis());
   tickFlightDetailRouteEnrich();
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -2466,60 +2531,73 @@ void loop() {
   tickRadarSweepHeartbeat();
   tickRadarStallWatchdog();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    settingsWebStop();
-    if (!g_wifi_loss_logged) {
-      Serial.println("[wifi] lost — will reconnect");
-      g_wifi_loss_logged = true;
-    }
+  // Non-blocking reconnect: one small step per loop pass (see wifi_setup.cpp), so the
+  // radar keeps sweeping and taps keep working during an outage. Polled in both
+  // branches: the driver may bring the link back on its own mid-round.
+  const bool wifi_reconnected = wifiReconnectPoll();
+  tickNetworkEscalation(millis());
 
-    if (g_wifi_down_since == 0) {
-      g_wifi_down_since = millis();
-    }
+  if (WiFi.status() != WL_CONNECTED || wifi_reconnected) {
+    if (!wifi_reconnected) {
+      if (settingsWebActive()) {
+        settingsWebStop();
+      }
+      if (!g_wifi_loss_logged) {
+        Serial.println("[wifi] lost — will reconnect");
+        g_wifi_loss_logged = true;
+      }
 
-    // Keep the radar sweeping with a "No Wi-Fi" badge instead of freezing the
-    // last frame, so the outage doesn't look like a hung device.
-    tickLinkStatus();
-    if (g_screen == AppScreen::Radar && g_radar_visible) {
-      tickRadarAnimation();
-    }
+      if (g_wifi_down_since == 0) {
+        g_wifi_down_since = millis();
+      }
 
-    const unsigned long down_ms = millis() - g_wifi_down_since;
-    if (down_ms >= config::kWifiDownGraceMs &&
-        millis() - g_last_reconnect_ms >= config::kWifiReconnectIntervalMs) {
-      g_last_reconnect_ms = millis();
-      if (wifiReconnect()) {
-        g_wifi_down_since = 0;
-        g_wifi_loss_logged = false;
-        tickLinkStatus();
-        if (!g_online_services_started) {
-          // Wi-Fi was unavailable at boot: start the services and the normal
-          // disclaimer -> radar flow now.
-          startOnlineServices();
-          return;
-        }
-        services::clock::startNtp();
-        if (g_screen == AppScreen::Radar) {
-          showRadar();
-        } else if (g_screen == AppScreen::FlightDetail) {
-          showFlightDetail();
-        } else if (g_screen == AppScreen::Clock) {
-          showClock();
-        } else if (g_screen == AppScreen::ClockSettings) {
-          showClockSettings();
-        } else if (g_screen == AppScreen::Details) {
-          showDetails();
-        } else if (g_screen == AppScreen::Disclaimer) {
-          showDisclaimer();
-        } else if (g_screen == AppScreen::Weather) {
-          showWeather();
+      // Keep the radar sweeping with a "No Wi-Fi" badge instead of freezing the
+      // last frame, so the outage doesn't look like a hung device.
+      tickLinkStatus();
+      if (g_screen == AppScreen::Radar && g_radar_visible) {
+        tickRadarAnimation();
+      }
+
+      const unsigned long down_ms = millis() - g_wifi_down_since;
+      if (wifiReconnectActive()) {
+        g_last_reconnect_ms = millis();  // next round's interval counts from this one's end
+      } else if (down_ms >= config::kWifiDownGraceMs &&
+                 millis() - g_last_reconnect_ms >= config::kWifiReconnectIntervalMs) {
+        g_last_reconnect_ms = millis();
+        wifiReconnectStart();
+      }
+    }
+    if (wifi_reconnected || WiFi.status() == WL_CONNECTED) {
+      g_wifi_down_since = 0;
+      g_wifi_loss_logged = false;
+      tickLinkStatus();
+      if (!g_online_services_started) {
+        // Wi-Fi was unavailable at boot: start the services and the normal
+        // disclaimer -> radar flow now.
+        startOnlineServices();
+        return;
+      }
+      services::clock::startNtp();
+      if (g_screen == AppScreen::Radar) {
+        showRadar();
+      } else if (g_screen == AppScreen::FlightDetail) {
+        showFlightDetail();
+      } else if (g_screen == AppScreen::Clock) {
+        showClock();
+      } else if (g_screen == AppScreen::ClockSettings) {
+        showClockSettings();
+      } else if (g_screen == AppScreen::Details) {
+        showDetails();
+      } else if (g_screen == AppScreen::Disclaimer) {
+        showDisclaimer();
+      } else if (g_screen == AppScreen::Weather) {
+        showWeather();
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-        } else if (g_screen == AppScreen::SkyEvent) {
-          ui::sky::detailDraw();
+      } else if (g_screen == AppScreen::SkyEvent) {
+        ui::sky::detailDraw();
 #endif
-        } else {
-          showSettings();
-        }
+      } else {
+        showSettings();
       }
     }
   } else {
@@ -2529,6 +2607,7 @@ void loop() {
       // Came up on its own (auto-reconnect) after a boot without Wi-Fi.
       startOnlineServices();
     }
+    tickSettingsWebKeepAlive(millis());
     tickLinkStatus();
     if (g_screen == AppScreen::Radar) {
       if (!g_radar_visible) {
