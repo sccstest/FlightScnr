@@ -211,11 +211,6 @@ void Arduino_P4Dsi::tftInit() {
   if (_rst != GFX_NOT_DEFINED) {
     pinMode(_rst, OUTPUT);
     digitalWrite(_rst, HIGH);
-    delay(5);
-    digitalWrite(_rst, LOW);
-    delay(10);
-    digitalWrite(_rst, HIGH);
-    delay(120);
   }
 
   esp_ldo_channel_handle_t ldo = nullptr;
@@ -278,6 +273,30 @@ void Arduino_P4Dsi::tftInit() {
   }
   dpi_panel_ = panel;
 
+  // Hardware reset once the DSI bus and DPI panel exist, the same order as Waveshare's
+  // BSP (esp_lcd_new_panel_jd9365 -> esp_lcd_panel_reset -> init), so the panel
+  // leaves reset with the lanes already idle in LP-11.
+  if (_rst != GFX_NOT_DEFINED) {
+    digitalWrite(_rst, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    digitalWrite(_rst, LOW);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    digitalWrite(_rst, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(120));
+  }
+
+  // Same preamble as Waveshare's esp_lcd_jd9365 driver (the one the factory firmware
+  // uses): user page, MADCTL, and COLMOD = 16 bpp to match the RGB565 DPI stream.
+  // Without COLMOD the panel reports 24 bpp (0x0C reads 0x70).
+  {
+    static const uint8_t kPageUser[] = {0x00};
+    static const uint8_t kMadctlRgb[] = {0x00};
+    static const uint8_t kColmod565[] = {0x55};
+    sendDcs(0xE0, kPageUser, 1);
+    sendDcs(0x36, kMadctlRgb, 1);
+    sendDcs(0x3A, kColmod565, 1);
+  }
+
   for (size_t i = 0; i < cfg_.init_cmds_len; ++i) {
     const P4DsiInitCmd& c = cfg_.init_cmds[i];
     sendDcs(c.cmd, c.data, c.data_bytes);
@@ -286,20 +305,36 @@ void Arduino_P4Dsi::tftInit() {
     }
   }
 
+  // ALL DCS READS GO HERE, before esp_lcd_panel_init() starts the video stream.
+  // In IDF 5.5 every read (mipi_dsi_hal_host_gen_read_short_packet) forces the DSI
+  // host into command mode ("make sure command mode is on") and nothing switches it
+  // back to video. This driver used to read the panel ID after panel init, which
+  // stopped video for good: a lit, blank screen on the first hardware boot, with the
+  // panel still answering every command. Writes are fine at any time.
+  //
+  // The ID confirms the init table matches the unit (Waveshare changed the 4" round
+  // panel's chipset mid-production; this is the JD9365 table from the XC repo,
+  // Nov 2026). Power mode 0x0A: bit 4 = sleep out. Its display-on bit (2) never sets
+  // on this panel, even after 0x29, so it is not reported. 0x0C is the pixel format
+  // (0x50 = 16 bpp).
+  {
+    uint8_t id[3] = {};
+    if (esp_lcd_panel_io_rx_param(io, 0x04, id, sizeof(id)) == ESP_OK) {
+      Serial.printf("DSI: panel ID %02X %02X %02X\n", id[0], id[1], id[2]);
+    } else {
+      Serial.println("DSI: panel ID read not supported");
+    }
+    uint8_t pm = 0, pf = 0;
+    esp_lcd_panel_io_rx_param(io, 0x0A, &pm, 1);
+    esp_lcd_panel_io_rx_param(io, 0x0C, &pf, 1);
+    Serial.printf("DSI: panel power=0x%02X (sleep_out=%d) pixfmt=0x%02X\n", pm,
+                  (pm >> 4) & 1, pf);
+  }
+
   err = esp_lcd_panel_init(panel);
   if (err != ESP_OK) {
     Serial.printf("DSI: panel init failed: %s\n", esp_err_to_name(err));
     return;
-  }
-
-  // Log the controller ID so we can confirm the init table matches the actual
-  // unit (Waveshare changed the 4" round panel's chipset mid-production; the
-  // table here is the JD9365 one from the XC repo, Nov 2026).
-  uint8_t id[3] = {};
-  if (esp_lcd_panel_io_rx_param(io, 0x04, id, sizeof(id)) == ESP_OK) {
-    Serial.printf("DSI: panel ID %02X %02X %02X\n", id[0], id[1], id[2]);
-  } else {
-    Serial.println("DSI: panel ID read not supported");
   }
 
   void* fb = nullptr;
@@ -310,9 +345,41 @@ void Arduino_P4Dsi::tftInit() {
   }
   fb_ = static_cast<uint16_t*>(fb);
   fb_bus_->attachFramebuffer(fb_, cfg_.width, cfg_.height);
-  Serial.printf("DSI: %ux%u up, %u lanes @ %u Mbps, DPI %u MHz\n", cfg_.width, cfg_.height,
-                cfg_.lanes, static_cast<unsigned>(cfg_.lane_mbps),
-                static_cast<unsigned>(cfg_.dpi_clock_mhz));
+#if defined(FLIGHTSCNR_DSI_PROBE)
+  // Diagnostic build only (-DFLIGHTSCNR_DSI_PROBE=1): loop a visible test forever.
+  // Phase 1 is the DSI host's own colour-bar generator (no framebuffer involved);
+  // phase 2 fills the framebuffer with solid colours.
+  // Backlight full on for the test: BL_EN (GPIO 33) high, LCD_BL_PWM (GPIO 26) low.
+  pinMode(33, OUTPUT);
+  digitalWrite(33, HIGH);
+  pinMode(26, OUTPUT);
+  digitalWrite(26, LOW);
+  for (;;) {
+    // DSI_HOST_MODE_CFG bit 0: 0 = video mode, 1 = command mode (no picture).
+    Serial.printf("DSI test: host colour bars (MODE_CFG=%lu, 0 = video)\n",
+                  static_cast<unsigned long>(
+                      *reinterpret_cast<volatile uint32_t*>(0x500A0034UL) & 1U));
+    esp_lcd_dpi_panel_set_pattern(panel, MIPI_DSI_PATTERN_BAR_VERTICAL);
+    delay(5000);
+    esp_lcd_dpi_panel_set_pattern(panel, MIPI_DSI_PATTERN_NONE);
+    static const uint16_t kFills[] = {0xF800, 0x07E0, 0x001F, 0xFFFF};
+    static const char* const kNames[] = {"red", "green", "blue", "white"};
+    for (int c = 0; c < 4; ++c) {
+      Serial.printf("DSI test: framebuffer %s\n", kNames[c]);
+      const size_t n = static_cast<size_t>(cfg_.width) * cfg_.height;
+      for (size_t i = 0; i < n; ++i) fb_[i] = kFills[c];
+      esp_cache_msync(fb_, n * sizeof(uint16_t),
+                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+      delay(3000);
+    }
+  }
+#endif
+  // DSI_HOST_MODE_CFG bit 0: 0 = video mode (picture), 1 = command mode (no picture).
+  const bool video_mode = (*reinterpret_cast<volatile uint32_t*>(0x500A0034UL) & 1U) == 0;
+  Serial.printf("DSI: %ux%u up, %u lanes @ %u Mbps, DPI %u MHz, host in %s mode\n",
+                cfg_.width, cfg_.height, cfg_.lanes, static_cast<unsigned>(cfg_.lane_mbps),
+                static_cast<unsigned>(cfg_.dpi_clock_mhz),
+                video_mode ? "video" : "COMMAND (no picture!)");
 }
 
 void Arduino_P4Dsi::writeAddrWindow(int16_t x, int16_t y, uint16_t w, uint16_t h) {
