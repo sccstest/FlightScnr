@@ -403,4 +403,10 @@ constexpr unsigned long kWifiPortalAfterDownMs = 30UL * 60UL * 1000UL;
 /** A new OTA image is marked valid (no rollback) after loop() has run this long. */
 constexpr unsigned long kOtaConfirmAfterLoopMs = 2UL * 60UL * 1000UL;
 
+/** Clock already set but SNTP silent this long (network blocks UDP 123): compare
+ *  with adsb.fi's HTTP Date, at most this often, and correct it when it is off by
+ *  more than kHttpDateMaxSkewSec. */
+constexpr unsigned long kHttpDateResyncMs = 3UL * 60UL * 60UL * 1000UL;
+constexpr long kHttpDateMaxSkewSec = 30;
+
 }  // namespace config

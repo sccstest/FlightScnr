@@ -9,6 +9,7 @@
 #include <ctime>
 
 #if !defined(FLIGHTSCNR_SIM)
+#include <esp_sntp.h>
 #include <sys/time.h>
 #endif
 
@@ -47,6 +48,17 @@ double s_resolved_lat = 0.0;
 double s_resolved_lon = 0.0;
 /** millis() when NTP was started (0 = not yet); for the HTTP Date fallback. */
 volatile unsigned long s_ntp_started_ms = 0;
+/** millis() of the last SNTP sync (0 = none yet); set from lwIP's SNTP callback. */
+volatile unsigned long s_sntp_synced_ms = 0;
+/** millis() the HTTP Date fallback last set or checked the clock (0 = never). */
+volatile unsigned long s_http_date_applied_ms = 0;
+
+#if !defined(FLIGHTSCNR_SIM)
+void onSntpSync(struct timeval* /*tv*/) {
+  const unsigned long now = millis();
+  s_sntp_synced_ms = now != 0 ? now : 1;
+}
+#endif
 /** True while the built-in preset zone is in use (no usable online lookup yet). */
 bool s_preset_fallback_active = false;
 
@@ -276,6 +288,11 @@ void bootLoad() {
 void startNtp() {
   if (s_ntp_started_ms == 0) {
     s_ntp_started_ms = millis() != 0 ? millis() : 1;
+#if !defined(FLIGHTSCNR_SIM)
+    // Only records when SNTP last synced (for the HTTP Date fallback). Stays
+    // registered across the configTime() calls below.
+    sntp_set_time_sync_notification_cb(onSntpSync);
+#endif
   }
   applyNtpConfig();
   if (s_auto_timezone && s_posix_tz[0] != '\0') {
@@ -351,12 +368,27 @@ void stepTimezoneHours(int8_t delta) {
 }
 
 void noteHttpDate(const char* http_date) {
-  if (http_date == nullptr || http_date[0] == '\0' || timeValid()) {
+  if (http_date == nullptr || http_date[0] == '\0') {
     return;
   }
   const unsigned long started = s_ntp_started_ms;
-  if (started == 0 || millis() - started < config::kHttpDateClockFallbackMs) {
+  const unsigned long now_ms = millis();
+  if (started == 0 || now_ms - started < config::kHttpDateClockFallbackMs) {
     return;  // give SNTP its chance first
+  }
+  const bool valid = timeValid();
+  if (valid) {
+    // Clock already set. Correct it only on a network that blocks NTP (UDP 123):
+    // SNTP has not synced for a while, and at most every few hours (the RTC drifts
+    // about a second a day). Cheap early returns: this runs on every ADS-B poll.
+    const unsigned long synced = s_sntp_synced_ms;
+    if (synced != 0 && now_ms - synced < config::kHttpDateResyncMs) {
+      return;
+    }
+    const unsigned long applied = s_http_date_applied_ms;
+    if (applied != 0 && now_ms - applied < config::kHttpDateResyncMs) {
+      return;
+    }
   }
   // RFC 7231 IMF-fixdate: "Thu, 20 Nov 2026 15:04:05 GMT"
   int day = 0, year = 0, hour = 0, minute = 0, sec = 0;
@@ -376,13 +408,29 @@ void noteHttpDate(const char* http_date) {
   if (epoch < static_cast<int64_t>(kMinValidEpoch)) {
     return;
   }
+  if (valid) {
+    const int64_t skew = epoch - static_cast<int64_t>(time(nullptr));
+    s_http_date_applied_ms = now_ms != 0 ? now_ms : 1;  // checked; next look in hours
+    if (skew >= -config::kHttpDateMaxSkewSec && skew <= config::kHttpDateMaxSkewSec) {
+      return;
+    }
+#if !defined(FLIGHTSCNR_SIM)
+    struct timeval tv {};
+    tv.tv_sec = static_cast<time_t>(epoch);
+    settimeofday(&tv, nullptr);
+#endif
+    Serial.printf("Clock: no SNTP sync lately; corrected %llds from HTTP Date: %s\n",
+                  static_cast<long long>(skew), http_date);
+    return;
+  }
 #if !defined(FLIGHTSCNR_SIM)
   struct timeval tv {};
   tv.tv_sec = static_cast<time_t>(epoch);
   settimeofday(&tv, nullptr);
 #endif
+  s_http_date_applied_ms = now_ms != 0 ? now_ms : 1;
   Serial.printf("Clock: SNTP not synced after %lus, set from HTTP Date: %s\n",
-                (millis() - started) / 1000UL, http_date);
+                (now_ms - started) / 1000UL, http_date);
 }
 
 bool use24Hour() { return s_use_24h; }
