@@ -96,6 +96,10 @@ UiTextStyle forecastLoStyle() {
 UiTextStyle forecastRainStyle() {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_KNOB_18)
   return displayFontScale();
+#elif defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // One step smaller on the 4C: three "Rain 100%" lines fit side by side once the
+  // outer two are slid in from the round edge (see drawForecast).
+  return displayFontScale();
 #else
   return displayFontDetail();
 #endif
@@ -174,7 +178,24 @@ void drawForecast(const services::weather::WeatherData& wx, uint16_t fg, uint16_
       const int pct = d.precip_probability > 100 ? 100 : d.precip_probability;
       char rain[16];
       snprintf(rain, sizeof(rain), "Rain %d%%", pct);
-      drawCenteredAt(rain, cx, kRainY, forecastRainStyle(), dim, bg);
+      int rain_cx = cx;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      // 4C: the outer columns' rain line sits where the round glass narrows; a wide
+      // value ("Rain 100%") would run under the bezel. Slide it in just enough.
+      {
+        displayFontApply(tft, forecastRainStyle());
+        const int half_w = tft.textWidth(rain) / 2;
+        const int dy = kRainY + displayFontHeight(tft, forecastRainStyle()) - kCenterY;
+        const int half_chord = static_cast<int>(
+            std::sqrt(static_cast<float>(kCircleRadius * kCircleRadius - dy * dy)));
+        if (rain_cx - half_w < kCenterX - half_chord) {
+          rain_cx = kCenterX - half_chord + half_w;
+        } else if (rain_cx + half_w > kCenterX + half_chord) {
+          rain_cx = kCenterX + half_chord - half_w;
+        }
+      }
+#endif
+      drawCenteredAt(rain, rain_cx, kRainY, forecastRainStyle(), dim, bg);
     }
   }
 }
