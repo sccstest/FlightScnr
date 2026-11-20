@@ -263,7 +263,41 @@ using MaskArray = MaskEntry[kMaskCacheSize];
 FS_BIG_STATIC(MaskArray, s_masks)
 #define s_masks FS_BIG_STATIC_REF(s_masks)
 uint32_t s_mask_clock = 0;
-std::vector<Span> s_build;  // scratch for one build (reserved big, so it lands in PSRAM)
+
+/** Scratch for one build, grown on demand. Allocated explicitly in PSRAM: a 3 KB
+ *  malloc is below the SPIRAM threshold and would take scarce internal RAM. */
+struct SpanBuf {
+  Span* data = nullptr;
+  size_t count = 0;
+  size_t cap = 0;
+  bool failed = false;  ///< a push found no memory: the build is incomplete
+
+  void clear() {
+    count = 0;
+    failed = false;
+  }
+  void push(const Span& s) {
+    if (count == cap && !grow()) {
+      failed = true;
+      return;
+    }
+    data[count++] = s;
+  }
+  bool grow() {
+    const size_t want = cap == 0 ? 1024 : cap * 2;
+    void* mem = heap_caps_realloc(data, want * sizeof(Span), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mem == nullptr) {
+      mem = heap_caps_realloc(data, want * sizeof(Span), MALLOC_CAP_8BIT);
+    }
+    if (mem == nullptr) {
+      return false;
+    }
+    data = static_cast<Span*>(mem);
+    cap = want;
+    return true;
+  }
+};
+SpanBuf s_build;
 
 struct SpanView {
   const Span* data;
@@ -274,7 +308,7 @@ struct SpanView {
 
 /** Build the lit runs for one (category, side, heading). Same sampling as the old
  *  per-draw loop, so the pixels are identical for the same heading. */
-void buildSpans(const uint8_t* alpha, int side, float heading_deg, std::vector<Span>* out) {
+void buildSpans(const uint8_t* alpha, int side, float heading_deg, SpanBuf* out) {
   out->clear();
   const float src_side = static_cast<float>(data::aircraft_icons::kIconSide);
   const float src_half = (src_side - 1.0f) * 0.5f;
@@ -324,8 +358,8 @@ void buildSpans(const uint8_t* alpha, int side, float heading_deg, std::vector<S
         run_start = dx;
         in_run = true;
       } else if (!lit && in_run) {
-        out->push_back(Span{static_cast<int8_t>(dy), static_cast<int8_t>(run_start),
-                            static_cast<uint8_t>(dx - run_start)});
+        out->push(Span{static_cast<int8_t>(dy), static_cast<int8_t>(run_start),
+                       static_cast<uint8_t>(dx - run_start)});
         in_run = false;
       }
     }
@@ -358,12 +392,9 @@ bool masksFor(uint8_t category, const uint8_t* alpha, int side, int heading_step
       victim = &e;
     }
   }
-  if (s_build.capacity() == 0) {
-    s_build.reserve(1024);
-  }
   buildSpans(alpha, side, static_cast<float>(heading_step * kHeadingStepDeg), &s_build);
-  const size_t n = s_build.size();
-  if (n > 0xFFFF) {
+  const size_t n = s_build.count;
+  if (s_build.failed || n > 0xFFFF) {
     return false;
   }
   if (n > victim->capacity) {
@@ -383,7 +414,7 @@ bool masksFor(uint8_t category, const uint8_t* alpha, int side, int heading_step
     victim->capacity = static_cast<uint16_t>(n);
   }
   if (n > 0) {
-    memcpy(victim->spans, s_build.data(), n * sizeof(Span));
+    memcpy(victim->spans, s_build.data, n * sizeof(Span));
   }
   victim->count = static_cast<uint16_t>(n);
   victim->used = true;
