@@ -52,7 +52,8 @@ constexpr size_t kSeenCapacity = 32;
 constexpr size_t kWatchMax = 16;
 constexpr size_t kWatchCallsignLen = 9;
 constexpr size_t kWatchBlobLen = 160;
-constexpr unsigned long kPulseCycleMs = 250;
+/** Highlighted-plane blink half-period: 500 ms, like the alert ring (was 250 ms). */
+constexpr unsigned long kPulseCycleMs = 500;
 
 bool s_mil_enabled = config::kFactoryAlertMilitary;
 bool s_emrg_enabled = config::kFactoryAlertEmergency;

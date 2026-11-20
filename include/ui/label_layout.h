@@ -108,8 +108,9 @@ struct Placement {
   bool on_right = false;  /** block sits right of the symbol (text is left-aligned) */
 };
 
-/** Most screen areas tags must stay out of (e.g. a top banner and a bottom sign). */
-constexpr size_t kMaxBlocked = 2;
+/** Most screen areas tags must stay out of: the top banner, the bottom sign, and
+ *  fixed labels and badges (rain time, link badge, mute icon). */
+constexpr size_t kMaxBlocked = 6;
 
 /** Screen the tags are placed into. */
 struct Geometry {

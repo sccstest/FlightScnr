@@ -250,12 +250,6 @@ bool sameState(const DrawState& a, const DrawState& b) {
          a.mx == b.mx && a.my == b.my;
 }
 
-Rect stateRect(const DrawState& s) {
-  Rect r = grown(s.rect, ui::sc(4));
-  if (s.marker) r = unite(r, markerRect(s.mx, s.my));
-  return r;
-}
-
 // --- Detail page -------------------------------------------------------------------
 
 constexpr int kBezelInsetPx = ui::sc(10);
@@ -433,7 +427,15 @@ EventKind s_detail_kind = EventKind::None;
 
 }  // namespace
 
+static void invalidate(const Rect& r) {
+  if (!r.empty()) {
+    ui::radarDisplayInvalidateRect(r.x, r.y, r.w, r.h);
+  }
+}
+
 void tick(bool radar_visible) {
+  // A pinch zoom's deferred NVS save: this runs every loop on any screen.
+  ui::radar::scaleTick();
   if (!radar_visible) {
     s_have_state = false;  // the next full radar draw paints whatever is current
     s_state = computeState();
@@ -441,21 +443,42 @@ void tick(bool radar_visible) {
   }
   const DrawState next = computeState();
   if (s_have_state && sameState(next, s_state)) return;
-  const Rect dirty = unite(s_have_state ? stateRect(s_state) : Rect{}, stateRect(next));
+  // Banner and ISS marker separately: one rect around both would span most of the
+  // screen (top band to the rim) and force a near-full repaint every second.
+  const Rect old_banner = s_have_state ? grown(s_state.rect, ui::sc(4)) : Rect{};
+  const Rect new_banner = grown(next.rect, ui::sc(4));
+  const bool banner_same = s_have_state && s_state.banner.kind == next.banner.kind &&
+                           s_state.banner.urgent == next.banner.urgent &&
+                           strcmp(s_state.banner.title, next.banner.title) == 0 &&
+                           strcmp(s_state.banner.detail, next.banner.detail) == 0;
+  if (!banner_same) {
+    invalidate(unite(old_banner, new_banner));
+  }
+  const bool marker_same = s_have_state && s_state.marker == next.marker &&
+                           s_state.mx == next.mx && s_state.my == next.my;
+  if (!marker_same) {
+    if (s_have_state && s_state.marker) invalidate(markerRect(s_state.mx, s_state.my));
+    if (next.marker) invalidate(markerRect(next.mx, next.my));
+  }
   s_state = next;
   s_have_state = true;
-  if (!dirty.empty()) {
-    ui::radarDisplayInvalidateRect(dirty.x, dirty.y, dirty.w, dirty.h);
+}
+
+void drawRadarMarker(PlaneGfx& g) {
+  if (s_state.marker) {
+    drawIssMarker(g, s_state.mx, s_state.my);
+  }
+}
+
+void drawRadarBanner(PlaneGfx& g) {
+  if (s_state.banner.kind != EventKind::None && !s_state.rect.empty()) {
+    drawBanner(g, s_state.banner, s_state.rect);
   }
 }
 
 void drawRadarOverlay(PlaneGfx& g) {
-  if (s_state.marker) {
-    drawIssMarker(g, s_state.mx, s_state.my);
-  }
-  if (s_state.banner.kind != EventKind::None && !s_state.rect.empty()) {
-    drawBanner(g, s_state.banner, s_state.rect);
-  }
+  drawRadarMarker(g);
+  drawRadarBanner(g);
 }
 
 bool bannerBounds(int* x, int* y, int* w, int* h) {
@@ -468,6 +491,27 @@ bool bannerBounds(int* x, int* y, int* w, int* h) {
   *w = bw + 2 * kOutline;
   *h = s_state.rect.h + 2 * kOutline;
   return true;
+}
+
+bool overlayDrawBounds(int* bx, int* by, int* bw, int* bh, int* mx, int* my, int* mw,
+                       int* mh) {
+  *bw = *bh = *mw = *mh = 0;
+  *bx = *by = *mx = *my = 0;
+  if (s_state.banner.kind != EventKind::None && !s_state.rect.empty()) {
+    const Rect r = grown(s_state.rect, kOutline + ui::sc(2));
+    *bx = r.x;
+    *by = r.y;
+    *bw = r.w;
+    *bh = r.h;
+  }
+  if (s_state.marker) {
+    const Rect r = markerRect(s_state.mx, s_state.my);
+    *mx = r.x;
+    *my = r.y;
+    *mw = r.w;
+    *mh = r.h;
+  }
+  return *bw > 0 || *mw > 0;
 }
 
 bool bannerHit(int x, int y) {

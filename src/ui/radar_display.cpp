@@ -1,6 +1,7 @@
 #include "ui/radar_display.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -37,6 +38,8 @@
 #include "hardware/gfx_log.h"
 #include "ui/ui_scale.h"
 #include "util/big_static.h"
+
+#include <esp_heap_caps.h>
 
 namespace ui {
 namespace radar {
@@ -86,13 +89,8 @@ struct IntRect {
   IntRect(int x_in, int y_in, int w_in, int h_in) : x(x_in), y(y_in), w(w_in), h(h_in) {}
 };
 
-bool s_aircraft_dirty = false;
-IntRect s_aircraft_dirty_rect{};
 bool s_content_base_valid = false;
-bool s_sweep_track_valid = false;
-IntRect s_prev_sweep_dirty{};
 float s_display_sweep_deg = 0.0f;
-float s_last_painted_sweep_deg = 0.0f;
 unsigned long s_last_sweep_paint_ms = 0;
 bool s_display_sweep_init = false;
 
@@ -239,9 +237,20 @@ void localOffsetFromCenter(float lat, float lon, float* dx_km, float* dy_km,
 /** Rotate east/north so geographic facingDeg() maps to screen-up. */
 void rotateEastNorthForFacing(float east_km, float north_km, float* out_east,
                               float* out_north) {
-  const float f = static_cast<float>(radar::facingDeg()) * 3.14159265f / 180.0f;
-  const float c = cosf(f);
-  const float s = sinf(f);
+  // Facing rarely changes: keep its sin/cos instead of recomputing them for every
+  // plane on every rebuild.
+  static int s_cached_facing = -1;
+  static float s_cos = 1.0f;
+  static float s_sin = 0.0f;
+  const int facing = static_cast<int>(radar::facingDeg());
+  if (facing != s_cached_facing) {
+    const float f = static_cast<float>(facing) * 3.14159265f / 180.0f;
+    s_cos = cosf(f);
+    s_sin = sinf(f);
+    s_cached_facing = facing;
+  }
+  const float c = s_cos;
+  const float s = s_sin;
   *out_east = east_km * c - north_km * s;
   *out_north = east_km * s + north_km * c;
 }
@@ -265,51 +274,12 @@ float innerRingMaxKm() {
                      static_cast<float>(radar::kGridOuterRadius));
 }
 
-void latLonToScreen(float lat, float lon, int* out_x, int* out_y) {
-  const float outer_km = radar::scaleActive().label_km;
-  const float px_per_km = static_cast<float>(radar::kGridOuterRadius) / outer_km;
-
-  float dx_km = 0.0f;
-  float dy_km = 0.0f;
-  float dist_km = 0.0f;
-  localOffsetFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
-  rotateEastNorthForFacing(dx_km, dy_km, &dx_km, &dy_km);
-
-  *out_x = radar::kCenterX + static_cast<int>(lroundf(dx_km * px_per_km));
-  *out_y = radar::kCenterY - static_cast<int>(lroundf(dy_km * px_per_km));
-}
-
 bool isInsideOuterRingKm(float dist_km) { return dist_km <= innerRingMaxKm(); }
 
 int distSqFromCenter(int x, int y) {
   const int dx = x - radar::kCenterX;
   const int dy = y - radar::kCenterY;
   return dx * dx + dy * dy;
-}
-
-bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
-  float dx_km = 0.0f;
-  float dy_km = 0.0f;
-  float dist_km = 0.0f;
-  localOffsetFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
-  if (dist_km < 0.01f || isInsideOuterRingKm(dist_km)) {
-    return false;
-  }
-  rotateEastNorthForFacing(dx_km, dy_km, &dx_km, &dy_km);
-
-  const int cx = radar::kCenterX;
-  const int cy = radar::kCenterY;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // The whole small icon stays on the glass (centered on the rim, half was cut off).
-  const int rim_r = radar::kCenterX - aircraft_symbol::compactHalfPx() - ui::sc(3);
-#else
-  const int rim_r = radar::kCenterX - radar::kBeyondRingScreenMarginPx;
-#endif
-  const float angle_rad = atan2f(dx_km, dy_km);
-
-  *out_x = cx + static_cast<int>(lroundf(sinf(angle_rad) * rim_r));
-  *out_y = cy - static_cast<int>(lroundf(cosf(angle_rad) * rim_r));
-  return true;
 }
 
 /** Icon color: amber airliners by default; with type colors on, military red,
@@ -330,13 +300,6 @@ uint16_t aircraftBaseColor(const services::adsb::Aircraft& ac) {
   }
 }
 
-void drawBeyondRingMarker(int x, int y, float heading_deg,
-                          const services::adsb::Aircraft* aircraft) {
-  aircraft_symbol::drawCompact(
-      *s_draw, x, y, heading_deg,
-      aircraft != nullptr ? aircraftBaseColor(*aircraft) : radar::kColorAircraft, aircraft);
-}
-
 void applyTagStyle() { displayFontApply(*s_draw, s_tag_style); }
 
 int aircraftSymbolHalfPx() {
@@ -354,7 +317,7 @@ struct TagText {
   char line2[32] = "";
 };
 
-TagText tagText(const services::adsb::Aircraft& plane) {
+TagText tagText(const services::adsb::Aircraft& plane, const char* notable_tag) {
   TagText t;
   if (!services::aircraft_type::formatMakeModel(plane.type, t.line1, sizeof(t.line1), t.line2,
                                                 sizeof(t.line2))) {
@@ -369,11 +332,9 @@ TagText tagText(const services::adsb::Aircraft& plane) {
       snprintf(t.line2, sizeof(t.line2), "ground");
     }
   }
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  if (const char* tag = services::alert::notableTag(plane)) {
-    snprintf(t.line2, sizeof(t.line2), "%s", tag);
+  if (notable_tag != nullptr) {
+    snprintf(t.line2, sizeof(t.line2), "%s", notable_tag);
   }
-#endif
   if (t.line1[0] == '\0' && t.line2[0] != '\0') {
     snprintf(t.line1, sizeof(t.line1), "%s", t.line2);
     t.line2[0] = '\0';
@@ -389,33 +350,45 @@ int tagLineHeight() {
   return tft.fontHeight();
 }
 
-int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
-  displayFontApply(tft, s_tag_style);
-  const TagText t = tagText(plane);
-  int max_w = 0;
-  if (t.line1[0] != '\0') {
-    max_w = std::max(max_w, tft.textWidth(t.line1));
-  }
-  if (t.line2[0] != '\0') {
-    max_w = std::max(max_w, tft.textWidth(t.line2));
-  }
-  return max_w;
-}
+// --- Per-plane view cache --------------------------------------------------------
+// Everything a rebuild needs per plane, worked out once per ADS-B poll (and after a
+// settings or alert change) instead of on every rebuild: screen position, ring test,
+// highlight, color, tag text, its widths and its resolved box. Before this, each
+// rebuild parsed the type name 4x per plane, ran the alert match 3-4x and the
+// double-precision flat-earth offset 8-10x.
 
-/** Width of the one-line (crowded) tag: the maker only. */
-int measureTagFirstLineWidth(const services::adsb::Aircraft& plane) {
-  const TagText t = tagText(plane);
-  if (t.line1[0] == '\0') {
-    return 0;
-  }
-  displayFontApply(tft, s_tag_style);
-  return tft.textWidth(t.line1);
-}
+struct PlaneView {
+  uint16_t index = 0;        ///< into services::adsb::aircraftList()
+  bool in_range = false;     ///< full symbol inside the outer ring
+  bool beyond = false;       ///< small icon on the rim
+  bool highlighted = false;  ///< blinks (alert classes, watch list, notable...)
+  bool notable = false;
+  bool emergency = false;
+  bool tag_on_right = false;
+  uint8_t tag_tier = label_layout::kTierHidden;
+  uint8_t lines = 0;
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t full_w = 0;
+  int16_t short_w = 0;
+  int32_t dist_sq = 0;
+  float disp_track = 0.0f;
+  uint16_t base_color = 0;
+  label_layout::Box tag_box{};  ///< empty when no tag is drawn
+  TagText text;
+};
 
-int tagLineCount(const services::adsb::Aircraft& plane) {
-  const TagText t = tagText(plane);
-  return (t.line1[0] != '\0' ? 1 : 0) + (t.line2[0] != '\0' ? 1 : 0);
-}
+using ViewArray = PlaneView[services::adsb::kMaxAircraft];
+FS_BIG_STATIC(ViewArray, s_views)
+#define s_views FS_BIG_STATIC_REF(s_views)
+size_t s_view_count = 0;
+/** Draw order, farthest from center first (closest lands on top). */
+uint8_t s_dot_order[services::adsb::kMaxAircraft];
+size_t s_dot_order_count = 0;
+uint8_t s_sym_order[services::adsb::kMaxAircraft];
+size_t s_sym_order_count = 0;
+bool s_views_valid = false;
+uint32_t s_views_sig = 0;
 
 /** Luma at or above this is a light map; tag ink switches to dark. */
 constexpr uint8_t kTagLightBackgroundLuma = 140;
@@ -449,7 +422,11 @@ TagInk tagInkForBackground(bool light_background) {
 
 bool tagSitsOnLightBackground(const label_layout::Box& box) {
   uint8_t luma = 0;
-  if (s_draw->averageLuma(box.x, box.y, box.w, box.h, &luma)) {
+  // Judge the map under the tag (background sprite), not what is already drawn
+  // there: a region rebuild still has the old frame around it, and both kinds of
+  // rebuild must pick the same ink.
+  const PlaneGfx& src = s_bg_ready ? s_bg.gfx() : *s_draw;
+  if (src.averageLuma(box.x, box.y, box.w, box.h, &luma)) {
     return luma >= kTagLightBackgroundLuma;
   }
   const auto bm_style = services::basemap::storedStyle();
@@ -470,35 +447,33 @@ bool tagSitsOnLightBackground(const label_layout::Box& box) {
   return ink.ascend;
 }
 
-void drawAircraftTagPlaced(const label_layout::Placement& placement,
-                           const services::adsb::Aircraft& plane) {
+void drawTagForView(const PlaneView& v) {
   applyTagStyle();
 
   const int line_h = s_draw->fontHeight();
   // Text stays flush against the edge facing the symbol, so the ragged edge is
   // the one pointing away from the traffic it belongs to.
-  const int anchor_x = placement.on_right ? placement.box.x
-                                          : placement.box.x + placement.box.w;
-  s_draw->setTextDatum(placement.on_right ? TextDatum::TopLeft : TextDatum::TopRight);
-  int ly = placement.box.y;
+  const int anchor_x = v.tag_on_right ? v.tag_box.x : v.tag_box.x + v.tag_box.w;
+  s_draw->setTextDatum(v.tag_on_right ? TextDatum::TopLeft : TextDatum::TopRight);
+  int ly = v.tag_box.y;
   // Ink follows the map under the tag. A single color (no background) keeps
   // the glyph transparent so the basemap shows through instead of a solid chip.
-  const bool light_bg = tagSitsOnLightBackground(placement.box);
+  const bool light_bg = tagSitsOnLightBackground(v.tag_box);
   const TagInk ink = tagInkForBackground(light_bg);
 
-  const TagText text = tagText(plane);
+  const TagText& text = v.text;
   if (text.line1[0] != '\0') {
     s_draw->setTextColor(ink.label);
     s_draw->drawString(text.line1, anchor_x, ly);
   }
-  if (placement.tier != label_layout::kTierFull || text.line2[0] == '\0') {
+  if (v.tag_tier != label_layout::kTierFull || text.line2[0] == '\0') {
     return;
   }
   ly += line_h;
 
   uint16_t type_ink = ink.type;
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  if (services::alert::notableTag(plane) != nullptr) {
+  if (v.notable) {
     // Notable name in an ink no other tag line uses: white on dark maps, crimson on
     // light maps.
     type_ink = light_bg ? tft.color565(190, 0, 60) : tft.color565(255, 255, 255);
@@ -546,6 +521,22 @@ void fillAircraftLabelKeys(const services::adsb::Aircraft* planes, size_t n) {
   label_layout::uniquifyKeys(s_aircraft_label_keys, sort_lat, sort_lon, n);
 }
 
+bool linkBadgeBox(IntRect* out);
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+bool rainLabelRect(IntRect* out);
+bool muteIconShown();
+IntRect muteIconRect();
+#endif
+
+void addBlocked(label_layout::Geometry* geom, int x, int y, int w, int h) {
+  if (geom->blocked_count >= label_layout::kMaxBlocked || w <= 0 || h <= 0) {
+    return;
+  }
+  geom->blocked[geom->blocked_count++] =
+      label_layout::Box{static_cast<int16_t>(x), static_cast<int16_t>(y),
+                        static_cast<int16_t>(w), static_cast<int16_t>(h)};
+}
+
 label_layout::Geometry labelGeometry() {
   label_layout::Geometry geom;
   geom.center_x = radar::kCenterX;
@@ -553,34 +544,32 @@ label_layout::Geometry labelGeometry() {
   geom.visible_radius = radar::kAircraftLabelVisibleRadiusPx;
   geom.symbol_half = static_cast<int16_t>(aircraftSymbolHalfPx());
   geom.gap = radar::kAircraftLabelGapPx;
+  // Fixed overlays and labels no tag may cover: tags move off them, shrink or hide
+  // rather than print over them or show through them.
+  IntRect r;
+  if (linkBadgeBox(&r)) {
+    addBlocked(&geom, r.x, r.y, r.w, r.h);
+  }
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // The sky-events banner (top) and the overhead sign (bottom) draw over the tags:
-  // keep tags out from under them rather than show through.
   int bx = 0, by = 0, bw = 0, bh = 0;
   if (ui::sky::bannerBounds(&bx, &by, &bw, &bh)) {
-    geom.blocked[geom.blocked_count++] =
-        label_layout::Box{static_cast<int16_t>(bx), static_cast<int16_t>(by),
-                          static_cast<int16_t>(bw), static_cast<int16_t>(bh)};
+    addBlocked(&geom, bx, by, bw, bh);
   }
   if (overheadSignBounds(&bx, &by, &bw, &bh)) {
-    geom.blocked[geom.blocked_count++] =
-        label_layout::Box{static_cast<int16_t>(bx), static_cast<int16_t>(by),
-                          static_cast<int16_t>(bw), static_cast<int16_t>(bh)};
+    addBlocked(&geom, bx, by, bw, bh);
+  }
+  if (rainLabelRect(&r)) {
+    addBlocked(&geom, r.x, r.y, r.w, r.h);
+  }
+  if (muteIconShown()) {
+    r = muteIconRect();
+    addBlocked(&geom, r.x, r.y, r.w, r.h);
   }
 #endif
   return geom;
 }
 
-/**
- * Place every visible tag as a set.
- *
- * Cheap when nothing moved (the resolver short-circuits on an unchanged
- * signature), so both the drawing path and the dirty-rect path call it and see
- * identical boxes — the tag has to be erased from where it was actually drawn.
- */
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-size_t visibleAircraftCount();
-
 // Busy sky: smaller tag text so more tags fit before the layout starts hiding them.
 // Level 0 = normal, 1 = smaller, 2 = smallest. Hysteresis keeps a count hovering
 // at a threshold from flipping the size every poll.
@@ -590,7 +579,7 @@ UiTextStyle s_tag_styles[3];
 bool s_tag_styles_ready = false;
 uint8_t s_tag_level = 0;
 
-void updateTagDensity() {
+void updateTagDensity(size_t n) {
   if (!s_tag_styles_ready) {
     s_tag_styles[0] = displayFontTagLevel(0);  // 14 pt
     s_tag_styles[1] = displayFontTagLevel(1);  // 12 pt
@@ -600,7 +589,6 @@ void updateTagDensity() {
                   displayFontHeight(tft, s_tag_styles[0]), displayFontHeight(tft, s_tag_styles[1]),
                   displayFontHeight(tft, s_tag_styles[2]));
   }
-  const size_t n = visibleAircraftCount();
   uint8_t level = s_tag_level;
   while (level < 2 && n > kTagDenserAbove[level]) {
     ++level;
@@ -620,101 +608,203 @@ void updateTagDensity() {
 }
 #endif
 
-void resolveAircraftLabels() {
-  initLabelMetrics();
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  updateTagDensity();
-#endif
-
-  const label_layout::Geometry geom = labelGeometry();
-  if (ui::displayPrefsHideBlipDetails()) {
-    label_layout::resolve(nullptr, 0, geom);
-    return;
-  }
-
+/** Cheap fingerprint of everything the views are built from. A mismatch means the
+ *  aircraft list or a setting changed without a full rebuild noticing. */
+uint32_t viewsSignature() {
+  uint32_t h = 2166136261u;
+  auto mix = [&h](const void* p, size_t len) {
+    const uint8_t* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < len; ++i) {
+      h ^= b[i];
+      h *= 16777619u;
+    }
+  };
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
-  fillAircraftLabelKeys(planes, n);
-  const int line_h = tagLineHeight();
+  mix(&n, sizeof(n));
+  for (size_t i = 0; i < n && planes != nullptr; ++i) {
+    const services::adsb::Aircraft& a = planes[i];
+    mix(&a.lat, sizeof(a.lat));
+    mix(&a.lon, sizeof(a.lon));
+    mix(&a.track_deg, sizeof(a.track_deg));
+    mix(a.hex, sizeof(a.hex));
+    mix(a.type, sizeof(a.type));
+    mix(a.alt, sizeof(a.alt));
+    mix(a.callsign, sizeof(a.callsign));
+    mix(a.squawk, sizeof(a.squawk));
+    mix(a.category, sizeof(a.category));
+    mix(&a.db_flags, sizeof(a.db_flags));
+  }
+  const uint16_t facing = radar::facingDeg();
+  mix(&facing, sizeof(facing));
+  const float label_km = radar::scaleActive().label_km;
+  mix(&label_km, sizeof(label_km));
+  const double clat = services::map_center::latitude();
+  const double clon = services::map_center::longitude();
+  mix(&clat, sizeof(clat));
+  mix(&clon, sizeof(clon));
+  const uint8_t flags = (ui::displayPrefsHideBlipDetails() ? 1 : 0) |
+                        (services::alert::typeColorsEnabled() ? 2 : 0);
+  mix(&flags, sizeof(flags));
+  return h;
+}
 
-  // Static: drawAircraft() already holds two 64-entry arrays on the display
-  // task's stack when this runs.
-  static label_layout::Target targets[services::adsb::kMaxAircraft];
-  size_t target_count = 0;
+void sortOrderFarFirst(uint8_t* order, size_t count) {
+  for (size_t i = 1; i < count; ++i) {
+    const uint8_t key = order[i];
+    const int32_t key_d = s_views[key].dist_sq;
+    size_t j = i;
+    while (j > 0 && s_views[order[j - 1]].dist_sq < key_d) {
+      order[j] = order[j - 1];
+      --j;
+    }
+    order[j] = key;
+  }
+}
 
-  for (size_t i = 0; i < n && target_count < services::adsb::kMaxAircraft; ++i) {
-    if (services::alert::hiddenOnRadar(planes[i])) {
+/**
+ * Rebuild the per-plane views and place every visible tag as a set. Runs once per
+ * ADS-B poll and on full rebuilds; region rebuilds (alert pulse, banner, toast)
+ * reuse the result so their pixels match the rest of the frame exactly.
+ */
+void refreshPlaneViews() {
+  initLabelMetrics();
+  const size_t n = std::min(services::adsb::aircraftCount(), services::adsb::kMaxAircraft);
+  const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+
+  const float outer_km = radar::scaleActive().label_km;
+  const float px_per_km = static_cast<float>(radar::kGridOuterRadius) / outer_km;
+  const float inner_max_km = innerRingMaxKm();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const int rim_r = radar::kCenterX - aircraft_symbol::compactHalfPx() - ui::sc(3);
+#else
+  const int rim_r = radar::kCenterX - radar::kBeyondRingScreenMarginPx;
+#endif
+
+  s_view_count = 0;
+  s_dot_order_count = 0;
+  s_sym_order_count = 0;
+  size_t visible = 0;
+  for (size_t i = 0; i < n && planes != nullptr; ++i) {
+    const services::adsb::Aircraft& p = planes[i];
+    if (services::alert::hiddenOnRadar(p)) {
       continue;
     }
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
-    localOffsetFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
-    if (!isInsideOuterRingKm(dist_km)) {
-      continue;  // beyond-ring rim blips carry no tag
-    }
-
-    const int block_w = measureTagBlockWidth(planes[i]);
-    if (block_w <= 0) {
+    localOffsetFromCenter(p.lat, p.lon, &dx_km, &dy_km, &dist_km);
+    const bool inside = dist_km <= inner_max_km;
+    if (!inside && dist_km < 0.01f) {
       continue;
     }
+    float ex = 0.0f;
+    float ny = 0.0f;
+    rotateEastNorthForFacing(dx_km, dy_km, &ex, &ny);
 
-    int x = 0;
-    int y = 0;
-    latLonToScreen(planes[i].lat, planes[i].lon, &x, &y);
-
-    label_layout::Target& t = targets[target_count++];
-    t.key = s_aircraft_label_keys[i];
-    t.x = static_cast<int16_t>(x);
-    t.y = static_cast<int16_t>(y);
-    t.full_w = static_cast<int16_t>(block_w);
-    t.full_h = static_cast<int16_t>(line_h * tagLineCount(planes[i]));
-    t.short_w = static_cast<int16_t>(measureTagFirstLineWidth(planes[i]));
-    t.short_h = t.short_w > 0 ? static_cast<int16_t>(line_h) : 0;
-    // Closest to center places first, so nearby traffic keeps the good slots.
-    t.priority = distSqFromCenter(x, y);
-  }
-
-  label_layout::resolve(targets, target_count, geom);
-}
-
-struct AircraftDrawItem {
-  size_t index = 0;
-  int x = 0;
-  int y = 0;
-  int dist_sq = 0;
-};
-
-struct BeyondDotDrawItem {
-  size_t index = 0;
-  int x = 0;
-  int y = 0;
-  int dist_sq = 0;
-};
-
-void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
-  for (size_t i = 1; i < count; ++i) {
-    const AircraftDrawItem key = items[i];
-    size_t j = i;
-    while (j > 0 && items[j - 1].dist_sq < key.dist_sq) {
-      items[j] = items[j - 1];
-      --j;
+    PlaneView& v = s_views[s_view_count];
+    v = PlaneView{};
+    v.index = static_cast<uint16_t>(i);
+    v.in_range = inside;
+    v.beyond = !inside;
+    if (inside) {
+      v.x = static_cast<int16_t>(radar::kCenterX + static_cast<int>(lroundf(ex * px_per_km)));
+      v.y = static_cast<int16_t>(radar::kCenterY - static_cast<int>(lroundf(ny * px_per_km)));
+      ++visible;
+    } else {
+      // The whole small icon stays on the glass, on the rim along its bearing.
+      const float angle_rad = atan2f(ex, ny);
+      v.x = static_cast<int16_t>(radar::kCenterX +
+                                 static_cast<int>(lroundf(sinf(angle_rad) * rim_r)));
+      v.y = static_cast<int16_t>(radar::kCenterY -
+                                 static_cast<int>(lroundf(cosf(angle_rad) * rim_r)));
     }
-    items[j] = key;
+    v.dist_sq = distSqFromCenter(v.x, v.y);
+    v.disp_track = displayTrackDeg(p.track_deg);
+    v.base_color = aircraftBaseColor(p);
+    v.emergency = p.isEmergencySquawk();
+    v.highlighted = inside && services::alert::isHighlighted(p);
+    const char* notable_tag = nullptr;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (inside) {
+      notable_tag = services::alert::notableTag(p);
+    }
+#endif
+    v.notable = notable_tag != nullptr;
+    if (inside) {
+      v.text = tagText(p, notable_tag);
+      s_sym_order[s_sym_order_count++] = static_cast<uint8_t>(s_view_count);
+    } else {
+      s_dot_order[s_dot_order_count++] = static_cast<uint8_t>(s_view_count);
+    }
+    ++s_view_count;
   }
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // May change the tag font (and invalidate the layer) before anything is measured.
+  updateTagDensity(visible);
+#endif
+
+  // Measure every tag once, against the panel (see tagLineHeight()).
+  const int line_h = tagLineHeight();
+  for (size_t s = 0; s < s_sym_order_count; ++s) {
+    PlaneView& v = s_views[s_sym_order[s]];
+    const int w1 = v.text.line1[0] != '\0' ? tft.textWidth(v.text.line1) : 0;
+    const int w2 = v.text.line2[0] != '\0' ? tft.textWidth(v.text.line2) : 0;
+    v.full_w = static_cast<int16_t>(std::max(w1, w2));
+    v.short_w = static_cast<int16_t>(w1);
+    v.lines = static_cast<uint8_t>((w1 > 0 ? 1 : 0) + (w2 > 0 ? 1 : 0));
+  }
+
+  const label_layout::Geometry geom = labelGeometry();
+  if (ui::displayPrefsHideBlipDetails()) {
+    label_layout::resolve(nullptr, 0, geom);
+  } else {
+    fillAircraftLabelKeys(planes, n);
+    // Static: keeps 64 targets off the loop task's stack.
+    static label_layout::Target targets[services::adsb::kMaxAircraft];
+    size_t target_count = 0;
+    for (size_t s = 0; s < s_sym_order_count; ++s) {
+      const PlaneView& v = s_views[s_sym_order[s]];
+      if (v.full_w <= 0) {
+        continue;
+      }
+      label_layout::Target& t = targets[target_count++];
+      t.key = s_aircraft_label_keys[v.index];
+      t.x = v.x;
+      t.y = v.y;
+      t.full_w = v.full_w;
+      t.full_h = static_cast<int16_t>(line_h * v.lines);
+      t.short_w = v.short_w;
+      t.short_h = v.short_w > 0 ? static_cast<int16_t>(line_h) : 0;
+      // Closest to center places first, so nearby traffic keeps the good slots.
+      t.priority = v.dist_sq;
+    }
+    label_layout::resolve(targets, target_count, geom);
+    for (size_t s = 0; s < s_sym_order_count; ++s) {
+      PlaneView& v = s_views[s_sym_order[s]];
+      if (v.full_w <= 0) {
+        continue;
+      }
+      const label_layout::Placement* placement = label_layout::find(s_aircraft_label_keys[v.index]);
+      if (placement == nullptr || placement->tier == label_layout::kTierHidden) {
+        continue;
+      }
+      v.tag_box = placement->box;
+      v.tag_tier = placement->tier;
+      v.tag_on_right = placement->on_right;
+    }
+  }
+
+  sortOrderFarFirst(s_dot_order, s_dot_order_count);
+  sortOrderFarFirst(s_sym_order, s_sym_order_count);
+  s_views_sig = viewsSignature();
+  s_views_valid = true;
 }
 
-void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
-  for (size_t i = 1; i < count; ++i) {
-    const BeyondDotDrawItem key = items[i];
-    size_t j = i;
-    while (j > 0 && items[j - 1].dist_sq < key.dist_sq) {
-      items[j] = items[j - 1];
-      --j;
-    }
-    items[j] = key;
-  }
-}
+/** Views for a region rebuild: false when they no longer match the aircraft list or
+ *  settings (caller then does a full rebuild, which refreshes them). */
+bool planeViewsCurrent() { return s_views_valid && viewsSignature() == s_views_sig; }
 
 bool isAircraftInRange(const services::adsb::Aircraft& ac) {
   float dx_km = 0.0f;
@@ -764,12 +854,6 @@ RadarLinkStatus s_link_status = RadarLinkStatus::Ok;
 /** Vertical center of the badge: well inside the outer ring, above the "S". */
 int linkBadgeCenterY() { return radar::kCenterY + (radar::kGridOuterRadius * 58) / 100; }
 
-/** Strip the badge can occupy (full width, so either message fits). */
-IntRect linkBadgeStrip() {
-  const int h = ui::sc(56);
-  return IntRect{0, linkBadgeCenterY() - h / 2, radar::kSize, h};
-}
-
 const char* linkBadgeText(RadarLinkStatus status) {
   switch (status) {
     case RadarLinkStatus::NoWifi:
@@ -779,6 +863,22 @@ const char* linkBadgeText(RadarLinkStatus status) {
     default:
       return nullptr;
   }
+}
+
+/** The pill including its outline, while a badge is shown. */
+bool linkBadgeBox(IntRect* out) {
+  const char* text = linkBadgeText(s_link_status);
+  if (text == nullptr) {
+    return false;
+  }
+  const UiTextStyle style = displayFontDetail();
+  displayFontApply(tft, style);
+  const int h = displayFontHeight(tft, style) + ui::sc(8);
+  const int w = tft.textWidth(text) + 2 * ui::sc(4) + ui::sc(7) + h;
+  const int o = ui::sc(2) + 1;
+  *out = IntRect{radar::kCenterX - w / 2 - o, linkBadgeCenterY() - h / 2 - o, w + 2 * o,
+                 h + 2 * o};
+  return true;
 }
 
 void drawLinkBadge() {
@@ -850,6 +950,8 @@ IntRect muteIconRect() {
   const int r = muteIconRadius() + ui::sc(2);
   return IntRect{muteIconCenterX() - r, radar::kCenterY - r, 2 * r + 1, 2 * r + 1};
 }
+
+bool muteIconShown() { return !hardware::buzzerEnabled(); }
 
 IntRect soundToastRect() {
   const int w = ui::sc(150);
@@ -952,125 +1054,513 @@ void drawSoundToast() {
   s_draw->drawString(text, x0 + glyph * 2 + gap, cy);
 }
 
-void drawSoundOverlay() {
-  drawMuteIcon();
-  s_mute_icon_drawn = !hardware::buzzerEnabled();
-  drawSoundToast();
-  s_sound_toast_drawn = s_sound_toast_until_ms != 0;
-}
 #endif  // FLIGHTSCNR_BOARD_WAVESHARE_P4_4C
 
-void drawAircraft() {
-  initLabelMetrics();
-  resolveAircraftLabels();
+// --- Rect helpers ------------------------------------------------------------------
 
-  const size_t n = services::adsb::aircraftCount();
+bool rectEmpty(const IntRect& r) { return r.w <= 0 || r.h <= 0; }
+
+IntRect clampRectToScreen(IntRect r) {
+  if (r.x < 0) {
+    r.w += r.x;
+    r.x = 0;
+  }
+  if (r.y < 0) {
+    r.h += r.y;
+    r.y = 0;
+  }
+  if (r.x + r.w > radar::kSize) {
+    r.w = radar::kSize - r.x;
+  }
+  if (r.y + r.h > radar::kSize) {
+    r.h = radar::kSize - r.y;
+  }
+  return r;
+}
+
+IntRect unionRect(const IntRect& a, const IntRect& b) {
+  if (rectEmpty(a)) {
+    return b;
+  }
+  if (rectEmpty(b)) {
+    return a;
+  }
+  const int x0 = std::min(a.x, b.x);
+  const int y0 = std::min(a.y, b.y);
+  const int x1 = std::max(a.x + a.w, b.x + b.w);
+  const int y1 = std::max(a.y + a.h, b.y + b.h);
+  return IntRect{x0, y0, x1 - x0, y1 - y0};
+}
+
+bool rectsOverlap(const IntRect& a, const IntRect& b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+bool rectContains(const IntRect& outer, const IntRect& inner) {
+  return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w &&
+         inner.y + inner.h <= outer.y + outer.h;
+}
+
+IntRect grownRect(const IntRect& r, int by) {
+  return IntRect{r.x - by, r.y - by, r.w + 2 * by, r.h + 2 * by};
+}
+
+int rectArea(const IntRect& r) { return rectEmpty(r) ? 0 : r.w * r.h; }
+
+// --- Dirty regions -------------------------------------------------------------------
+// A list of screen rects to rebuild and blit, so an alert pulse on two planes at
+// opposite edges costs two small patches instead of one rect spanning the screen.
+
+constexpr int kMaxRegionRects = 64;
+
+struct RegionList {
+  IntRect rects[kMaxRegionRects];
+  int count = 0;
+  bool full = false;  ///< the whole screen
+
+  bool empty() const { return !full && count == 0; }
+  void clear() {
+    count = 0;
+    full = false;
+  }
+  int area() const {
+    int a = 0;
+    for (int i = 0; i < count; ++i) {
+      a += rectArea(rects[i]);
+    }
+    return a;
+  }
+};
+
+/** Merge `r` into the list. Overlapping rects fuse when their union wastes little. */
+void regionAdd(RegionList* list, IntRect r) {
+  r = clampRectToScreen(r);
+  if (rectEmpty(r) || list->full) {
+    return;
+  }
+  bool merged = true;
+  while (merged) {
+    merged = false;
+    for (int i = 0; i < list->count; ++i) {
+      const IntRect& o = list->rects[i];
+      if (rectContains(o, r)) {
+        return;
+      }
+      if (!rectsOverlap(grownRect(o, ui::sc(4)), r)) {
+        continue;
+      }
+      const IntRect u = unionRect(o, r);
+      // Pixels the union would add beyond the two pieces. Judged against the smaller
+      // piece so a growing rect cannot swallow a curved band piece by piece.
+      const int ix0 = std::max(o.x, r.x);
+      const int iy0 = std::max(o.y, r.y);
+      const int ix1 = std::min(o.x + o.w, r.x + r.w);
+      const int iy1 = std::min(o.y + o.h, r.y + r.h);
+      const int overlap = (ix1 > ix0 && iy1 > iy0) ? (ix1 - ix0) * (iy1 - iy0) : 0;
+      const int waste = rectArea(u) - rectArea(o) - rectArea(r) + overlap;
+      if (waste * 4 > std::min(rectArea(o), rectArea(r))) {
+        continue;
+      }
+      r = u;
+      list->rects[i] = list->rects[--list->count];
+      merged = true;
+      break;
+    }
+  }
+  if (list->count < kMaxRegionRects) {
+    list->rects[list->count++] = r;
+    return;
+  }
+  // Full: grow the rect that grows least.
+  int best = 0;
+  int best_growth = INT_MAX;
+  for (int i = 0; i < list->count; ++i) {
+    const int growth = rectArea(unionRect(list->rects[i], r)) - rectArea(list->rects[i]);
+    if (growth < best_growth) {
+      best_growth = growth;
+      best = i;
+    }
+  }
+  list->rects[best] = unionRect(list->rects[best], r);
+}
+
+bool regionTouches(const RegionList& list, const IntRect& r) {
+  if (list.full) {
+    return true;
+  }
+  for (int i = 0; i < list.count; ++i) {
+    if (rectsOverlap(list.rects[i], r)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Pending repaint, consumed by the next radar frame (~1 KB: kept out of internal RAM). */
+FS_BIG_STATIC(RegionList, s_dirty)
+#define s_dirty FS_BIG_STATIC_REF(s_dirty)
+
+// --- Region rebuild: clip by save / restore ---------------------------------------
+// Every item is drawn whole, then the pixels it touched outside the region are put
+// back as they were. That clips all writers alike (canvas primitives, AA text that
+// reads the buffer, the sign's in-place darkening, direct buffer writes) without a
+// clip rect in the drawing layer, and nothing outside the region is blended twice.
+
+uint16_t* s_save_buf = nullptr;
+size_t s_save_cap = 0;
+
+bool ensureSaveBuf(size_t pixels) {
+  if (s_save_buf != nullptr && s_save_cap >= pixels) {
+    return true;
+  }
+  if (s_save_buf != nullptr) {
+    heap_caps_free(s_save_buf);
+    s_save_buf = nullptr;
+    s_save_cap = 0;
+  }
+  // Round up so a slightly bigger item does not reallocate.
+  const size_t want = std::max<size_t>(pixels, 64 * 1024);
+  s_save_buf = static_cast<uint16_t*>(
+      heap_caps_malloc(want * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (s_save_buf == nullptr) {
+    return false;
+  }
+  s_save_cap = want;
+  return true;
+}
+
+/** Non-null while a region rebuild draws: items outside it are skipped or clipped. */
+const RegionList* s_paint_region = nullptr;
+bool s_paint_failed = false;
+
+bool saveContentRect(const IntRect& b) {
+  if (!ensureSaveBuf(static_cast<size_t>(b.w) * static_cast<size_t>(b.h))) {
+    return false;
+  }
+  const uint16_t* content = s_content.buffer();
+  const int stride = s_content.width();
+  for (int row = 0; row < b.h; ++row) {
+    memcpy(s_save_buf + static_cast<size_t>(row) * b.w,
+           content + static_cast<size_t>(b.y + row) * stride + b.x,
+           static_cast<size_t>(b.w) * sizeof(uint16_t));
+  }
+  return true;
+}
+
+/** Put back every pixel of `b` that lies outside the region. */
+void restoreContentOutside(const IntRect& b, const RegionList& region) {
+  uint16_t* content = s_content.bufferMut();
+  const int stride = s_content.width();
+  int16_t spans[kMaxRegionRects][2];
+  for (int row = 0; row < b.h; ++row) {
+    const int y = b.y + row;
+    // Region coverage on this row, clipped to b, sorted and merged.
+    int n = 0;
+    for (int i = 0; i < region.count; ++i) {
+      const IntRect& r = region.rects[i];
+      if (y < r.y || y >= r.y + r.h) {
+        continue;
+      }
+      const int x0 = std::max(r.x, b.x);
+      const int x1 = std::min(r.x + r.w, b.x + b.w);
+      if (x1 <= x0) {
+        continue;
+      }
+      int k = n++;
+      while (k > 0 && spans[k - 1][0] > x0) {
+        spans[k][0] = spans[k - 1][0];
+        spans[k][1] = spans[k - 1][1];
+        --k;
+      }
+      spans[k][0] = static_cast<int16_t>(x0);
+      spans[k][1] = static_cast<int16_t>(x1);
+    }
+    uint16_t* dst = content + static_cast<size_t>(y) * stride;
+    const uint16_t* src = s_save_buf + static_cast<size_t>(row) * b.w;
+    auto put_back = [&](int from, int to) {
+      if (to > from) {
+        memcpy(dst + from, src + (from - b.x), static_cast<size_t>(to - from) * sizeof(uint16_t));
+      }
+    };
+    int x = b.x;
+    for (int i = 0; i < n; ++i) {
+      put_back(x, spans[i][0]);
+      x = std::max<int>(x, spans[i][1]);
+    }
+    put_back(x, b.x + b.w);
+  }
+}
+
+/** Draw one item. Full rebuild: just draw. Region rebuild: skip it when it misses the
+ *  region; otherwise draw it and undo whatever it painted outside the region. */
+template <typename DrawFn>
+void paintItem(const IntRect& bounds, DrawFn&& draw) {
+  if (s_paint_region == nullptr) {
+    draw();
+    return;
+  }
+  const IntRect b = clampRectToScreen(bounds);
+  if (rectEmpty(b) || !regionTouches(*s_paint_region, b)) {
+    return;
+  }
+  for (int i = 0; i < s_paint_region->count; ++i) {
+    if (rectContains(s_paint_region->rects[i], b)) {
+      draw();  // nothing of it lands outside
+      return;
+    }
+  }
+  if (!saveContentRect(b)) {
+    s_paint_failed = true;
+    return;
+  }
+  draw();
+  restoreContentOutside(b, *s_paint_region);
+}
+
+// --- Item bounds (conservative: every pixel the item can touch) --------------------
+
+IntRect symbolBounds(const PlaneView& v) {
+  // The full icon is sc(28) square and rotates, so its corners reach ~sc(20);
+  // half + pad covers that.
+  const int half = aircraftSymbolHalfPx() + ui::sc(6);
+  return IntRect(v.x - half, v.y - half, 2 * half + 1, 2 * half + 1);
+}
+
+IntRect dotBounds(const PlaneView& v) {
+  // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
+  const int r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
+                         aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
+  return IntRect(v.x - r, v.y - r, 2 * r + 1, 2 * r + 1);
+}
+
+IntRect tagBounds(const PlaneView& v) {
+  const int pad = ui::sc(6);
+  return IntRect(v.tag_box.x - pad, v.tag_box.y - pad, v.tag_box.w + 2 * pad,
+                 v.tag_box.h + 2 * pad);
+}
+
+uint16_t viewColor(const PlaneView& v, bool pulse_on) {
+  if (!v.highlighted) {
+    return v.base_color;
+  }
+  if (!pulse_on) {
+    return radar::kColorGrid;
+  }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (v.notable && !v.emergency) {
+    return tft.color565(255, 60, 220);  // notable aircraft pulse magenta
+  }
+#endif
+  // With type colors the pulse keeps the class color so it stays recognizable.
+  return v.emergency                            ? radar::kColorAlertEmergency
+         : services::alert::typeColorsEnabled() ? v.base_color
+                                                : radar::kColorAlertMilitary;
+}
+
+/**
+ * Planes, tags and overlays from the cached views, in their fixed stacking order.
+ * `update_sign`: let the overhead sign pick its plane (full rebuilds); region
+ * rebuilds keep the sign as it is on screen.
+ */
+void drawAircraftLayer(bool update_sign) {
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
-
-  AircraftDrawItem items[services::adsb::kMaxAircraft];
-  BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
-  size_t draw_count = 0;
-  size_t dot_count = 0;
-
-  for (size_t i = 0; i < n; ++i) {
-    if (services::alert::hiddenOnRadar(planes[i])) {
-      continue;
-    }
-    float dx_km = 0.0f;
-    float dy_km = 0.0f;
-    float dist_km = 0.0f;
-    localOffsetFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
-
-    if (isInsideOuterRingKm(dist_km)) {
-      int x = 0;
-      int y = 0;
-      latLonToScreen(planes[i].lat, planes[i].lon, &x, &y);
-      items[draw_count].index = i;
-      items[draw_count].x = x;
-      items[draw_count].y = y;
-      items[draw_count].dist_sq = distSqFromCenter(x, y);
-      ++draw_count;
-      continue;
-    }
-
-    int dot_x = 0;
-    int dot_y = 0;
-    if (!beyondRingEdgeDotFromLatLon(planes[i].lat, planes[i].lon, &dot_x, &dot_y)) {
-      continue;
-    }
-    dots[dot_count].index = i;
-    dots[dot_count].x = dot_x;
-    dots[dot_count].y = dot_y;
-    dots[dot_count].dist_sq = distSqFromCenter(dot_x, dot_y);
-    ++dot_count;
+  if (planes == nullptr) {
+    return;
   }
 
-  sortBeyondDotsFarFirst(dots, dot_count);
-  for (size_t d = 0; d < dot_count; ++d) {
-    const size_t i = dots[d].index;
-    drawBeyondRingMarker(dots[d].x, dots[d].y, displayTrackDeg(planes[i].track_deg),
-                         &planes[i]);
+  for (size_t d = 0; d < s_dot_order_count; ++d) {
+    const PlaneView& v = s_views[s_dot_order[d]];
+    paintItem(dotBounds(v), [&] {
+      aircraft_symbol::drawCompact(*s_draw, v.x, v.y, v.disp_track, v.base_color,
+                                   &planes[v.index]);
+    });
   }
 
   const bool pulse_on = services::alert::pulsePhase();
-  sortDrawItemsFarFirst(items, draw_count);
-  for (size_t d = 0; d < draw_count; ++d) {
-    const size_t i = items[d].index;
-    uint16_t color = aircraftBaseColor(planes[i]);
-    if (services::alert::isHighlighted(planes[i])) {
-      if (pulse_on) {
-        // With type colors the pulse keeps the class color so it stays recognizable.
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-        if (services::alert::notableTag(planes[i]) != nullptr &&
-            !planes[i].isEmergencySquawk()) {
-          color = tft.color565(255, 60, 220);  // notable aircraft pulse magenta
-        } else
-#endif
-        color = planes[i].isEmergencySquawk()       ? radar::kColorAlertEmergency
-                : services::alert::typeColorsEnabled() ? color
-                                                       : radar::kColorAlertMilitary;
-      } else {
-        color = radar::kColorGrid;
-      }
-    }
-    aircraft_symbol::draw(*s_draw, items[d].x, items[d].y, displayTrackDeg(planes[i].track_deg),
-                          color, &planes[i]);
+  for (size_t d = 0; d < s_sym_order_count; ++d) {
+    const PlaneView& v = s_views[s_sym_order[d]];
+    paintItem(symbolBounds(v), [&] {
+      aircraft_symbol::draw(*s_draw, v.x, v.y, v.disp_track, viewColor(v, pulse_on),
+                            &planes[v.index]);
+    });
   }
   if (!ui::displayPrefsHideBlipDetails()) {
-    // items are sorted farthest-first, so the closest tags draw last and land
-    // on top of whatever residual overlap the resolver could not avoid.
-    for (size_t d = 0; d < draw_count; ++d) {
-      const size_t i = items[d].index;
-      const label_layout::Placement* placement =
-          label_layout::find(s_aircraft_label_keys[i]);
-      if (placement == nullptr || placement->tier == label_layout::kTierHidden) {
+    // Sorted farthest-first, so the closest tags draw last and land on top of
+    // whatever residual overlap the resolver could not avoid.
+    for (size_t d = 0; d < s_sym_order_count; ++d) {
+      const PlaneView& v = s_views[s_sym_order[d]];
+      if (v.tag_box.empty()) {
         continue;
       }
-      drawAircraftTagPlaced(*placement, planes[i]);
+      paintItem(tagBounds(v), [&] { drawTagForView(v); });
     }
   }
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // Over the planes and tags, under the link badge. The sign needs the target
   // buffer for its see-through backing; direct-to-panel fallbacks get a solid one.
-  overheadSignUpdate();
-  if (s_draw == &s_content.gfx()) {
-    overheadSignDraw(*s_draw, s_content.bufferMut(), s_content.width(), s_content.height());
-  } else {
-    overheadSignDraw(*s_draw, nullptr, 0, 0);
+  if (update_sign) {
+    overheadSignUpdate();
+  }
+  {
+    IntRect band;
+    if (overheadSignBounds(&band.x, &band.y, &band.w, &band.h)) {
+      paintItem(grownRect(band, 2), [&] {
+        if (s_draw == &s_content.gfx()) {
+          overheadSignDraw(*s_draw, s_content.bufferMut(), s_content.width(),
+                           s_content.height());
+        } else {
+          overheadSignDraw(*s_draw, nullptr, 0, 0);
+        }
+      });
+    }
+  }
+#else
+  (void)update_sign;
+#endif
+  {
+    IntRect badge;
+    if (linkBadgeBox(&badge)) {
+      paintItem(grownRect(badge, 2), [&] { drawLinkBadge(); });
+    }
+  }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  {
+    const IntRect mute = muteIconRect();
+    if (s_paint_region == nullptr || regionTouches(*s_paint_region, mute)) {
+      s_mute_icon_drawn = muteIconShown();
+    }
+    if (muteIconShown()) {
+      paintItem(mute, [&] { drawMuteIcon(); });
+    }
+    const IntRect toast = soundToastRect();
+    if (s_paint_region == nullptr || regionTouches(*s_paint_region, toast)) {
+      s_sound_toast_drawn = s_sound_toast_until_ms != 0;
+    }
+    if (s_sound_toast_until_ms != 0) {
+      paintItem(grownRect(toast, 1), [&] { drawSoundToast(); });
+    }
+  }
+  {
+    // Sky events: ISS marker, then the banner (top band).
+    IntRect banner;
+    IntRect marker;
+    if (ui::sky::overlayDrawBounds(&banner.x, &banner.y, &banner.w, &banner.h, &marker.x,
+                                   &marker.y, &marker.w, &marker.h)) {
+      if (!rectEmpty(marker)) {
+        paintItem(marker, [&] { ui::sky::drawRadarMarker(*s_draw); });
+      }
+      if (!rectEmpty(banner)) {
+        paintItem(banner, [&] { ui::sky::drawRadarBanner(*s_draw); });
+      }
+    }
   }
 #endif
-  drawLinkBadge();
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  drawSoundOverlay();
-  ui::sky::drawRadarOverlay(*s_draw);  // sky events banner (top band) + ISS marker
-#endif
+  s_draw->setTextDatum(TextDatum::TopLeft);
+}
+
+/** Full aircraft layer onto the current target (refreshes the views first). */
+void drawAircraft() {
+  refreshPlaneViews();
+  drawAircraftLayer(true);
+}
+
+// --- Background label mask -------------------------------------------------------
+// One bit per pixel, set where a background label (compass letters, range labels,
+// rain time) changed the background. The alert ring skips those pixels, so the
+// labels stay on top of it.
+
+constexpr size_t kLabelMaskStride = (static_cast<size_t>(radar::kSize) + 7) / 8;
+uint8_t* s_label_mask = nullptr;
+/** True while rebuildBackgroundSprite() draws its labels into the mask. */
+bool s_label_mask_capture = false;
+
+void clearLabelMask() {
+  if (s_label_mask == nullptr) {
+    s_label_mask = static_cast<uint8_t*>(heap_caps_malloc(
+        kLabelMaskStride * radar::kSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (s_label_mask != nullptr) {
+    memset(s_label_mask, 0, kLabelMaskStride * radar::kSize);
+  }
+}
+
+/** Text box for a datum, from advance width and font height. */
+IntRect textBoxForDatum(const char* text, int x, int y, TextDatum datum) {
+  const int w = s_draw->textWidth(text);
+  const int h = s_draw->fontHeight();
+  int left = x;
+  int top = y;
+  switch (datum) {
+    case TextDatum::TopCenter:
+    case TextDatum::MiddleCenter:
+    case TextDatum::BottomCenter:
+      left = x - w / 2;
+      break;
+    case TextDatum::TopRight:
+    case TextDatum::MiddleRight:
+    case TextDatum::BottomRight:
+      left = x - w;
+      break;
+    default:
+      break;
+  }
+  switch (datum) {
+    case TextDatum::MiddleLeft:
+    case TextDatum::MiddleCenter:
+    case TextDatum::MiddleRight:
+      top = y - h / 2;
+      break;
+    case TextDatum::BottomLeft:
+    case TextDatum::BottomCenter:
+    case TextDatum::BottomRight:
+      top = y - h;
+      break;
+    default:
+      break;
+  }
+  return IntRect{left, top, w, h};
+}
+
+/** drawString for background labels; records the pixels it changed in the mask. */
+void drawGridLabelString(const char* text, int x, int y, TextDatum datum) {
+  s_draw->setTextDatum(datum);
+  if (!s_label_mask_capture || s_label_mask == nullptr || !s_bg_ready ||
+      s_draw != &s_bg.gfx()) {
+    s_draw->drawString(text, x, y);
+    return;
+  }
+  // Generous margin: the drawn glyphs follow their own bounds, not the advance box.
+  const IntRect box = clampRectToScreen(grownRect(textBoxForDatum(text, x, y, datum), ui::sc(6)));
+  if (rectEmpty(box) || !ensureSaveBuf(static_cast<size_t>(box.w) * box.h)) {
+    s_draw->drawString(text, x, y);
+    return;
+  }
+  const uint16_t* bg = s_bg.buffer();
+  const int stride = s_bg.width();
+  for (int row = 0; row < box.h; ++row) {
+    memcpy(s_save_buf + static_cast<size_t>(row) * box.w,
+           bg + static_cast<size_t>(box.y + row) * stride + box.x,
+           static_cast<size_t>(box.w) * sizeof(uint16_t));
+  }
+  s_draw->drawString(text, x, y);
+  for (int row = 0; row < box.h; ++row) {
+    const int py = box.y + row;
+    const uint16_t* now = bg + static_cast<size_t>(py) * stride;
+    const uint16_t* was = s_save_buf + static_cast<size_t>(row) * box.w;
+    uint8_t* mask = s_label_mask + static_cast<size_t>(py) * kLabelMaskStride;
+    for (int col = 0; col < box.w; ++col) {
+      const int px = box.x + col;
+      if (now[px] != was[col]) {
+        mask[px >> 3] = static_cast<uint8_t>(mask[px >> 3] | (1u << (px & 7)));
+      }
+    }
+  }
 }
 
 void drawCardinalLabel(const char* text, int x, int y, TextDatum datum) {
   displayFontApply(*s_draw, s_cardinal_style);
-  s_draw->setTextDatum(datum);
   s_draw->setTextColor(radar::kColorGrid);
-  s_draw->drawString(text, x, y);
+  drawGridLabelString(text, x, y, datum);
 }
 
 void drawScaleLabelWithBackground(const char* text, int x, int y) {
@@ -1091,9 +1581,8 @@ void drawScaleLabelWithBackground(const char* text, int x, int y) {
     }
   }
   // Bottom-right anchor: text grows up/left into the W–SW wedge (not toward S).
-  s_draw->setTextDatum(TextDatum::BottomRight);
   s_draw->setTextColor(radar::kColorGrid);
-  s_draw->drawString(text, x, y);
+  drawGridLabelString(text, x, y, TextDatum::BottomRight);
 }
 
 /** Convert degrees CW-from-top (12 o'clock) to Arduino_GFX fillArc degrees
@@ -1334,17 +1823,36 @@ void drawStaticGrid(GfxRef& gfx) {
 }
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+UiTextStyle rainLabelStyle() {
+  static const UiTextStyle s_rain_style = pickTextSizeForHeight(ui::sc(6), 0, 2);
+  return s_rain_style;
+}
+
+int rainLabelRightX() { return radar::kSize - ui::sc(10); }
+int rainLabelMidY() { return radar::kCenterY + ui::sc(22); }
+
 /** Small "Rain 9:05 AM" at the right edge, just below the E cardinal's spot. */
 void drawRainTimestamp() {
   char label[24];
   if (!services::rain::labelText(label, sizeof(label))) {
     return;
   }
-  static const UiTextStyle s_rain_style = pickTextSizeForHeight(ui::sc(6), 0, 2);
-  displayFontApply(*s_draw, s_rain_style);
-  s_draw->setTextDatum(TextDatum::MiddleRight);
+  displayFontApply(*s_draw, rainLabelStyle());
   s_draw->setTextColor(radar::kColorGrid);
-  s_draw->drawString(label, radar::kSize - ui::sc(10), radar::kCenterY + ui::sc(22));
+  drawGridLabelString(label, rainLabelRightX(), rainLabelMidY(), TextDatum::MiddleRight);
+}
+
+/** Where the rain time sits (plus a margin), so tags keep off it. */
+bool rainLabelRect(IntRect* out) {
+  char label[24];
+  if (!services::rain::labelText(label, sizeof(label))) {
+    return false;
+  }
+  displayFontApply(tft, rainLabelStyle());
+  const int w = tft.textWidth(label);
+  const int h = tft.fontHeight();
+  *out = grownRect(IntRect{rainLabelRightX() - w, rainLabelMidY() - h / 2, w, h}, ui::sc(3));
+  return true;
 }
 #endif
 
@@ -1357,6 +1865,10 @@ bool rebuildBackgroundSprite() {
     }
     s_bg_ready = true;
   }
+
+  // The labels drawn below record their pixels for the alert ring to keep clear of.
+  clearLabelMask();
+  s_label_mask_capture = true;
 
   // Optional Carto/OSM bake under the CRT grid (LittleFS JPEG → PSRAM cache).
   uint16_t* pixels = s_bg.bufferMut();
@@ -1396,8 +1908,8 @@ bool rebuildBackgroundSprite() {
       s_basemap_bg_stale = false;
     }
   }
+  s_label_mask_capture = false;
   s_content_base_valid = false;
-  s_sweep_track_valid = false;
   Serial.printf("[basemap] rebuild_bg painted=%d stale=%d cache=%d ms=%lu heap=%u\n",
                 painted_map ? 1 : 0, s_basemap_bg_stale ? 1 : 0,
                 services::basemap::cacheReady() ? 1 : 0, millis() - t0, ESP.getFreeHeap());
@@ -1420,11 +1932,8 @@ void drawSweepAtOn(PlaneGfx& gfx, float lead_deg);
 float currentSweepAngleDeg();
 void resetDisplaySweepAngle(unsigned long now);
 float advanceDisplaySweepAngle(unsigned long now);
-float sweepAngleDeltaDeg(float from_deg, float to_deg);
 void recoverSweepAfterGap(unsigned long gap_ms);
-bool rebuildContentBase();
-void blitRegionToPanel(const IntRect& rect);
-void updateSweepOnPanel(float lead_deg);
+void savePrevAircraftMarkers();
 
 void sweepSpokeEndpoint(float angle_deg, int* ex, int* ey) {
   constexpr float kDegToRad = 0.01745329252f;
@@ -1436,78 +1945,7 @@ void sweepSpokeEndpoint(float angle_deg, int* ex, int* ey) {
   *ey = cy - static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
 }
 
-void savePrevAircraftMarkers();
-
-bool rectEmpty(const IntRect& r) { return r.w <= 0 || r.h <= 0; }
-
-IntRect rectFromPoints(int x0, int y0, int x1, int y1, int margin) {
-  IntRect r;
-  r.x = std::min(x0, x1) - margin;
-  r.y = std::min(y0, y1) - margin;
-  const int x2 = std::max(x0, x1) + margin;
-  const int y2 = std::max(y0, y1) + margin;
-  r.w = x2 - r.x + 1;
-  r.h = y2 - r.y + 1;
-  return r;
-}
-
-IntRect clampRectToScreen(IntRect r) {
-  if (r.x < 0) {
-    r.w += r.x;
-    r.x = 0;
-  }
-  if (r.y < 0) {
-    r.h += r.y;
-    r.y = 0;
-  }
-  if (r.x + r.w > radar::kSize) {
-    r.w = radar::kSize - r.x;
-  }
-  if (r.y + r.h > radar::kSize) {
-    r.h = radar::kSize - r.y;
-  }
-  return r;
-}
-
-IntRect unionRect(const IntRect& a, const IntRect& b) {
-  if (rectEmpty(a)) {
-    return b;
-  }
-  if (rectEmpty(b)) {
-    return a;
-  }
-  const int x0 = std::min(a.x, b.x);
-  const int y0 = std::min(a.y, b.y);
-  const int x1 = std::max(a.x + a.w, b.x + b.w);
-  const int y1 = std::max(a.y + a.h, b.y + b.h);
-  return IntRect{x0, y0, x1 - x0, y1 - y0};
-}
-
-int sweepEraseMargin() {
-  constexpr int kBase = static_cast<int>(radar::kSweepLineHalfWidth * 2.0f + 4.0f);
-  return kBase + (hardware::panelUsesCo5300() ? 2 : 0);
-}
-
-IntRect spokeBounds(float angle_deg, int margin) {
-  int ex = 0;
-  int ey = 0;
-  sweepSpokeEndpoint(angle_deg, &ex, &ey);
-  return clampRectToScreen(
-      rectFromPoints(radar::kCenterX, radar::kCenterY, ex, ey, margin));
-}
-
-IntRect unionSpokeBounds(const float* angles, int count, int margin) {
-  IntRect bounds{};
-  for (int i = 0; i < count; ++i) {
-    bounds = unionRect(bounds, spokeBounds(angles[i], margin));
-  }
-  return bounds;
-}
-
 void copyBgRegionToContent(const IntRect& rect) {
-  if (rectEmpty(rect)) {
-    return;
-  }
   const IntRect clipped = clampRectToScreen(rect);
   if (rectEmpty(clipped)) {
     return;
@@ -1548,26 +1986,148 @@ int collectSweepAngles(float lead_deg, float* angles, int max_angles) {
   return count;
 }
 
-bool rebuildContentBase() {
+// --- [perf] once a minute: rebuild / blit / sweep cost on the device --------------
+
+struct PerfStat {
+  uint32_t n = 0;
+  uint64_t total_us = 0;
+  uint32_t max_us = 0;
+
+  void add(uint32_t us) {
+    ++n;
+    total_us += us;
+    if (us > max_us) {
+      max_us = us;
+    }
+  }
+  double avgMs() const { return n == 0 ? 0.0 : static_cast<double>(total_us) / n / 1000.0; }
+  double maxMs() const { return static_cast<double>(max_us) / 1000.0; }
+};
+
+PerfStat s_perf_full;
+PerfStat s_perf_region;
+PerfStat s_perf_blit;
+PerfStat s_perf_sweep;
+uint64_t s_perf_blit_px = 0;
+unsigned long s_perf_window_ms = 0;
+constexpr unsigned long kPerfLogMs = 60000;
+
+void perfTick() {
+  const unsigned long now = millis();
+  if (s_perf_window_ms == 0) {
+    s_perf_window_ms = now;
+    return;
+  }
+  if (now - s_perf_window_ms < kPerfLogMs) {
+    return;
+  }
+  Serial.printf(
+      "[perf] radar %lus: full n=%u avg=%.1f max=%.1f ms | region n=%u avg=%.1f max=%.1f ms | "
+      "blit n=%u avg=%.1f max=%.1f ms %luk px | sweep n=%u avg=%.2f max=%.1f ms\n",
+      (now - s_perf_window_ms) / 1000UL, static_cast<unsigned>(s_perf_full.n),
+      s_perf_full.avgMs(), s_perf_full.maxMs(), static_cast<unsigned>(s_perf_region.n),
+      s_perf_region.avgMs(), s_perf_region.maxMs(), static_cast<unsigned>(s_perf_blit.n),
+      s_perf_blit.avgMs(), s_perf_blit.maxMs(),
+      static_cast<unsigned long>(s_perf_blit_px / 1000ULL), static_cast<unsigned>(s_perf_sweep.n),
+      s_perf_sweep.avgMs(), s_perf_sweep.maxMs());
+  s_perf_full = PerfStat{};
+  s_perf_region = PerfStat{};
+  s_perf_blit = PerfStat{};
+  s_perf_sweep = PerfStat{};
+  s_perf_blit_px = 0;
+  s_perf_window_ms = now;
+}
+
+// --- Content rebuilds ---------------------------------------------------------------
+
+void paintAlertRing(const IntRect& r) {
+  if (alertFlashActive()) {
+    alertFlashPaintBufferRect(s_content.bufferMut(), s_content.width(), s_content.height(), r.x,
+                              r.y, r.w, r.h, s_label_mask);
+  }
+}
+
+/** Background, alert ring, then every plane, tag and overlay; whole screen. */
+bool rebuildContentBase(bool refresh_views) {
   if (!s_bg_ready || !ensureContentSprite()) {
     return false;
   }
+  const uint32_t t0 = micros();
 
   const int w = s_bg.width();
   const int h = s_bg.height();
   const size_t pixels = static_cast<size_t>(w) * static_cast<size_t>(h);
   memcpy(s_content.bufferMut(), s_bg.buffer(), pixels * sizeof(uint16_t));
+  // Under everything else, so tags, the banner, the sign and the edge labels stay
+  // readable on top of it.
+  paintAlertRing(IntRect{0, 0, w, h});
 
   {
     const DrawScope scope(s_content.gfx());
-    drawAircraft();
-  }
-  if (alertFlashActive()) {
-    alertFlashPaintBuffer(s_content.bufferMut(), s_content.width(), s_content.height());
+    if (refresh_views) {
+      refreshPlaneViews();
+    }
+    drawAircraftLayer(true);
   }
 
   s_content_base_valid = true;
-  s_sweep_track_valid = false;
+  s_perf_full.add(micros() - t0);
+  return true;
+}
+
+#if defined(FLIGHTSCNR_SIM)
+/** Simulator only: compare every region rebuild with a full one ([selfcheck] lines). */
+constexpr bool kRegionSelfCheck = false;
+#endif
+
+/** Larger than this, a region rebuild costs about what a full one does. */
+constexpr int kRegionMaxPixels = radar::kSize * radar::kSize * 45 / 100;
+
+/**
+ * Rebuild only `region` of the content sprite from the cached views. False when it
+ * cannot (no valid content, stale views, no save buffer); the caller then does a
+ * full rebuild.
+ */
+bool rebuildContentRegion(const RegionList& region) {
+  if (!s_bg_ready || !s_content_ready || !s_content_base_valid || region.full ||
+      region.count == 0 || region.area() > kRegionMaxPixels || !planeViewsCurrent()) {
+    return false;
+  }
+  const uint32_t t0 = micros();
+  for (int i = 0; i < region.count; ++i) {
+    copyBgRegionToContent(region.rects[i]);
+    paintAlertRing(region.rects[i]);
+  }
+  s_paint_region = &region;
+  s_paint_failed = false;
+  {
+    const DrawScope scope(s_content.gfx());
+    drawAircraftLayer(false);
+  }
+  s_paint_region = nullptr;
+  if (s_paint_failed) {
+    s_content_base_valid = false;  // partly drawn: only a full rebuild can fix it
+    return false;
+  }
+  s_perf_region.add(micros() - t0);
+#if defined(FLIGHTSCNR_SIM)
+  if (kRegionSelfCheck) {
+    // A region rebuild must match a full rebuild pixel for pixel.
+    static uint16_t* region_px = nullptr;
+    const size_t px = static_cast<size_t>(radar::kSize) * radar::kSize;
+    if (region_px == nullptr) {
+      region_px = static_cast<uint16_t*>(malloc(px * sizeof(uint16_t)));
+    }
+    memcpy(region_px, s_content.buffer(), px * sizeof(uint16_t));
+    rebuildContentBase(false);
+    size_t diff = 0;
+    for (size_t i = 0; i < px; ++i) {
+      diff += region_px[i] != s_content.buffer()[i] ? 1 : 0;
+    }
+    Serial.printf("[selfcheck] region rects=%d px=%d diff=%u\n", region.count, region.area(),
+                  static_cast<unsigned>(diff));
+  }
+#endif
   return true;
 }
 
@@ -1589,46 +2149,404 @@ void blitRegionToPanel(const IntRect& rect) {
                            content + static_cast<size_t>(clipped.y) * static_cast<size_t>(stride) +
                                static_cast<size_t>(clipped.x),
                            static_cast<int16_t>(stride));
+  s_perf_blit_px += static_cast<uint64_t>(clipped.w) * static_cast<uint64_t>(clipped.h);
+}
+
+/** Copy the region (or the whole frame) from the content sprite to the panel. */
+void blitRegionsToPanel(const RegionList& region) {
+  const uint32_t t0 = micros();
+  const IntRect kFull{0, 0, radar::kSize, radar::kSize};
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // The P4 framebuffer takes any rect at memory speed: always just the patches.
+  const bool push_full = region.full;
+#else
+  // QSPI panels: past about a third of the screen one full push beats many windows.
+  const bool push_full = region.full || region.area() >= radar::kSize * radar::kSize / 3;
+#endif
+  if (push_full) {
+    blitRegionToPanel(kFull);
+  } else {
+    for (int i = 0; i < region.count; ++i) {
+      blitRegionToPanel(region.rects[i]);
+    }
+  }
+  tft.setTextDatum(TextDatum::TopLeft);
+  s_perf_blit.add(micros() - t0);
+}
+
+/** Highlighted planes' symbols: what the alert pulse changes. */
+void markHighlightedSymbolsDirty() {
+  if (!s_views_valid) {
+    return;
+  }
+  for (size_t s = 0; s < s_sym_order_count; ++s) {
+    const PlaneView& v = s_views[s_sym_order[s]];
+    if (v.highlighted) {
+      regionAdd(&s_dirty, symbolBounds(v));
+    }
+  }
+}
+
+/** The alert ring's annulus as horizontal bands (two short rects per band at the
+ *  sides, one wide rect at the top and bottom). */
+void markAlertRingDirty() {
+  int ro = 0;
+  int ri = 0;
+  alertFlashRingRadii(&ro, &ri);
+  ro += 1;
+  ri = std::max(0, ri - 1);
+  const int cx = radar::kCenterX;
+  const int cy = radar::kCenterY;
+  const int band = ui::sc(13);
+  for (int y0 = cy - ro; y0 <= cy + ro; y0 += band) {
+    const int y1 = std::min(y0 + band, cy + ro + 1);  // exclusive
+    const int da = y0 - cy;
+    const int db = y1 - 1 - cy;
+    const int dmin = (da <= 0 && db >= 0) ? 0 : std::min(std::abs(da), std::abs(db));
+    const int dmax = std::max(std::abs(da), std::abs(db));
+    if (dmin > ro) {
+      continue;
+    }
+    const int xo = static_cast<int>(sqrtf(static_cast<float>(ro * ro - dmin * dmin))) + 2;
+    if (dmax >= ri) {
+      regionAdd(&s_dirty, IntRect{cx - xo, y0, 2 * xo + 1, y1 - y0});
+      continue;
+    }
+    const int xi = std::max(0, static_cast<int>(sqrtf(static_cast<float>(ri * ri - dmax * dmax))) - 2);
+    regionAdd(&s_dirty, IntRect{cx - xo, y0, xo - xi + 1, y1 - y0});
+    regionAdd(&s_dirty, IntRect{cx + xi, y0, xo - xi + 1, y1 - y0});
+  }
+}
+
+// --- Sweep line ----------------------------------------------------------------------
+// Each frame composes the new spoke in a spare full-size buffer and blits only thin
+// per-row spans that cover the old and the new spoke. Every panel pixel goes
+// straight from its old value to its new one (no erase-then-draw flicker on the
+// scanned DSI framebuffer), a few thousand pixels move per frame instead of the
+// spoke's bounding box, and the spoke is cut where the bottom sign and the top
+// banner sit so it never runs through their text.
+
+PlaneGfxSprite s_sweep_buf(&tft);
+bool s_sweep_buf_ready = false;
+bool s_sweep_buf_failed = false;
+
+constexpr int kMaxSpokes = 8;
+float s_prev_spoke_deg[kMaxSpokes];
+/** Spokes on the panel right now (0 = none drawn, nothing to erase). */
+int s_prev_spoke_count = 0;
+
+int sweepSpanMargin() {
+  return static_cast<int>(radar::kSweepLineHalfWidth) + 3 +
+         (hardware::panelUsesCo5300() ? 2 : 0);
+}
+
+bool ensureSweepBuf() {
+  if (s_sweep_buf_ready) {
+    return true;
+  }
+  if (s_sweep_buf_failed) {
+    return false;
+  }
+  if (!s_sweep_buf.createSprite(radar::kSize, radar::kSize)) {
+    Serial.println("radar: sweep buffer alloc failed (direct sweep drawing)");
+    s_sweep_buf_failed = true;
+    return false;
+  }
+  s_sweep_buf_ready = true;
+  return true;
+}
+
+/** x-range [*x0, *x1) of row y within `m` px of the spoke center->(ex, ey). */
+bool spokeRowSpan(int ex, int ey, int m, int y, int* x0, int* x1) {
+  const float sx = static_cast<float>(radar::kCenterX);
+  const float sy = static_cast<float>(radar::kCenterY);
+  const float dx = static_cast<float>(ex) - sx;
+  const float dy = static_cast<float>(ey) - sy;
+  const float ylo = std::min(sy, static_cast<float>(ey)) - m;
+  const float yhi = std::max(sy, static_cast<float>(ey)) + m;
+  const float fy = static_cast<float>(y);
+  if (fy < ylo || fy > yhi) {
+    return false;
+  }
+  float ta = 0.0f;
+  float tb = 1.0f;
+  if (std::fabs(dy) >= 0.5f) {
+    ta = (fy - m - sy) / dy;
+    tb = (fy + m - sy) / dy;
+    if (ta > tb) {
+      std::swap(ta, tb);
+    }
+    ta = std::max(ta, 0.0f);
+    tb = std::min(tb, 1.0f);
+    if (ta > tb) {
+      ta = tb = std::min(std::max(ta, 0.0f), 1.0f);
+    }
+  }
+  const float xa = sx + ta * dx;
+  const float xb = sx + tb * dx;
+  int lo = static_cast<int>(floorf(std::min(xa, xb))) - m;
+  int hi = static_cast<int>(ceilf(std::max(xa, xb))) + m + 1;
+  lo = std::max(lo, 0);
+  hi = std::min(hi, static_cast<int>(radar::kSize));
+  if (hi <= lo) {
+    return false;
+  }
+  *x0 = lo;
+  *x1 = hi;
+  return true;
+}
+
+/** Visit each row's merged spans covering the given spokes. */
+template <typename Fn>
+void forEachSpokeSpan(const int* ex, const int* ey, int n, Fn&& fn) {
+  if (n <= 0) {
+    return;
+  }
+  const int m = sweepSpanMargin();
+  int ymin = radar::kCenterY;
+  int ymax = radar::kCenterY;
+  for (int i = 0; i < n; ++i) {
+    ymin = std::min(ymin, ey[i]);
+    ymax = std::max(ymax, ey[i]);
+  }
+  ymin = std::max(0, ymin - m);
+  ymax = std::min(static_cast<int>(radar::kSize) - 1, ymax + m);
+  int spans[2 * kMaxSpokes][2];
+  for (int y = ymin; y <= ymax; ++y) {
+    int count = 0;
+    for (int i = 0; i < n; ++i) {
+      int a = 0;
+      int b = 0;
+      if (!spokeRowSpan(ex[i], ey[i], m, y, &a, &b)) {
+        continue;
+      }
+      int k = count++;
+      while (k > 0 && spans[k - 1][0] > a) {
+        spans[k][0] = spans[k - 1][0];
+        spans[k][1] = spans[k - 1][1];
+        --k;
+      }
+      spans[k][0] = a;
+      spans[k][1] = b;
+    }
+    int cur0 = -1;
+    int cur1 = -1;
+    for (int i = 0; i < count; ++i) {
+      if (cur0 >= 0 && spans[i][0] <= cur1) {
+        cur1 = std::max(cur1, spans[i][1]);
+        continue;
+      }
+      if (cur0 >= 0) {
+        fn(y, cur0, cur1);
+      }
+      cur0 = spans[i][0];
+      cur1 = spans[i][1];
+    }
+    if (cur0 >= 0) {
+      fn(y, cur0, cur1);
+    }
+  }
+}
+
+/** Liang-Barsky: the part [*tin, *tout] of P0->P1 inside r, if any. */
+bool segmentInRect(float x0, float y0, float x1, float y1, const IntRect& r, float* tin,
+                   float* tout) {
+  float t0 = 0.0f;
+  float t1 = 1.0f;
+  const float dx = x1 - x0;
+  const float dy = y1 - y0;
+  auto clip = [&](float p, float q) {
+    if (std::fabs(p) < 1e-6f) {
+      return q >= 0.0f;
+    }
+    const float t = q / p;
+    if (p < 0.0f) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+    return true;
+  };
+  if (clip(-dx, x0 - static_cast<float>(r.x)) &&
+      clip(dx, static_cast<float>(r.x + r.w) - x0) &&
+      clip(-dy, y0 - static_cast<float>(r.y)) &&
+      clip(dy, static_cast<float>(r.y + r.h) - y0)) {
+    *tin = t0;
+    *tout = t1;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * How far along center->end (t in [0, 1]) the spoke may run: it stops short of the
+ * bottom sign and of the top banner, so it never cuts through their text.
+ */
+float spokeVisibleEnd(int ex, int ey) {
+  float end = 1.0f;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const float x0 = static_cast<float>(radar::kCenterX);
+  const float y0 = static_cast<float>(radar::kCenterY);
+  const float x1 = static_cast<float>(ex);
+  const float y1 = static_cast<float>(ey);
+  const int keep_off = static_cast<int>(radar::kSweepLineHalfWidth) + 3;
+  IntRect band;
+  if (overheadSignBounds(&band.x, &band.y, &band.w, &band.h)) {
+    const float cut_y = static_cast<float>(band.y - keep_off);
+    if (y1 > cut_y && cut_y > y0) {
+      end = std::min(end, (cut_y - y0) / (y1 - y0));
+    }
+  }
+  IntRect banner;
+  if (ui::sky::bannerBounds(&banner.x, &banner.y, &banner.w, &banner.h)) {
+    float tin = 0.0f;
+    float tout = 0.0f;
+    if (segmentInRect(x0, y0, x1, y1, grownRect(banner, keep_off), &tin, &tout)) {
+      end = std::min(end, tin);
+    }
+  }
+#else
+  (void)ex;
+  (void)ey;
+#endif
+  return end;
+}
+
+/** Spoke straight onto the panel (no compose buffer), cut like the composed one. */
+void drawClippedSpoke(PlaneGfx& gfx, float angle_deg, uint16_t color) {
+  int ex = 0;
+  int ey = 0;
+  sweepSpokeEndpoint(angle_deg, &ex, &ey);
+  const float t = spokeVisibleEnd(ex, ey);
+  if (t * static_cast<float>(radar::kSweepRadiusPx) < 2.0f) {
+    return;
+  }
+  const float x0 = static_cast<float>(radar::kCenterX);
+  const float y0 = static_cast<float>(radar::kCenterY);
+  gfx.drawWideLine(radar::kCenterX, radar::kCenterY,
+                   static_cast<int16_t>(lroundf(x0 + t * (static_cast<float>(ex) - x0))),
+                   static_cast<int16_t>(lroundf(y0 + t * (static_cast<float>(ey) - y0))),
+                   radar::kSweepLineHalfWidth, color);
+}
+
+void drawClippedSweep(PlaneGfx& gfx, const float* angles, int count) {
+  // Trail first (older, dimmer), lead last.
+  for (int i = 0; i < count; ++i) {
+    const bool lead = i == count - 1;
+    drawClippedSpoke(gfx, angles[i], lead ? radar::kColorSweep : radar::kColorSweepTrail);
+  }
+}
+
+/**
+ * Rasterize one spoke into `buf` by distance to its center line: an even width at
+ * every angle (the generic wide line leaves a checkerboard on 45-degree diagonals).
+ * Writes only inside the spoke's own spans, which the caller has just refreshed.
+ */
+void rasterSpoke(uint16_t* buf, int stride, float angle_deg, uint16_t color) {
+  int ex = 0;
+  int ey = 0;
+  sweepSpokeEndpoint(angle_deg, &ex, &ey);
+  const float t_end = spokeVisibleEnd(ex, ey);
+  if (t_end * static_cast<float>(radar::kSweepRadiusPx) < 2.0f) {
+    return;
+  }
+  const float ax = static_cast<float>(radar::kCenterX);
+  const float ay = static_cast<float>(radar::kCenterY);
+  const float dx = static_cast<float>(ex) - ax;
+  const float dy = static_cast<float>(ey) - ay;
+  const float len2 = dx * dx + dy * dy;
+  const float hw = radar::kSweepLineHalfWidth + 0.3f;
+  const float hw2 = hw * hw;
+  const int one_ex[1] = {ex};
+  const int one_ey[1] = {ey};
+  forEachSpokeSpan(one_ex, one_ey, 1, [&](int y, int a, int b) {
+    const float py = static_cast<float>(y) - ay;
+    uint16_t* row = buf + static_cast<size_t>(y) * stride;
+    for (int x = a; x < b; ++x) {
+      const float px = static_cast<float>(x) - ax;
+      float u = (px * dx + py * dy) / len2;
+      u = std::min(std::max(u, 0.0f), t_end);
+      const float qx = px - u * dx;
+      const float qy = py - u * dy;
+      if (qx * qx + qy * qy <= hw2) {
+        row[x] = color;
+      }
+    }
+  });
+}
+
+/** Put the content sprite back under the spokes now on the panel. */
+void eraseSweepFromPanel() {
+  if (s_prev_spoke_count == 0 || !s_content_ready || !s_content_base_valid) {
+    s_prev_spoke_count = 0;
+    return;
+  }
+  int ex[kMaxSpokes];
+  int ey[kMaxSpokes];
+  for (int i = 0; i < s_prev_spoke_count; ++i) {
+    sweepSpokeEndpoint(s_prev_spoke_deg[i], &ex[i], &ey[i]);
+  }
+  const uint16_t* content = s_content.buffer();
+  const int stride = s_content.width();
+  forEachSpokeSpan(ex, ey, s_prev_spoke_count, [&](int y, int a, int b) {
+    tft.blitRegionFromBuffer(static_cast<int16_t>(a), static_cast<int16_t>(y),
+                             static_cast<int16_t>(b - a), 1,
+                             content + static_cast<size_t>(y) * stride + a,
+                             static_cast<int16_t>(stride));
+  });
+  s_prev_spoke_count = 0;
 }
 
 void updateSweepOnPanel(float lead_deg) {
-  float angles[8] = {};
-  const int count = collectSweepAngles(lead_deg, angles, 8);
-  const int margin = sweepEraseMargin();
-  const IntRect new_dirty = unionSpokeBounds(angles, count, margin);
+  const uint32_t t0 = micros();
+  float angles[kMaxSpokes] = {};
+  const int count = collectSweepAngles(lead_deg, angles, kMaxSpokes);
 
-  IntRect erase_dirty = new_dirty;
-  const float angle_step = sweepAngleDeltaDeg(s_last_painted_sweep_deg, lead_deg);
-  if (s_sweep_track_valid) {
-    if (angle_step <= radar::kSweepIncrementalMaxDeg) {
-      erase_dirty = unionRect(s_prev_sweep_dirty, new_dirty);
-    } else if (!rectEmpty(s_prev_sweep_dirty)) {
-      blitRegionToPanel(s_prev_sweep_dirty);
-      tft.setTextDatum(TextDatum::TopLeft);
+  if (!ensureSweepBuf() || !s_content_base_valid) {
+    // No spare buffer: erase the old spoke from the content sprite, draw on the panel.
+    eraseSweepFromPanel();
+    drawClippedSweep(tft, angles, count);
+  } else {
+    // Old and new spokes together: content -> compose buffer -> new spoke -> panel.
+    int ex[2 * kMaxSpokes];
+    int ey[2 * kMaxSpokes];
+    int n = 0;
+    for (int i = 0; i < s_prev_spoke_count; ++i, ++n) {
+      sweepSpokeEndpoint(s_prev_spoke_deg[i], &ex[n], &ey[n]);
     }
-  }
-
-  const unsigned long blit_start = millis();
-  if (!rectEmpty(erase_dirty)) {
-    blitRegionToPanel(erase_dirty);
-  }
-  const unsigned long blit_ms = millis() - blit_start;
-
-  const unsigned long draw_start = millis();
-  {
-    const DrawScope scope(tft);
-    drawSweepAtOn(tft, lead_deg);
+    for (int i = 0; i < count; ++i, ++n) {
+      sweepSpokeEndpoint(angles[i], &ex[n], &ey[n]);
+    }
+    const uint16_t* content = s_content.buffer();
+    uint16_t* compose = s_sweep_buf.bufferMut();
+    const int stride = s_content.width();
+    forEachSpokeSpan(ex, ey, n, [&](int y, int a, int b) {
+      const size_t o = static_cast<size_t>(y) * stride + a;
+      memcpy(compose + o, content + o, static_cast<size_t>(b - a) * sizeof(uint16_t));
+    });
+    for (int i = 0; i < count; ++i) {  // trail first, lead last
+      rasterSpoke(compose, stride, angles[i],
+                  i == count - 1 ? radar::kColorSweep : radar::kColorSweepTrail);
+    }
+    forEachSpokeSpan(ex, ey, n, [&](int y, int a, int b) {
+      tft.blitRegionFromBuffer(static_cast<int16_t>(a), static_cast<int16_t>(y),
+                               static_cast<int16_t>(b - a), 1,
+                               compose + static_cast<size_t>(y) * stride + a,
+                               static_cast<int16_t>(stride));
+    });
   }
   tft.setTextDatum(TextDatum::TopLeft);
-  const unsigned long draw_ms = millis() - draw_start;
 
-  s_prev_sweep_dirty = new_dirty;
-  s_sweep_track_valid = true;
-  s_last_painted_sweep_deg = lead_deg;
-
-  if (config::kRadarSweepTraceDebug && (blit_ms >= 8 || draw_ms >= 8)) {
-    Serial.printf("[sweep] panel ang=%.1f erase=%dx%d blit_ms=%lu draw_ms=%lu\n", lead_deg,
-                  erase_dirty.w, erase_dirty.h, blit_ms, draw_ms);
+  for (int i = 0; i < count; ++i) {
+    s_prev_spoke_deg[i] = angles[i];
+  }
+  s_prev_spoke_count = count;
+  const uint32_t us = micros() - t0;
+  s_perf_sweep.add(us);
+  if (config::kRadarSweepTraceDebug && us >= 8000) {
+    Serial.printf("[sweep] panel ang=%.1f us=%lu\n", lead_deg, static_cast<unsigned long>(us));
   }
 }
 
@@ -1640,6 +2558,7 @@ void drawSweepSpokeOn(PlaneGfx& gfx, float angle_deg, uint16_t color) {
                    color);
 }
 
+/** Unclipped spoke straight onto a target (no-sprite fallbacks only). */
 void drawSweepAtOn(PlaneGfx& gfx, float lead_deg) {
   if (radar::kSweepTrailLines <= 1) {
     drawSweepSpokeOn(gfx, lead_deg, radar::kColorSweep);
@@ -1661,17 +2580,8 @@ float currentSweepAngleDeg() {
 
 void resetDisplaySweepAngle(unsigned long now) {
   s_display_sweep_deg = currentSweepAngleDeg();
-  s_last_painted_sweep_deg = s_display_sweep_deg;
   s_last_sweep_paint_ms = now;
   s_display_sweep_init = true;
-}
-
-float sweepAngleDeltaDeg(float from_deg, float to_deg) {
-  float delta = std::fabs(to_deg - from_deg);
-  if (delta > 180.0f) {
-    delta = 360.0f - delta;
-  }
-  return delta;
 }
 
 float advanceDisplaySweepAngle(unsigned long now) {
@@ -1704,10 +2614,8 @@ void recoverSweepAfterGap(unsigned long gap_ms) {
   if (gap_ms <= radar::kSweepGapPauseMs) {
     return;
   }
-  if (s_sweep_track_valid && !rectEmpty(s_prev_sweep_dirty)) {
-    blitRegionToPanel(s_prev_sweep_dirty);
-    tft.setTextDatum(TextDatum::TopLeft);
-    s_sweep_track_valid = false;
+  if (s_prev_spoke_count > 0) {
+    eraseSweepFromPanel();
     if (config::kRadarSweepTraceDebug) {
       Serial.printf("[sweep] gap_recover gap=%lums\n", gap_ms);
     }
@@ -1715,8 +2623,7 @@ void recoverSweepAfterGap(unsigned long gap_ms) {
 }
 
 /** Symbol plus the tag box it was drawn with; the box MUST be the resolved one
- *  rather than a re-derived guess, or old text ghosts on the panel until the
- *  rotating sweep happens to repaint that region from the content sprite. */
+ *  rather than a re-derived guess, or old text ghosts on the panel. */
 IntRect aircraftMarkerBounds(int x, int y, const label_layout::Box& tag) {
   const int symbol_half = aircraftSymbolHalfPx();
   constexpr int kPad = ui::sc(6);
@@ -1737,53 +2644,21 @@ IntRect aircraftMarkerBounds(int x, int y, const label_layout::Box& tag) {
       IntRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1));
 }
 
-/** Resolved tag box for aircraft `index`, or an empty box when it carries no tag. */
-label_layout::Box aircraftTagBox(size_t index) {
-  if (ui::displayPrefsHideBlipDetails()) {
-    return {};
-  }
-  if (index >= services::adsb::kMaxAircraft) {
-    return {};
-  }
-  const label_layout::Placement* placement =
-      label_layout::find(s_aircraft_label_keys[index]);
-  if (placement == nullptr || placement->tier == label_layout::kTierHidden) {
-    return {};
-  }
-  return placement->box;
-}
-
+/** Markers from the current views (hidden planes have none). */
 size_t collectAircraftMarkers(CachedAircraftMarker* markers, size_t max_markers) {
   if (markers == nullptr || max_markers == 0) {
     return 0;
   }
-
-  const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
   size_t count = 0;
-
-  for (size_t i = 0; i < n && count < max_markers; ++i) {
-    float dx_km = 0.0f;
-    float dy_km = 0.0f;
-    float dist_km = 0.0f;
-    localOffsetFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
-
-    CachedAircraftMarker& marker = markers[count];
-    marker.plane = planes[i];
-
-    if (isInsideOuterRingKm(dist_km)) {
-      latLonToScreen(planes[i].lat, planes[i].lon, &marker.x, &marker.y);
-      marker.beyond_dot = false;
-      marker.tag_box = aircraftTagBox(i);
-      ++count;
-      continue;
-    }
-
-    if (beyondRingEdgeDotFromLatLon(planes[i].lat, planes[i].lon, &marker.x, &marker.y)) {
-      marker.beyond_dot = true;
-      marker.tag_box = {};
-      ++count;
-    }
+  for (size_t i = 0; i < s_view_count && count < max_markers && planes != nullptr; ++i) {
+    const PlaneView& v = s_views[i];
+    CachedAircraftMarker& marker = markers[count++];
+    marker.plane = planes[v.index];
+    marker.x = v.x;
+    marker.y = v.y;
+    marker.beyond_dot = v.beyond;
+    marker.tag_box = v.beyond ? label_layout::Box{} : v.tag_box;
   }
   return count;
 }
@@ -1836,12 +2711,17 @@ bool markerVisualChanged(const CachedAircraftMarker& prev,
   if (prev.plane.vert_rate_fpm != curr.plane.vert_rate_fpm) {
     return true;
   }
+  if (prev.plane.db_flags != curr.plane.db_flags ||
+      strcmp(prev.plane.squawk, curr.plane.squawk) != 0) {
+    return true;  // highlight / color can follow these
+  }
   return false;
 }
 
-IntRect unionChangedMarkerBounds(const CachedAircraftMarker* current, size_t curr_count) {
+/** Add the old and new bounds of every marker that moved or changed look. */
+void addChangedMarkerBounds(const CachedAircraftMarker* current, size_t curr_count,
+                            RegionList* out) {
   memset(s_marker_prev_used, 0, sizeof(s_marker_prev_used));
-  IntRect dirty{};
 
   for (size_t c = 0; c < curr_count; ++c) {
     int prev_i = -1;
@@ -1859,27 +2739,49 @@ IntRect unionChangedMarkerBounds(const CachedAircraftMarker* current, size_t cur
       s_marker_prev_used[static_cast<size_t>(prev_i)] = true;
       if (markerVisualChanged(s_prev_aircraft_markers[static_cast<size_t>(prev_i)],
                               current[c])) {
-        dirty = unionRect(dirty,
-                          markerBounds(s_prev_aircraft_markers[static_cast<size_t>(prev_i)]));
-        dirty = unionRect(dirty, markerBounds(current[c]));
+        regionAdd(out, markerBounds(s_prev_aircraft_markers[static_cast<size_t>(prev_i)]));
+        regionAdd(out, markerBounds(current[c]));
       }
     } else {
-      dirty = unionRect(dirty, markerBounds(current[c]));
+      regionAdd(out, markerBounds(current[c]));
     }
   }
 
   for (size_t p = 0; p < s_prev_aircraft_marker_count; ++p) {
     if (!s_marker_prev_used[p]) {
-      dirty = unionRect(dirty, markerBounds(s_prev_aircraft_markers[p]));
+      regionAdd(out, markerBounds(s_prev_aircraft_markers[p]));
     }
   }
-
-  return dirty;
 }
 
 void savePrevAircraftMarkers() {
   s_prev_aircraft_marker_count =
       collectAircraftMarkers(s_prev_aircraft_markers, services::adsb::kMaxAircraft);
+}
+
+/**
+ * Bring the content sprite and the panel up to date with s_dirty: a region rebuild
+ * when only some rects changed (alert pulse, ring blink, banner, toast), else a full
+ * one. False when nothing could be rebuilt (no sprites).
+ */
+bool rebuildAndBlitDirty() {
+  bool full = s_dirty.full || !s_content_base_valid;
+  if (!full && !rebuildContentRegion(s_dirty)) {
+    full = true;
+  }
+  if (full) {
+    if (!rebuildContentBase(true)) {
+      return false;
+    }
+    // Views and the sign were refreshed: anything on screen may have moved.
+    s_dirty.full = true;
+  }
+  blitRegionsToPanel(s_dirty);
+  if (full) {
+    savePrevAircraftMarkers();
+  }
+  s_dirty.clear();
+  return true;
 }
 
 }  // namespace
@@ -1895,7 +2797,7 @@ static void blitStatic() {
     return;
   }
 
-  if (!rebuildContentBase()) {
+  if (!rebuildContentBase(true)) {
     s_bg.pushSprite(0, 0);
     drawAircraft();
     tft.setTextDatum(TextDatum::TopLeft);
@@ -1903,6 +2805,7 @@ static void blitStatic() {
   }
 
   s_content.pushSprite(0, 0);
+  s_prev_spoke_count = 0;  // the full push replaced any spoke on the panel
   tft.setTextDatum(TextDatum::TopLeft);
   if (displayPrefsSweepLineEnabled()) {
     resetDisplaySweepAngle(millis());
@@ -1912,6 +2815,8 @@ static void blitStatic() {
 }
 
 void radarDisplayRefreshSweep() {
+  radar::scaleTick();
+  perfTick();
   initPalette();
 
   if (s_basemap_bg_stale) {
@@ -1969,33 +2874,35 @@ void radarDisplayRefreshSweep() {
       }
       drawAircraft();
       tft.setTextDatum(TextDatum::TopLeft);
-      if (s_aircraft_dirty) {
+      if (!s_dirty.empty()) {
         savePrevAircraftMarkers();
-        s_aircraft_dirty = false;
+        s_dirty.clear();
       }
       return;
     }
   }
 
+  // Alert pulse: only the highlighted symbols change color.
   {
     static bool s_last_pulse = false;
     const bool cur_pulse = services::alert::pulsePhase();
     if (cur_pulse != s_last_pulse) {
       s_last_pulse = cur_pulse;
-      const size_t ac_n = services::adsb::aircraftCount();
-      const services::adsb::Aircraft* ac_list = services::adsb::aircraftList();
-      for (size_t i = 0; i < ac_n; ++i) {
-        if (services::alert::isHighlighted(ac_list[i])) {
-          s_aircraft_dirty = true;
-          s_aircraft_dirty_rect = IntRect{0, 0, radar::kSize, radar::kSize};
-          break;
-        }
-      }
+      markHighlightedSymbolsDirty();
+    }
+  }
+  // Alert ring blink (and its end): only the ring's band changes.
+  {
+    static uint32_t s_last_ring_phase = 0;
+    const uint32_t phase = alertFlashPhase();
+    if (phase != s_last_ring_phase) {
+      s_last_ring_phase = phase;
+      markAlertRingDirty();
     }
   }
 
-  if (s_aircraft_dirty || !s_content_base_valid) {
-    if (!rebuildContentBase()) {
+  if (!s_dirty.empty() || !s_content_base_valid) {
+    if (!rebuildAndBlitDirty()) {
       if (config::kRadarResumeDebug) {
         static unsigned long s_last_rebuild_fail_ms = 0;
         const unsigned long now_ms = millis();
@@ -2003,45 +2910,13 @@ void radarDisplayRefreshSweep() {
           Serial.printf("[radar] sweep_rebuild_fail bg=%d content=%d base=%d dirty=%d heap=%u "
                         "max_blk=%u\n",
                         s_bg_ready ? 1 : 0, s_content_ready ? 1 : 0,
-                        s_content_base_valid ? 1 : 0, s_aircraft_dirty ? 1 : 0,
+                        s_content_base_valid ? 1 : 0, s_dirty.empty() ? 0 : 1,
                         ESP.getFreeHeap(), ESP.getMaxAllocHeap());
           s_last_rebuild_fail_ms = now_ms;
         }
       }
       return;
     }
-
-    const unsigned long patch_start = millis();
-    if (s_sweep_track_valid && !rectEmpty(s_prev_sweep_dirty)) {
-      blitRegionToPanel(s_prev_sweep_dirty);
-      tft.setTextDatum(TextDatum::TopLeft);
-    }
-
-    IntRect patch = s_aircraft_dirty_rect;
-    if (rectEmpty(patch)) {
-      patch = IntRect{0, 0, radar::kSize, radar::kSize};
-    }
-    patch = clampRectToScreen(patch);
-    constexpr int kScreenPixels = radar::kSize * radar::kSize;
-    const int patch_pixels = patch.w * patch.h;
-    if (patch_pixels >= kScreenPixels / 3) {
-      s_content.pushSprite(0, 0);
-      tft.setTextDatum(TextDatum::TopLeft);
-      if (config::kRadarSweepTraceDebug) {
-        Serial.printf("[sweep] aircraft blit full (%lums)\n", millis() - patch_start);
-      }
-    } else {
-      blitRegionToPanel(patch);
-      tft.setTextDatum(TextDatum::TopLeft);
-      if (config::kRadarSweepTraceDebug) {
-        Serial.printf("[sweep] aircraft blit %dx%d @ (%d,%d) (%lums)\n", patch.w, patch.h,
-                      patch.x, patch.y, millis() - patch_start);
-      }
-    }
-    s_sweep_track_valid = false;
-    savePrevAircraftMarkers();
-    s_aircraft_dirty = false;
-    s_aircraft_dirty_rect = {};
   }
 
   if (draw_sweep) {
@@ -2052,20 +2927,18 @@ void radarDisplayRefreshSweep() {
     recoverSweepAfterGap(paint_gap);
     const float angle = advanceDisplaySweepAngle(now);
     updateSweepOnPanel(angle);
-  } else if (s_sweep_track_valid) {
-    blitRegionToPanel(s_prev_sweep_dirty);
+  } else if (s_prev_spoke_count > 0) {
+    eraseSweepFromPanel();
     tft.setTextDatum(TextDatum::TopLeft);
-    s_sweep_track_valid = false;
   }
 }
 
 void radarDisplayDraw() {
   initPalette();
   initLabelMetrics();
-  s_aircraft_dirty = false;
-  s_aircraft_dirty_rect = {};
+  s_dirty.clear();
   s_content_base_valid = false;
-  s_sweep_track_valid = false;
+  s_prev_spoke_count = 0;
   s_display_sweep_init = false;
   s_prev_aircraft_marker_count = 0;
 
@@ -2091,29 +2964,31 @@ void radarDisplayRefreshAircraft() {
   // First: whether the sign shows decides where tags may go.
   const bool sign_changed = overheadSignUpdate();
 #endif
-  // Place the new tag set before measuring what changed: the dirty rect has to
-  // cover where the labels are about to land, not where they used to.
-  resolveAircraftLabels();
+  // One pass per poll: positions, highlights, tag text and the new tag layout. The
+  // dirty rects must cover where the labels are about to land, not where they were.
+  refreshPlaneViews();
 
   const size_t curr_count = collectAircraftMarkers(s_current_aircraft_markers,
                                                     services::adsb::kMaxAircraft);
-  IntRect dirty =
-      unionChangedMarkerBounds(s_current_aircraft_markers, curr_count);
+  // Pending rects (banner, toast...) ride along with this rebuild.
+  addChangedMarkerBounds(s_current_aircraft_markers, curr_count, &s_dirty);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // Repaint the sign's band only when its text, logo or visibility changed.
   if (sign_changed) {
     IntRect band;
     overheadSignBounds(&band.x, &band.y, &band.w, &band.h);
-    dirty = rectEmpty(dirty) ? band : unionRect(dirty, band);
+    regionAdd(&s_dirty, band);
   }
 #endif
-  if (rectEmpty(dirty)) {
+  if (s_dirty.empty()) {
     return;
   }
 
-  hardware::gfxLogf("[radar] adsb dirty %dx%d @ (%d,%d)", dirty.w, dirty.h, dirty.x, dirty.y);
+  hardware::gfxLogf("[radar] adsb dirty rects=%d px=%d full=%d", s_dirty.count, s_dirty.area(),
+                    s_dirty.full ? 1 : 0);
   if (config::kSerialTraceDebug) {
-    Serial.printf("[radar] adsb dirty %dx%d @ (%d,%d)\n", dirty.w, dirty.h, dirty.x, dirty.y);
+    Serial.printf("[radar] adsb dirty rects=%d px=%d full=%d\n", s_dirty.count, s_dirty.area(),
+                  s_dirty.full ? 1 : 0);
   }
 
   if (!s_bg_ready) {
@@ -2121,12 +2996,10 @@ void radarDisplayRefreshAircraft() {
   }
 
   // Apply the aircraft change to the panel immediately so blips track the ADS-B
-  // poll (~2s) instead of only refreshing where the rotating sweep line happens
-  // to cross them. If the offscreen content sprite is unavailable (low heap),
-  // fall back to the deferred flag consumed by radarDisplayRefreshSweep().
-  if (!ensureContentSprite() || !rebuildContentBase()) {
-    s_aircraft_dirty = true;
-    s_aircraft_dirty_rect = dirty;
+  // poll (~2s) instead of waiting for a later frame. If the offscreen content sprite
+  // is unavailable (low heap), the sweep path retries with a full rebuild.
+  if (!ensureContentSprite() || !rebuildContentBase(false)) {
+    s_content_base_valid = false;
     if (config::kRadarResumeDebug) {
       static unsigned long s_last_defer_ms = 0;
       const unsigned long now_ms = millis();
@@ -2144,25 +3017,11 @@ void radarDisplayRefreshAircraft() {
   }
 
   PanelSession panel(tft);
-  // Clear the prior sweep spoke from the panel so it isn't orphaned by our blit;
-  // the sweep redraws on the next animation frame.
-  if (s_sweep_track_valid && !rectEmpty(s_prev_sweep_dirty)) {
-    blitRegionToPanel(s_prev_sweep_dirty);
-  }
-
-  IntRect patch = clampRectToScreen(dirty);
-  constexpr int kScreenPixels = radar::kSize * radar::kSize;
-  if (patch.w * patch.h >= kScreenPixels / 3) {
-    s_content.pushSprite(0, 0);
-  } else {
-    blitRegionToPanel(patch);
-  }
-  tft.setTextDatum(TextDatum::TopLeft);
-
-  s_sweep_track_valid = false;
+  // A spoke cut by these blits is put right by the next sweep frame (it restores
+  // the old spoke's pixels from the new content).
+  blitRegionsToPanel(s_dirty);
   savePrevAircraftMarkers();
-  s_aircraft_dirty = false;
-  s_aircraft_dirty_rect = {};
+  s_dirty.clear();
 }
 
 void radarDisplaySetLinkStatus(RadarLinkStatus status) {
@@ -2170,21 +3029,15 @@ void radarDisplaySetLinkStatus(RadarLinkStatus status) {
     return;
   }
   s_link_status = status;
-  // Repaint the badge strip on the next frame (sweep path or aircraft refresh).
-  const IntRect strip = linkBadgeStrip();
-  s_aircraft_dirty_rect =
-      rectEmpty(s_aircraft_dirty_rect) ? strip : unionRect(s_aircraft_dirty_rect, strip);
-  s_aircraft_dirty = true;
+  // The badge blocks tags, so re-place them around it: repaint the whole layer.
+  radarDisplayInvalidateAircraft();
 }
 
 RadarLinkStatus radarDisplayLinkStatus() { return s_link_status; }
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 namespace {
-void markRadarRectDirty(const IntRect& r) {
-  s_aircraft_dirty_rect = rectEmpty(s_aircraft_dirty_rect) ? r : unionRect(s_aircraft_dirty_rect, r);
-  s_aircraft_dirty = true;
-}
+void markRadarRectDirty(const IntRect& r) { regionAdd(&s_dirty, r); }
 }  // namespace
 
 void radarDisplayShowSoundToast(bool sound_on) {
@@ -2193,7 +3046,7 @@ void radarDisplayShowSoundToast(bool sound_on) {
   if (s_sound_toast_until_ms == 0) {
     s_sound_toast_until_ms = 1;
   }
-  markRadarRectDirty(soundToastRect());
+  markRadarRectDirty(grownRect(soundToastRect(), 1));
   markRadarRectDirty(muteIconRect());
 }
 
@@ -2203,10 +3056,10 @@ void radarDisplayTickSoundOverlay() {
     s_sound_toast_until_ms = 0;
   }
   if (s_sound_toast_drawn != (s_sound_toast_until_ms != 0)) {
-    markRadarRectDirty(soundToastRect());
+    markRadarRectDirty(grownRect(soundToastRect(), 1));
   }
   // Alert Sound can also change on settings page 3 or the web page.
-  if (s_mute_icon_drawn != !hardware::buzzerEnabled()) {
+  if (s_mute_icon_drawn != muteIconShown()) {
     markRadarRectDirty(muteIconRect());
   }
 }
@@ -2215,10 +3068,7 @@ void radarDisplayInvalidateRect(int x, int y, int w, int h) {
   if (w <= 0 || h <= 0) {
     return;
   }
-  const IntRect r{x, y, w, h};
-  s_aircraft_dirty_rect =
-      rectEmpty(s_aircraft_dirty_rect) ? r : unionRect(s_aircraft_dirty_rect, r);
-  s_aircraft_dirty = true;
+  regionAdd(&s_dirty, IntRect{x, y, w, h});
 }
 
 size_t radarDisplayInRangeAircraftCount() { return inRangeAircraftCount(); }
@@ -2228,30 +3078,37 @@ size_t radarDisplayVisibleAircraftCount() { return visibleAircraftCount(); }
 bool radarDisplayIsInRange(const services::adsb::Aircraft& ac) { return isAircraftInRange(ac); }
 
 void radarDisplayInvalidateAircraft() {
-  s_aircraft_dirty = true;
-  s_aircraft_dirty_rect = IntRect{0, 0, radar::kSize, radar::kSize};
+  s_dirty.full = true;
   s_content_base_valid = false;
+  s_views_valid = false;
 }
 
 void radarDisplayInvalidateBasemap() {
   s_basemap_bg_stale = true;
   s_content_base_valid = false;
-  s_sweep_track_valid = false;
   Serial.println("[basemap] bg marked stale (will apply when HTTPS idle)");
 }
 
 void radarDisplayReleasePressureSprites() {
+  s_prev_spoke_count = 0;
+  if (s_sweep_buf_ready) {
+    s_sweep_buf.deleteSprite();
+    s_sweep_buf_ready = false;
+  }
+  if (s_save_buf != nullptr) {
+    heap_caps_free(s_save_buf);
+    s_save_buf = nullptr;
+    s_save_cap = 0;
+  }
   if (s_content_ready) {
     s_content.deleteSprite();
     s_content_ready = false;
     s_content_base_valid = false;
-    s_sweep_track_valid = false;
   }
   if (s_bg_ready) {
     s_bg.deleteSprite();
     s_bg_ready = false;
     s_content_base_valid = false;
-    s_sweep_track_valid = false;
   }
 }
 

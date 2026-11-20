@@ -14,10 +14,18 @@ void tick(bool radar_visible);
 
 /** Draw the banner + ISS marker into the radar frame being composed. */
 void drawRadarOverlay(PlaneGfx& gfx);
+/** The two halves of drawRadarOverlay(), in its order: ISS marker, then banner. */
+void drawRadarMarker(PlaneGfx& gfx);
+void drawRadarBanner(PlaneGfx& gfx);
 
 /** Area the banner can cover while one is shown (false when none is). Plane tags
  *  keep out of it. */
 bool bannerBounds(int* x, int* y, int* w, int* h);
+
+/** Pixels drawRadarOverlay() can touch right now: the banner (b*) and the ISS marker
+ *  (m*). An absent part gets w = h = 0. False when neither is shown. */
+bool overlayDrawBounds(int* bx, int* by, int* bw, int* bh, int* mx, int* my, int* mw,
+                       int* mh);
 
 /** True when a radar tap at (x, y) lands on the banner. */
 bool bannerHit(int x, int y);
