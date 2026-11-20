@@ -1391,10 +1391,10 @@ uint16_t viewColor(const PlaneView& v, bool pulse_on) {
 
 /**
  * Planes, tags and overlays from the cached views, in their fixed stacking order.
- * `update_sign`: let the overhead sign pick its plane (full rebuilds); region
- * rebuilds keep the sign as it is on screen.
+ * The overhead sign is drawn as it stands: it picks its plane in
+ * refreshViewsAndSign(), before the tags are placed around it.
  */
-void drawAircraftLayer(bool update_sign) {
+void drawAircraftLayer() {
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
   if (planes == nullptr) {
     return;
@@ -1430,9 +1430,6 @@ void drawAircraftLayer(bool update_sign) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // Over the planes and tags, under the link badge. The sign needs the target
   // buffer for its see-through backing; direct-to-panel fallbacks get a solid one.
-  if (update_sign) {
-    overheadSignUpdate();
-  }
   {
     IntRect band;
     if (overheadSignBounds(&band.x, &band.y, &band.w, &band.h)) {
@@ -1446,8 +1443,6 @@ void drawAircraftLayer(bool update_sign) {
       });
     }
   }
-#else
-  (void)update_sign;
 #endif
   {
     IntRect badge;
@@ -1490,10 +1485,24 @@ void drawAircraftLayer(bool update_sign) {
   s_draw->setTextDatum(TextDatum::TopLeft);
 }
 
+/**
+ * Let the overhead sign pick its plane, then rebuild the views. In that order: the
+ * sign's band is a blocked area for the tag layout. True when the sign changed.
+ */
+bool refreshViewsAndSign() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const bool sign_changed = overheadSignUpdate();
+#else
+  const bool sign_changed = false;
+#endif
+  refreshPlaneViews();
+  return sign_changed;
+}
+
 /** Full aircraft layer onto the current target (refreshes the views first). */
 void drawAircraft() {
-  refreshPlaneViews();
-  drawAircraftLayer(true);
+  refreshViewsAndSign();
+  drawAircraftLayer();
 }
 
 // --- Background label mask -------------------------------------------------------
@@ -2097,9 +2106,9 @@ bool rebuildContentBase(bool refresh_views) {
   {
     const DrawScope scope(s_content.gfx());
     if (refresh_views) {
-      refreshPlaneViews();
+      refreshViewsAndSign();
     }
-    drawAircraftLayer(true);
+    drawAircraftLayer();
   }
 
   s_content_base_valid = true;
@@ -2134,7 +2143,7 @@ bool rebuildContentRegion(const RegionList& region) {
   s_paint_failed = false;
   {
     const DrawScope scope(s_content.gfx());
-    drawAircraftLayer(false);
+    drawAircraftLayer();
   }
   s_paint_region = nullptr;
   if (s_paint_failed) {
@@ -3005,13 +3014,11 @@ void radarDisplayDraw() {
 
 void radarDisplayRefreshAircraft() {
   initPalette();
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // First: whether the sign shows decides where tags may go.
-  const bool sign_changed = overheadSignUpdate();
-#endif
-  // One pass per poll: positions, highlights, tag text and the new tag layout. The
-  // dirty rects must cover where the labels are about to land, not where they were.
-  refreshPlaneViews();
+  // One pass per poll: the sign first (whether it shows decides where tags may go),
+  // then positions, highlights, tag text and the new tag layout. The dirty rects must
+  // cover where the labels are about to land, not where they were. The rebuild below
+  // reuses these views and leaves the sign alone, so nothing changes after this.
+  const bool sign_changed = refreshViewsAndSign();
 
   const size_t curr_count = collectAircraftMarkers(s_current_aircraft_markers,
                                                     services::adsb::kMaxAircraft);
@@ -3024,6 +3031,8 @@ void radarDisplayRefreshAircraft() {
     overheadSignBounds(&band.x, &band.y, &band.w, &band.h);
     regionAdd(&s_dirty, band);
   }
+#else
+  (void)sign_changed;
 #endif
   if (s_dirty.empty()) {
     return;
