@@ -25,6 +25,7 @@
 #include "ui/radar_theme.h"
 #include "ui/radar_accent.h"
 #include "ui/ui_scale.h"
+#include "util/big_static.h"
 
 namespace ui {
 
@@ -350,7 +351,9 @@ void tickIdleCountdownRing(unsigned long now_ms) {
 uint8_t s_order[services::adsb::kMaxAircraft];
 size_t s_order_count = 0;
 size_t s_sel = 0;
-services::adsb::Aircraft s_planes[services::adsb::kMaxAircraft];
+using PlaneArray = services::adsb::Aircraft[services::adsb::kMaxAircraft];
+FS_BIG_STATIC(PlaneArray, s_planes)
+#define s_planes FS_BIG_STATIC_REF(s_planes)
 size_t s_plane_count = 0;
 
 char s_recent_enrich_redraw_callsign[16] = "";

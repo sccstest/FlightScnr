@@ -28,6 +28,7 @@
 #include "services/https_heap.h"
 #include "services/https_lock.h"
 #include "services/route_lookup.h"
+#include "util/big_static.h"
 
 namespace services::adsb {
 
@@ -358,12 +359,15 @@ constexpr char kPrefsAltFloorEnKey[] = "alt_fl_en";
 constexpr char kLegacyAltFloorKey[] = "minAltFt";
 constexpr char kPrefsAltCeilKey[] = "alt_ceil_ft";
 
-Aircraft s_aircraft[kMaxAircraft];
+using AircraftArray = Aircraft[kMaxAircraft];
+FS_BIG_STATIC(AircraftArray, s_aircraft)
+#define s_aircraft FS_BIG_STATIC_REF(s_aircraft)
 size_t s_aircraft_count = 0;
 int s_altitude_floor_ft = config::kFactoryAltitudeFloorFt;
 int s_altitude_ceiling_ft = config::kFactoryAltitudeCeilingFt;
 
-Aircraft s_aircraft_staging[kMaxAircraft];
+FS_BIG_STATIC(AircraftArray, s_aircraft_staging)
+#define s_aircraft_staging FS_BIG_STATIC_REF(s_aircraft_staging)
 size_t s_aircraft_staging_count = 0;
 
 SemaphoreHandle_t s_aircraft_mutex = nullptr;

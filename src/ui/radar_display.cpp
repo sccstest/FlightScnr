@@ -36,6 +36,7 @@
 
 #include "hardware/gfx_log.h"
 #include "ui/ui_scale.h"
+#include "util/big_static.h"
 
 namespace ui {
 namespace radar {
@@ -109,10 +110,13 @@ struct CachedAircraftMarker {
 static_assert(services::adsb::kMaxAircraft <= label_layout::kMaxTargets,
               "label_layout would silently drop tags for the extra aircraft");
 
-CachedAircraftMarker s_prev_aircraft_markers[services::adsb::kMaxAircraft];
+using MarkerArray = CachedAircraftMarker[services::adsb::kMaxAircraft];
+FS_BIG_STATIC(MarkerArray, s_prev_aircraft_markers)
+#define s_prev_aircraft_markers FS_BIG_STATIC_REF(s_prev_aircraft_markers)
 size_t s_prev_aircraft_marker_count = 0;
 /** Scratch for ADS-B refresh — must not live on loopTask stack (~8 KB). */
-CachedAircraftMarker s_current_aircraft_markers[services::adsb::kMaxAircraft];
+FS_BIG_STATIC(MarkerArray, s_current_aircraft_markers)
+#define s_current_aircraft_markers FS_BIG_STATIC_REF(s_current_aircraft_markers)
 bool s_marker_prev_used[services::adsb::kMaxAircraft] = {};
 
 class DrawScope {

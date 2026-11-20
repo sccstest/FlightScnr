@@ -23,8 +23,50 @@
 #include "ui/boot_screens.h"
 #include "ui/flight_detail_screen.h"
 #include "ui/radar_display.h"
+#include "util/heap_diag.h"
 
 namespace {
+
+// Number of phones/laptops joined to the setup AP.
+//
+// On the P4, WiFi.softAPgetStationNum() is an ESP-Hosted RPC to the C6, and
+// esp_hosted 2.12 crashes (null read in rpc_wifi_ap_get_sta_list) if that reply ever
+// goes missing. That reboot-looped the portal on real hardware as soon as a phone
+// loaded the page. Count stations from Wi-Fi events there instead: no RPC at all.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+volatile int s_ap_stations = 0;
+bool s_ap_events_hooked = false;
+
+void hookApStationEvents() {
+  if (s_ap_events_hooked) {
+    return;
+  }
+  s_ap_events_hooked = true;
+  WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t) {
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_AP_START:
+      case ARDUINO_EVENT_WIFI_AP_STOP:
+        s_ap_stations = 0;
+        break;
+      case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+        s_ap_stations = s_ap_stations + 1;
+        break;
+      case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
+        if (s_ap_stations > 0) {
+          s_ap_stations = s_ap_stations - 1;
+        }
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+unsigned portalStationCount() { return static_cast<unsigned>(s_ap_stations); }
+#else
+void hookApStationEvents() {}
+unsigned portalStationCount() { return static_cast<unsigned>(WiFi.softAPgetStationNum()); }
+#endif
 
 constexpr char kWifiPrefsNamespace[] = "fs_wifi";
 constexpr char kPrefsForcePortalKey[] = "portal";
@@ -437,7 +479,8 @@ void handlePortalRoot() {
   }
   Serial.printf("[wifi] portal GET %s stations=%u heap=%u\n",
                 s_active_wm->server->uri().c_str(),
-                static_cast<unsigned>(WiFi.softAPgetStationNum()), ESP.getFreeHeap());
+                portalStationCount(), ESP.getFreeHeap());
+  fs_util::logInternalHeap("portal GET");
   s_active_wm->server->sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   s_active_wm->server->sendHeader("Pragma", "no-cache");
   s_active_wm->server->send_P(200, PSTR("text/html"), kPortalRootHtml);
@@ -1045,6 +1088,7 @@ PortalResult openConfigPortal(WiFiManager& wm) {
   prepareWifiForPortal();
   bootScreenShowPortalHint();
 
+  hookApStationEvents();
   wm.startConfigPortal(services::device_identity::portalApName());
   if (!wm.getConfigPortalActive()) {
     Serial.println("Config portal failed to start");
@@ -1055,13 +1099,13 @@ PortalResult openConfigPortal(WiFiManager& wm) {
   Serial.printf("[wifi] portal AP IP %s  free_heap=%u max_blk=%u\n",
                 WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap(),
                 ESP.getMaxAllocHeap());
+  fs_util::logInternalHeap("portal up");
 
   ensureNetsLoaded();
   const bool have_saved = s_nets_count > 0;
   const unsigned long opened_ms = millis();
   unsigned long last_client_ms = opened_ms;
   unsigned long last_sta_log_ms = 0;
-  unsigned long last_sta_poll_ms = opened_ms - 1000UL;
   unsigned stations = 0;
   bool retry_saved = false;
   while (wm.getConfigPortalActive()) {
@@ -1071,13 +1115,7 @@ PortalResult openConfigPortal(WiFiManager& wm) {
     }
     wm.process();
     const unsigned long now = millis();
-    // Ask for the station count once a second, not every pass. On the P4 this is an
-    // ESP-Hosted RPC to the C6, and ~200 of them a second made the C6 stop answering
-    // about 45 s after the portal opened; esp_hosted then crashed on the missing reply.
-    if (now - last_sta_poll_ms >= 1000UL) {
-      last_sta_poll_ms = now;
-      stations = static_cast<unsigned>(WiFi.softAPgetStationNum());
-    }
+    stations = portalStationCount();
     if (stations > 0) {
       last_client_ms = now;
     }
@@ -1355,6 +1393,7 @@ bool wifiSetupConnect() {
     return false;
   }
 
+  fs_util::logInternalHeap("before wifi");
   Serial.println("Connecting to WiFi (portal opens if needed)...");
 
   if (wifiLinkUp()) {

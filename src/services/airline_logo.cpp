@@ -6,12 +6,14 @@
 
 #include "data/airline_logos_lookup.h"
 #include "hardware/plane_gfx.h"
+#include "util/big_static.h"
 
 namespace services::airline {
 
 namespace {
 
-AnimatedGIF s_gif;
+FS_BIG_STATIC(AnimatedGIF, s_gif)
+#define s_gif FS_BIG_STATIC_REF(s_gif)
 uint16_t* s_frame = nullptr;
 int s_frame_w = 0;
 int s_frame_h = 0;

@@ -13,6 +13,7 @@
 #endif
 
 #include "config.h"
+#include "util/heap_diag.h"
 #include "services/route_cache_store.h"
 #include "hardware/buzzer.h"
 #include "hardware/board_marker.h"
@@ -244,6 +245,7 @@ void logFetchDefer(const char* reason) {
 }
 
 void logDiagLine(const char* tag, unsigned long diag_ivl_ms = config::kDiagLogIntervalMs) {
+  fs_util::logInternalHeap(tag);
   const unsigned long uptime_sec = millis() / 1000UL;
   const unsigned hours = static_cast<unsigned>(uptime_sec / 3600UL);
   const unsigned mins = static_cast<unsigned>((uptime_sec % 3600UL) / 60UL);
@@ -2323,6 +2325,16 @@ void setup() {
                 config::kRadarResumeDebug ? 1 : 0, config::kDiagLogIntervalMs / 1000UL,
                 config::kDiagSlowLoopMs);
   Serial.printf("FlightScnr (%s)\n", kFlightScnrBoardMarker + 8);
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+  // Send ordinary heap allocations of 256 bytes or more to PSRAM first (the core's
+  // default is 4096). Internal RAM is scarce on the P4 and the Wi-Fi link
+  // (ESP-Hosted), lwIP's timers and mbedTLS must have it; network packet buffers,
+  // strings and JSON do not. Code that needs internal or DMA RAM asks for it by
+  // capability and is not affected.
+  heap_caps_malloc_extmem_enable(256);
+#endif
+  fs_util::logInternalHeap("boot");
 
   // The ADS-B fetch worker is pinned to core 0 so its CPU-bound mbedTLS handshake
   // never stalls the render loop on core 1. That heavy crypto, together with the

@@ -21,6 +21,7 @@
 #include "services/adsb_client.h"
 #include "services/https_heap.h"
 #include "services/https_lock.h"
+#include "util/big_static.h"
 
 namespace services::photo {
 
@@ -91,11 +92,14 @@ bool s_ready_ok = false;
 char s_ready_callsign[9] = {};
 unsigned long s_retry_after_ms = 0;
 
-MetaEntry s_meta[kMetaCacheSize];
+using MetaArray = MetaEntry[kMetaCacheSize];
+FS_BIG_STATIC(MetaArray, s_meta)
+#define s_meta FS_BIG_STATIC_REF(s_meta)
 size_t s_meta_next = 0;
 
 DecodedPhoto s_decoded;
-JPEGDEC s_jpeg;
+FS_BIG_STATIC(JPEGDEC, s_jpeg)
+#define s_jpeg FS_BIG_STATIC_REF(s_jpeg)
 
 struct JpegDrawCtx {
   uint16_t* pixels;
