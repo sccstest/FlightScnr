@@ -1549,6 +1549,17 @@ void handleSettingsPage() {
 
   appendFirmwareUpdateCard(page, &used);
 
+  // Plain restart: keeps Wi-Fi, settings and the map (unlike Reset Wi-Fi).
+  appendRaw(page, kSettingsPageCap, &used,
+            "<details class=\"card\"><summary><span class=\"ico\">&#8635;</span>Restart device"
+            "<span class=\"chev\">&#9656;</span></summary><div class=\"body\">"
+            "<p class=\"note\">Restarts the radar. Wi-Fi, settings and the map are kept. "
+            "It is back in about 15 seconds.</p>"
+            "<form method=\"POST\" action=\"/restart\""
+            " onsubmit=\"return confirm('Restart the radar now?');\">"
+            "<button class=\"sm\" type=\"submit\">Restart now</button></form>"
+            "</div></details>");
+
   appendRaw(page, kSettingsPageCap, &used, "</div></details>");
 
   // Live sync with the device. Rules (the page must never lose or silently revert an edit):
@@ -1820,6 +1831,23 @@ void handleDisclaimerClear() {
   services::disclaimer::clear();
   redirectToSettings("disclaimer_cleared=1");
   settingsNotifySaved();
+}
+
+void handleRestart() {
+  if (s_server->method() != HTTP_POST) {
+    s_server->send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  Serial.println("[settings] restart requested from the web page");
+  s_server->send(200, "text/html",
+                 "<!doctype html><meta name=\"viewport\" content=\"width=device-width\">"
+                 "<body style=\"font-family:system-ui,sans-serif;background:#111;color:#eee;"
+                 "max-width:28rem;margin:2rem auto;padding:0 1rem\">"
+                 "<h1 style=\"font-size:1.2rem\">Restarting...</h1>"
+                 "<p>The radar is restarting. This page reloads in 20 seconds.</p>"
+                 "<script>setTimeout(function(){location.href='/';},20000);</script>");
+  delay(500);  // let the reply leave before the reset
+  ESP.restart();
 }
 
 bool s_basemap_upload_failed = false;
@@ -2499,6 +2527,7 @@ void registerRoutes() {
   s_server->on("/route_cache.csv", HTTP_GET, handleRouteCacheDownload);
   s_server->on("/route_cache/clear", HTTP_POST, handleRouteCacheClear);
   s_server->on("/disclaimer/clear", HTTP_POST, handleDisclaimerClear);
+  s_server->on("/restart", HTTP_POST, handleRestart);
   s_server->on("/basemap/upload", HTTP_POST, handleBasemapUploadDone, handleBasemapUpload);
   s_server->on("/basemap/clear", HTTP_POST, handleBasemapClear);
   s_server->on("/basemap/adjust", HTTP_POST, handleBasemapAdjust);
