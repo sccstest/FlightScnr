@@ -750,13 +750,31 @@ void bootSanityCheck() {
 namespace {
 void bootCheckJob() {
   bootSanityCheck();
+  if (s_retry_after_ms == 0 && s_last_ok_ms == 0) {
+    // Failed: back off like weatherJob() so screens don't retry at once.
+    s_retry_after_ms = millis() + config::kWeatherRetryBackoffMs;
+  }
   s_pending = false;
 }
 }  // namespace
 
 bool queueBootCheck() {
-  if (!anyWeatherSourceAvailable() || s_pending) {
+  if (!anyWeatherSourceAvailable()) {
     return false;
+  }
+  // Honor the same guards as requestRefresh(): no extra paid call when weather was
+  // already fetched (or tried) moments ago, and none inside a back-off window.
+  const unsigned long now = millis();
+  if (s_live.valid || s_ready ||
+      (s_last_attempt_ms != 0 && now - s_last_attempt_ms < config::kWeatherMinFetchIntervalMs) ||
+      (s_retry_after_ms != 0 && !util::millisReached(now, s_retry_after_ms))) {
+    // Done: a screen's fetch already covered it, or weather just failed / is rate
+    // limited (the screens retry after the back-off). The check stays one-shot.
+    Serial.println("[weather] boot check skipped (weather fetched or backing off)");
+    return true;
+  }
+  if (s_pending) {
+    return false;  // try again on a later pass
   }
   // Same check as bootSanityCheck(), but on the ADS-B worker (core 0) so the
   // loop (and touch) never waits on TLS.

@@ -2583,8 +2583,10 @@ void tickAdsbFetch() {
   }
 }
 
-/** Boot weather check, once the radar has drawn its first frame (or 60 s after it was
- *  scheduled, whatever screen is up), so it never delays the disclaimer. */
+/** Boot weather check, once the radar has drawn its first frame and the first adsb.fi
+ *  poll has come back (or 90 s after it was scheduled, whatever screen is up). It runs
+ *  on the shared HTTPS worker ahead of ADS-B polls, so queueing it at the first radar
+ *  frame made the first planes wait behind Tomorrow.io + Open-Meteo. */
 void tickWeatherBootCheck() {
   static unsigned long s_scheduled_ms = 0;
   if (!g_weather_boot_check_pending) {
@@ -2596,7 +2598,8 @@ void tickWeatherBootCheck() {
   }
   const bool radar_drawn = g_screen == AppScreen::Radar && g_radar_visible &&
                            g_last_sweep_done_ms != 0;
-  if (!radar_drawn && now - s_scheduled_ms < 60000UL) {
+  const bool first_planes_in = services::adsb::lastFetchOkAgeMs() != UINT32_MAX;
+  if (!(radar_drawn && first_planes_in) && now - s_scheduled_ms < 90000UL) {
     return;
   }
   if (WiFi.status() != WL_CONNECTED) {
