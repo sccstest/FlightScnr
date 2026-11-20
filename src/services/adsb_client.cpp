@@ -27,8 +27,13 @@
 #include "services/altitude_filter.h"
 #include "services/https_heap.h"
 #include "services/https_lock.h"
+#include "services/clock_time.h"
 #include "services/route_lookup.h"
 #include "util/big_static.h"
+#include "util/millis_deadline.h"
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+#include "services/ota_github.h"
+#endif
 
 namespace services::adsb {
 
@@ -70,7 +75,19 @@ namespace {
 constexpr float kKmPerNm = 1.852f;
 constexpr uint32_t kFetchHttpTimeoutMs = 8000;
 constexpr uint32_t kFetchHttpTimeoutSec = kFetchHttpTimeoutMs / 1000UL;
-constexpr uint32_t kFetchStallRecoveryMs = 25000;
+// One ADS-B fetch is bounded by its own timeouts: DNS + connect + handshake + response
+// (8 s each) plus the 12 s body read, ~45 s worst case. The watchdog first asks the
+// worker to stop (it closes its socket itself), and deletes it only as a last resort:
+// vTaskDelete skips destructors, so the TLS socket (16 max) and its RAM would leak.
+constexpr uint32_t kFetchStallAbortMs = 50000;
+constexpr uint32_t kFetchStallKillMs = 120000;
+// Background jobs (weather, photo, rain, sky, time zone, OTA check) make up to a few
+// requests each with 6-12 s timeouts.
+constexpr uint32_t kBgJobStallWarnMs = 90000;
+constexpr uint32_t kBgJobStallKillMs = 240000;
+
+// Set by the watchdog: the body read loop gives up and the socket is closed.
+volatile bool s_fetch_abort = false;
 
 void workerYield() { vTaskDelay(1); }
 
@@ -164,11 +181,13 @@ bool readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
     return false;
   }
   const unsigned long deadline_ms = millis() + timeout_ms;
+  // Wrap-safe; also stops when the stall watchdog asks the worker to give up.
+  auto expired = [&]() { return s_fetch_abort || util::millisReached(deadline_ms); };
   uint8_t buf[512];
 
   if (!chunked) {
     while (http.connected() || stream->available()) {
-      if (millis() >= deadline_ms) {
+      if (expired()) {
         if (config::kSerialTraceDebug) {
           Serial.printf("[fetch] http read timeout (%ums)\n", timeout_ms);
         }
@@ -208,7 +227,7 @@ bool readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
 
   auto readByte = [&](uint8_t* out) -> bool {
     for (;;) {
-      if (millis() >= deadline_ms) {
+      if (expired()) {
         return false;
       }
       if (stream->available() > 0) {
@@ -244,7 +263,7 @@ bool readHttpPayload(HTTPClient& http, PsramPayload* payload, uint32_t timeout_m
     }
     long remaining = chunk_size;
     while (remaining > 0) {
-      if (millis() >= deadline_ms) {
+      if (expired()) {
         if (config::kSerialTraceDebug) {
           Serial.printf("[fetch] http read timeout (%ums)\n", timeout_ms);
         }
@@ -380,9 +399,10 @@ volatile bool s_fetch_busy = false;
 // One-shot job borrowed onto this worker (see queueBackgroundJob).
 volatile BackgroundJob s_bg_job = nullptr;
 volatile bool s_bg_job_busy = false;
+volatile unsigned long s_bg_job_busy_since_ms = 0;
 
 unsigned long s_last_fetch_ok_ms = 0;
-unsigned long s_fetch_busy_since_ms = 0;
+volatile unsigned long s_fetch_busy_since_ms = 0;
 uint32_t s_fetch_fail_streak = 0;
 // Failed polls since the last good one, for the on-screen "feed down" badge.
 // Unlike s_fetch_fail_streak it also counts 429s and is not cleared by a WiFi
@@ -1106,6 +1126,9 @@ bool fetchUpdateBlocking(double center_lat, double center_lon, float fetch_radiu
   http.setTimeout(kFetchHttpTimeoutMs);
   http.setReuse(false);
   http.setUserAgent(config::kAdsbUserAgent);
+  // The Date header sets the clock if SNTP (UDP 123) is blocked on this network.
+  static const char* kCollectHeaders[] = {"Date"};
+  http.collectHeaders(kCollectHeaders, 1);
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     if (code == 429) {
@@ -1116,12 +1139,20 @@ bool fetchUpdateBlocking(double center_lat, double center_lon, float fetch_radiu
                     config::kAdsbRateLimitBackoffMs);
     } else {
       s_fetch_rate_limited = false;
-      // Only a failed connect (TLS handshake could not allocate/complete) or an
-      // explicit out-of-RAM error means memory pressure worth a WiFi recycle.
-      // Read timeouts (-11) and dropped connections (-5) are usually transient
-      // network conditions; they feed the fail streak, and the streak-based
-      // recycle in tryTlsWifiRefresh() remains the last resort.
-      if (code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_TOO_LESS_RAM) {
+      // Only an explicit out-of-RAM error, or a failed connect while DMA-capable RAM
+      // is really short, means memory pressure worth a WiFi recycle. -1 is also
+      // what a DNS failure, a dead internet link or one unreachable host give; a
+      // recycle cannot fix those (it only made the outage longer). Read timeouts
+      // (-11) and dropped connections (-5) are transient network conditions.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      const bool memory_failure =
+          code == HTTPC_ERROR_TOO_LESS_RAM ||
+          (code == HTTPC_ERROR_CONNECTION_REFUSED && services::https::tlsDmaRamLow());
+#else
+      const bool memory_failure =
+          code == HTTPC_ERROR_CONNECTION_REFUSED || code == HTTPC_ERROR_TOO_LESS_RAM;
+#endif
+      if (memory_failure) {
         services::route::noteTlsMemoryFailure();
       }
       if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
@@ -1135,6 +1166,8 @@ bool fetchUpdateBlocking(double center_lat, double center_lon, float fetch_radiu
     services::https::drainTlsHeapAfterSession();
     return false;
   }
+
+  services::clock::noteHttpDate(http.header("Date").c_str());
 
   PsramPayload payload;
   if (!readHttpPayload(http, &payload, kFetchHttpTimeoutMs + 4000U)) {
@@ -1194,18 +1227,30 @@ void fetchWorkerTask(void* /*arg*/) {
     // it is user-initiated and rare, and on the radar screen ADS-B re-requests
     // every cycle, so checking it first is the only way weather ever gets a turn.
     if (s_bg_job != nullptr) {
+      s_bg_job_busy_since_ms = millis() != 0 ? millis() : 1;
       s_bg_job_busy = true;
       BackgroundJob job = s_bg_job;
       job();
       s_bg_job = nullptr;
       s_bg_job_busy = false;
+      s_bg_job_busy_since_ms = 0;
     } else if (s_fetch_requested) {
+      s_fetch_abort = false;
+      s_fetch_busy_since_ms = millis() != 0 ? millis() : 1;
       s_fetch_busy = true;
-      s_fetch_busy_since_ms = millis();
       size_t n = 0;
       const bool ok = fetchUpdateBlocking(s_fetch_lat, s_fetch_lon, s_fetch_radius_km,
                                         s_aircraft_staging, &n);
+      if (s_fetch_abort) {
+        Serial.printf("[adsb] fetch stopped by stall watchdog after %lums\n",
+                      millis() - s_fetch_busy_since_ms);
+        s_fetch_abort = false;
+      }
       if (ok) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+        // First good data after an OTA install: keep this image (no rollback).
+        services::ota_github::confirmRunningImage("first adsb.fi fetch");
+#endif
         s_last_fetch_ok_ms = millis();
         s_fetch_fail_streak = 0;
         s_feed_fail_streak = 0;
@@ -1306,18 +1351,44 @@ void fetchProcessReady(const bool enrich_routes) {
 void fetchConsume() { s_fetch_ready = false; }
 
 void fetchWatchdog(unsigned long now_ms) {
-  if (!s_fetch_requested && !s_fetch_busy) {
+  // Covers both an ADS-B fetch and a background job (weather, photo, rain, sky,
+  // time zone, OTA check) running on the same worker.
+  const unsigned long fetch_since = s_fetch_busy ? s_fetch_busy_since_ms : 0;
+  const unsigned long job_since = s_bg_job_busy ? s_bg_job_busy_since_ms : 0;
+  if (fetch_since == 0 && job_since == 0) {
     return;
   }
-  if (s_fetch_busy_since_ms == 0) {
+  const bool is_job = job_since != 0;
+  const unsigned long busy_ms = now_ms - (is_job ? job_since : fetch_since);
+  if (static_cast<long>(busy_ms) < 0) {
+    return;  // stamp taken on core 0 just after now_ms was read
+  }
+
+  static unsigned long s_last_warn_ms = 0;
+  if (!is_job && busy_ms >= kFetchStallAbortMs && !s_fetch_abort) {
+    // Cooperative: the read loop sees this, returns, and the socket is closed.
+    Serial.printf("[adsb] fetch stall: asking the worker to stop (%lums busy)\n", busy_ms);
+    s_fetch_abort = true;
+  }
+  if (is_job) {
+    // Jobs are not killed: that would leave the job's own "pending" flag set forever
+    // (e.g. weather would never fetch again) and leak its socket. A job stuck for
+    // good also stops ADS-B, and main's no-data escalation restarts the device.
+    if (busy_ms >= kBgJobStallWarnMs && now_ms - s_last_warn_ms >= 30000UL) {
+      s_last_warn_ms = now_ms;
+      Serial.printf("[adsb] background job slow (%lums busy)%s\n", busy_ms,
+                    busy_ms >= kBgJobStallKillMs ? " - looks hung" : "");
+    }
     return;
   }
-  if (now_ms - s_fetch_busy_since_ms < kFetchStallRecoveryMs) {
+  if (busy_ms < kFetchStallKillMs) {
     return;
   }
 
-  Serial.printf("[adsb] fetch stall recovery (%lums busy)\n",
-                now_ms - s_fetch_busy_since_ms);
+  // Last resort: the worker is stuck inside a library call with no timeout. Deleting
+  // it skips destructors (its socket leaks), so this must stay rare; it is logged.
+  Serial.printf("[adsb] worker hung in a fetch for %lums - recreating it (last resort)\n",
+                busy_ms);
   if (s_fetch_task != nullptr) {
     // Worker may hold the HTTPS lock / stack C++ clients; reclaim if this task
     // owned it (or left an orphan holder) — never steal from the route worker.
@@ -1330,6 +1401,7 @@ void fetchWatchdog(unsigned long now_ms) {
   s_fetch_busy = false;
   s_fetch_ready = false;
   s_fetch_busy_since_ms = 0;
+  s_fetch_abort = false;
   ++s_fetch_fail_streak;
   ++s_feed_fail_streak;
   fetchInit();
@@ -1347,12 +1419,14 @@ uint32_t lastFetchOkAgeMs() {
 uint32_t fetchFailStreak() { return s_fetch_fail_streak; }
 
 bool rateLimitBackoffActive(unsigned long now_ms) {
-  return s_rate_limit_until_ms != 0 && now_ms < s_rate_limit_until_ms;
+  return s_rate_limit_until_ms != 0 && !util::millisReached(now_ms, s_rate_limit_until_ms);
 }
 
 void fetchResetFailStreak() { s_fetch_fail_streak = 0; }
 
 bool feedLooksDown() { return s_feed_fail_streak >= config::kFeedDownAfterFails; }
+
+uint32_t feedFailStreak() { return s_feed_fail_streak; }
 
 uint32_t fetchTaskStackFreeBytes() {
   if (s_fetch_task == nullptr) {

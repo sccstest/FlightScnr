@@ -20,7 +20,35 @@ bool wifiSetupConnect() {
 // With --offline / --wifi-down the shim's WiFi.status() reports disconnected;
 // "reconnecting" succeeds once that window ends.
 bool wifiReconnect() { return WiFi.status() == WL_CONNECTED; }
-bool wifiSoftRecycle() { return true; }
+namespace {
+bool s_sim_reconnecting = false;
+}
+bool wifiReconnectStart() {
+  if (!s_sim_reconnecting) {
+    Serial.println("WiFi reconnecting (sim, non-blocking)...");
+  }
+  s_sim_reconnecting = true;
+  return true;
+}
+bool wifiReconnectPoll() {
+  if (!s_sim_reconnecting || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+  s_sim_reconnecting = false;
+  Serial.println("[wifi] reconnected (sim)");
+  return true;
+}
+bool wifiReconnectActive() { return s_sim_reconnecting; }
+bool wifiSoftRecycle() {
+  Serial.println("[sim] Wi-Fi recycle (no-op)");
+  return true;
+}
+bool wifiEscalationRestart(const char* why) {
+  // The device would esp_restart() here; the simulator only logs it.
+  Serial.printf("[net] restarting the device: %s (sim: not restarting)\n",
+                why != nullptr ? why : "?");
+  return false;
+}
 uint8_t wifiNetsCount() { return 1; }
 bool wifiNetsGetSsid(uint8_t index, char* out, size_t out_len) {
   if (index != 0 || out == nullptr || out_len == 0) return false;
@@ -33,15 +61,30 @@ bool wifiNetsSwap(uint8_t, uint8_t) { return false; }
 bool wifiNetsMoveUp(uint8_t) { return false; }
 bool wifiNetsMoveDown(uint8_t) { return false; }
 
-void settingsWebStart() {}
-void settingsWebStop() {}
+namespace {
+bool s_sim_web_active = false;  // so main's stop/restart logic can be exercised
+}
+void settingsWebStart() {
+  if (!s_sim_web_active) {
+    Serial.println("[sim] settings web: started (stub)");
+  }
+  s_sim_web_active = true;
+}
+void settingsWebStop() {
+  if (s_sim_web_active) {
+    Serial.println("[sim] settings web: stopped (stub)");
+  }
+  s_sim_web_active = false;
+}
 void settingsWebPoll() {}
-bool settingsWebActive() { return false; }
+bool settingsWebActive() { return s_sim_web_active; }
 
 namespace services::ota_github {
 void init() {}
 void pollIfDue() {}
 bool checkLatest(bool) { return false; }
+bool checkInProgress() { return false; }
+void confirmRunningImage(const char*) {}
 bool updateAvailable() { return false; }
 const char* latestTag() { return ""; }
 const char* currentVersion() { return "sim"; }
