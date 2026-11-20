@@ -1,11 +1,19 @@
+// Icon rasterizing is per-pixel float work; the framework default is -Os.
+#pragma GCC optimize("O2")
+
 #include "ui/aircraft_icon.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <vector>
+
+#include "Arduino_TFT.h"
+#include "util/big_static.h"
 
 #include "hardware/pin_config.h"
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -220,19 +228,54 @@ bool hasIcon(uint8_t category) {
   return category < data::aircraft_icons::kCategoryCount;
 }
 
-bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
-          uint8_t category, int base_side_px) {
-  if (!hasIcon(category) || base_side_px < 8) {
-    return false;
-  }
+namespace {
 
-  const data::aircraft_icons::IconBlob* blob = &data::aircraft_icons::kIcons[category];
-  const uint8_t* alpha =
-      reinterpret_cast<const uint8_t*>(pgm_read_ptr(&blob->alpha));
-  const uint16_t scale_x100 = pgm_read_word(&blob->scale_x100);
-  const int side =
-      std::max(8, static_cast<int>((base_side_px * static_cast<int>(scale_x100) + 50) / 100));
+// ---- Rotated-mask cache ----------------------------------------------------------
+// Rotating a 64 px mask costs ~55x55 float samples per icon, and a radar rebuild draws
+// 30-50 of them. The lit pixels depend only on (category, size, heading), so they are
+// built once as horizontal runs and reused until evicted (LRU).
 
+/** One horizontal run of lit pixels, relative to the icon center. */
+struct Span {
+  int8_t dy;
+  int8_t x0;
+  uint8_t len;
+};
+
+struct MaskEntry {
+  bool used = false;
+  uint8_t category = 0;
+  uint8_t side = 0;
+  uint8_t heading_step = 0;  // heading / kHeadingStepDeg
+  uint32_t stamp = 0;
+  Span* spans = nullptr;  // PSRAM
+  uint16_t count = 0;
+  uint16_t capacity = 0;
+};
+
+/** Headings are rounded to this many degrees: at most 1 degree off, which moves an
+ *  icon tip by under half a pixel, and lets a plane hold its cached mask in turns. */
+constexpr int kHeadingStepDeg = 2;
+constexpr int kHeadingSteps = 360 / kHeadingStepDeg;
+constexpr size_t kMaskCacheSize = 64;
+// ~1.5 KB of entries plus ~0.5 KB of runs each: all in PSRAM on the 4C.
+using MaskArray = MaskEntry[kMaskCacheSize];
+FS_BIG_STATIC(MaskArray, s_masks)
+#define s_masks FS_BIG_STATIC_REF(s_masks)
+uint32_t s_mask_clock = 0;
+std::vector<Span> s_build;  // scratch for one build (reserved big, so it lands in PSRAM)
+
+struct SpanView {
+  const Span* data;
+  size_t count;
+  const Span* begin() const { return data; }
+  const Span* end() const { return data + count; }
+};
+
+/** Build the lit runs for one (category, side, heading). Same sampling as the old
+ *  per-draw loop, so the pixels are identical for the same heading. */
+void buildSpans(const uint8_t* alpha, int side, float heading_deg, std::vector<Span>* out) {
+  out->clear();
   const float src_side = static_cast<float>(data::aircraft_icons::kIconSide);
   const float src_half = (src_side - 1.0f) * 0.5f;
   const float scale = static_cast<float>(side) / src_side;
@@ -246,36 +289,193 @@ bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
   // Destination-space sample: every screen pixel is filled (no sparse upscale holes).
   // Max of nearest 4 source cells keeps thin rotor strokes from sparkling under rotate.
   for (int dy = -radius; dy <= radius; ++dy) {
-    for (int dx = -radius; dx <= radius; ++dx) {
-      // Inverse of mapLocal (screen offset → icon-local).
-      const float lx = static_cast<float>(dx) * cos_h + static_cast<float>(dy) * sin_h;
-      const float ly = -static_cast<float>(dx) * sin_h + static_cast<float>(dy) * cos_h;
-      const float ix_f = lx * inv_scale + src_half;
-      const float iy_f = ly * inv_scale + src_half;
-      const int ix0 = static_cast<int>(floorf(ix_f));
-      const int iy0 = static_cast<int>(floorf(iy_f));
-      uint8_t a = 0;
-      for (int oy = 0; oy <= 1; ++oy) {
-        for (int ox = 0; ox <= 1; ++ox) {
-          const int ix = ix0 + ox;
-          const int iy = iy0 + oy;
-          if (ix < 0 || iy < 0 || ix >= data::aircraft_icons::kIconSide ||
-              iy >= data::aircraft_icons::kIconSide) {
-            continue;
-          }
-          const uint8_t s = pgm_read_byte(
-              &alpha[static_cast<size_t>(iy) * data::aircraft_icons::kIconSide +
-                     static_cast<size_t>(ix)]);
-          if (s > a) {
-            a = s;
+    int run_start = 0;
+    bool in_run = false;
+    for (int dx = -radius; dx <= radius + 1; ++dx) {
+      bool lit = false;
+      if (dx <= radius) {
+        // Inverse of mapLocal (screen offset → icon-local).
+        const float lx = static_cast<float>(dx) * cos_h + static_cast<float>(dy) * sin_h;
+        const float ly = -static_cast<float>(dx) * sin_h + static_cast<float>(dy) * cos_h;
+        const float ix_f = lx * inv_scale + src_half;
+        const float iy_f = ly * inv_scale + src_half;
+        const int ix0 = static_cast<int>(floorf(ix_f));
+        const int iy0 = static_cast<int>(floorf(iy_f));
+        uint8_t a = 0;
+        for (int oy = 0; oy <= 1; ++oy) {
+          for (int ox = 0; ox <= 1; ++ox) {
+            const int ix = ix0 + ox;
+            const int iy = iy0 + oy;
+            if (ix < 0 || iy < 0 || ix >= data::aircraft_icons::kIconSide ||
+                iy >= data::aircraft_icons::kIconSide) {
+              continue;
+            }
+            const uint8_t s = pgm_read_byte(
+                &alpha[static_cast<size_t>(iy) * data::aircraft_icons::kIconSide +
+                       static_cast<size_t>(ix)]);
+            if (s > a) {
+              a = s;
+            }
           }
         }
+        lit = a >= data::aircraft_icons::kAlphaFloor;
       }
-      if (a < data::aircraft_icons::kAlphaFloor) {
+      if (lit && !in_run) {
+        run_start = dx;
+        in_run = true;
+      } else if (!lit && in_run) {
+        out->push_back(Span{static_cast<int8_t>(dy), static_cast<int8_t>(run_start),
+                            static_cast<uint8_t>(dx - run_start)});
+        in_run = false;
+      }
+    }
+  }
+}
+
+/** Cached runs for this icon, building (and evicting the least recently used) on a
+ *  miss. False when the size is outside what a Span can hold or memory ran out. */
+bool masksFor(uint8_t category, const uint8_t* alpha, int side, int heading_step,
+              SpanView* view, bool* built) {
+  *built = false;
+  // Span offsets are int8: radius = (side + 1) / 2 + 1 must stay below 127.
+  if (side > 240) {
+    return false;
+  }
+  ++s_mask_clock;
+  MaskEntry* victim = &s_masks[0];
+  for (MaskEntry& e : s_masks) {
+    if (e.used && e.category == category && e.side == side &&
+        e.heading_step == heading_step) {
+      e.stamp = s_mask_clock;
+      *view = SpanView{e.spans, e.count};
+      return true;
+    }
+    if (!e.used) {
+      if (victim->used) {
+        victim = &e;
+      }
+    } else if (victim->used && e.stamp < victim->stamp) {
+      victim = &e;
+    }
+  }
+  if (s_build.capacity() == 0) {
+    s_build.reserve(1024);
+  }
+  buildSpans(alpha, side, static_cast<float>(heading_step * kHeadingStepDeg), &s_build);
+  const size_t n = s_build.size();
+  if (n > 0xFFFF) {
+    return false;
+  }
+  if (n > victim->capacity) {
+    heap_caps_free(victim->spans);
+    victim->spans = nullptr;
+    victim->capacity = 0;
+    victim->used = false;
+    const size_t bytes = n * sizeof(Span);
+    void* mem = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mem == nullptr) {
+      mem = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+    }
+    if (mem == nullptr) {
+      return false;
+    }
+    victim->spans = static_cast<Span*>(mem);
+    victim->capacity = static_cast<uint16_t>(n);
+  }
+  if (n > 0) {
+    memcpy(victim->spans, s_build.data(), n * sizeof(Span));
+  }
+  victim->count = static_cast<uint16_t>(n);
+  victim->used = true;
+  victim->category = category;
+  victim->side = static_cast<uint8_t>(side);
+  victim->heading_step = static_cast<uint8_t>(heading_step);
+  victim->stamp = s_mask_clock;
+  *built = true;
+  *view = SpanView{victim->spans, victim->count};
+  return true;
+}
+
+}  // namespace
+
+bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
+          uint8_t category, int base_side_px) {
+  if (!hasIcon(category) || base_side_px < 8) {
+    return false;
+  }
+  const uint32_t t0 = micros();
+
+  const data::aircraft_icons::IconBlob* blob = &data::aircraft_icons::kIcons[category];
+  const uint8_t* alpha =
+      reinterpret_cast<const uint8_t*>(pgm_read_ptr(&blob->alpha));
+  const uint16_t scale_x100 = pgm_read_word(&blob->scale_x100);
+  const int side =
+      std::max(8, static_cast<int>((base_side_px * static_cast<int>(scale_x100) + 50) / 100));
+
+  float heading = std::isfinite(heading_deg) ? heading_deg : 0.0f;
+  int heading_step =
+      static_cast<int>(lroundf(heading / static_cast<float>(kHeadingStepDeg))) % kHeadingSteps;
+  if (heading_step < 0) {
+    heading_step += kHeadingSteps;
+  }
+
+  bool built = false;
+  SpanView view{nullptr, 0};
+  if (!masksFor(category, alpha, side, heading_step, &view, &built)) {
+    return false;  // absurd size or out of memory: caller draws the vector fallback
+  }
+  const uint32_t t_built = micros();
+
+  uint16_t* fb = gfx.framebuffer();
+  if (fb != nullptr) {
+    // Sprite / offscreen canvas: write the runs straight into its pixels.
+    const int fb_w = gfx.framebufferWidth();
+    const int fb_h = gfx.framebufferHeight();
+    for (const Span& s : view) {
+      const int y = cy + s.dy;
+      if (y < 0 || y >= fb_h) {
         continue;
       }
-      gfx.fillRect(static_cast<int16_t>(cx + dx), static_cast<int16_t>(cy + dy), 1, 1, color);
+      int x0 = cx + s.x0;
+      int x1 = x0 + s.len;
+      if (x0 < 0) {
+        x0 = 0;
+      }
+      if (x1 > fb_w) {
+        x1 = fb_w;
+      }
+      if (x0 < x1) {
+        std::fill_n(fb + static_cast<size_t>(y) * static_cast<size_t>(fb_w) +
+                        static_cast<size_t>(x0),
+                    static_cast<size_t>(x1 - x0), color);
+      }
     }
+  } else if (Arduino_TFT::pixelAlign2()) {
+    // Panels that snap writes to a 2x2 grid (CO5300): keep the old pixel-by-pixel
+    // writes so the snapping comes out exactly as before.
+    for (const Span& s : view) {
+      for (int i = 0; i < s.len; ++i) {
+        gfx.fillRect(static_cast<int16_t>(cx + s.x0 + i), static_cast<int16_t>(cy + s.dy), 1,
+                     1, color);
+      }
+    }
+  } else {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    gfx.startWrite();  // P4 framebuffer bus: one cache write-back for the whole icon
+#endif
+    for (const Span& s : view) {
+      gfx.fillRect(static_cast<int16_t>(cx + s.x0), static_cast<int16_t>(cy + s.dy),
+                   static_cast<int16_t>(s.len), 1, color);
+    }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    gfx.endWrite();
+#endif
+  }
+
+  const uint32_t t1 = micros();
+  gfx_perf::add(gfx_perf::Kind::Icon, t1 - t0);
+  if (built) {
+    gfx_perf::add(gfx_perf::Kind::IconMiss, t_built - t0);
   }
   return true;
 }
