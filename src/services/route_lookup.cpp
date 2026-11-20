@@ -116,6 +116,10 @@ enum class DetailStep : uint8_t {
 
 DetailStep s_detail_step = DetailStep::kIdle;
 char s_detail_work_callsign[9] = "";
+// Bumped by every detailWorkerCancelWork(). A step that was mid-HTTP when the loop
+// cancelled sees a new value afterwards and drops its state writes (it used to leave
+// s_detail_step at kDone, which stalled the next flight's lookup).
+volatile uint32_t s_detail_cancel_gen = 0;
 unsigned long s_detail_step_start_ms = 0;
 unsigned long s_detail_heap_skip_since_ms = 0;
 unsigned long s_detail_heap_skip_log_ms = 0;
@@ -1696,12 +1700,26 @@ void detailWorkerCancelWork() {
     Serial.printf("[detail] worker cancel %s step=%s busy=%d req=%d\n", s_detail_work_callsign,
                   detailWorkerDebugStepTagImpl(), s_detail_busy ? 1 : 0, s_detail_requested ? 1 : 0);
   }
+  s_detail_cancel_gen = s_detail_cancel_gen + 1;
   s_detail_requested = false;
   s_detail_step = DetailStep::kIdle;
   s_detail_busy = false;
   s_detail_worker_start_ms = 0;
   s_detail_work_callsign[0] = '\0';
   s_detail_worker_callsign[0] = '\0';
+  routeClear(&s_detail_result);
+  s_detail_result_src = ApiSource::kNone;
+  resetDetailStepLogging();
+}
+
+/** Worker-side return to idle after a cancel. Unlike detailWorkerCancelWork() it
+ *  leaves s_detail_requested / s_detail_worker_callsign alone: the loop may already
+ *  have queued the next flight, and that request must survive. */
+void detailWorkerResetIdleLocal() {
+  s_detail_step = DetailStep::kIdle;
+  s_detail_busy = false;
+  s_detail_worker_start_ms = 0;
+  s_detail_work_callsign[0] = '\0';
   routeClear(&s_detail_result);
   s_detail_result_src = ApiSource::kNone;
   resetDetailStepLogging();
@@ -1755,7 +1773,9 @@ bool detailWorkerRetargetIfNeeded() {
 }
 
 void detailWorkerFinishJob() {
-  const char* callsign = s_detail_work_callsign;
+  char callsign[sizeof(s_detail_work_callsign)];
+  strncpy(callsign, s_detail_work_callsign, sizeof(callsign) - 1);
+  callsign[sizeof(callsign) - 1] = '\0';
   const unsigned long elapsed =
       s_detail_worker_start_ms > 0 ? millis() - s_detail_worker_start_ms : 0;
   const bool still_selected = isCurrentDetailSelection(callsign);
@@ -1773,13 +1793,30 @@ void detailWorkerFinishJob() {
   drainDetailPending();
 }
 
+void detailWorkerRunStepFor(const char* callsign);
+
 void detailWorkerRunStep() {
-  const char* callsign = s_detail_work_callsign;
+  // The loop's detailWorkerCancelWork() can empty s_detail_work_callsign while a
+  // step is in an HTTP call: work on a local copy, and drop the step's state writes
+  // if a cancel arrived meanwhile.
+  const uint32_t gen = s_detail_cancel_gen;
+  char callsign[sizeof(s_detail_work_callsign)];
+  strncpy(callsign, s_detail_work_callsign, sizeof(callsign) - 1);
+  callsign[sizeof(callsign) - 1] = '\0';
   if (callsign[0] == '\0') {
-    detailWorkerCancelWork();
+    detailWorkerResetIdleLocal();
     return;
   }
+  detailWorkerRunStepFor(callsign);
+  if (gen != s_detail_cancel_gen) {
+    if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
+      Serial.printf("[detail] step for %s ended after cancel: back to idle\n", callsign);
+    }
+    detailWorkerResetIdleLocal();
+  }
+}
 
+void detailWorkerRunStepFor(const char* callsign) {
   switch (s_detail_step) {
     case DetailStep::kCache: {
       logDetailStepBegin(DetailStep::kCache, callsign);
@@ -2012,6 +2049,11 @@ void detailWorkerRunStep() {
 }
 
 void detailWorkerTask(void* /*arg*/) {
+  // A previous worker never runs alongside this one, so any non-idle step left
+  // over is stale: start clean (a queued s_detail_requested is kept).
+  if (s_detail_step != DetailStep::kIdle) {
+    detailWorkerResetIdleLocal();
+  }
   for (;;) {
     // Exit point for shutdownDetailWorker(). Here, between steps, no HTTPClient,
     // TLS socket or HTTPS lock is held, so ending the task leaks nothing (deleting
@@ -2021,13 +2063,21 @@ void detailWorkerTask(void* /*arg*/) {
       taskENTER_CRITICAL(&s_detail_task_mux);
       if (s_detail_exit_requested) {
         s_detail_exit_requested = false;
+        // Leave a clean idle state for the next worker (shutdown cancelled the
+        // work; only a stale step write can remain). Done before clearing
+        // s_detail_task, since a new worker may start right after.
+        s_detail_step = DetailStep::kIdle;
+        s_detail_busy = false;
+        s_detail_worker_start_ms = 0;
+        s_detail_work_callsign[0] = '\0';
         s_detail_task = nullptr;
         exiting = true;
       }
       taskEXIT_CRITICAL(&s_detail_task_mux);
       if (exiting) {
         // No detailWorkerCancelWork() here: shutdown already cancelled, and a new
-        // worker may already have been started for the next flight detail.
+        // worker may already have been started for the next flight detail
+        // (its queued request must survive).
         if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
           Serial.println("[detail] worker exited");
         }

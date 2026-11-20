@@ -93,6 +93,8 @@ AppScreen g_screen = AppScreen::Radar;
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
+/** Set while night mode skips the loop's network checks; see restartOutageTimersAfterNight(). */
+bool g_outage_timers_paused = false;
 /** Feeds, NTP, routes etc. have been started (needs Wi-Fi once). */
 bool g_online_services_started = false;
 /** First failed adsb.fi DNS probe of the current streak (0 = resolving fine). */
@@ -2295,26 +2297,59 @@ void tryTlsWifiRefresh(unsigned long now) {
 }
 
 /** Last-resort restarts, checked every loop pass (cheap; acts at most once a
- *  minute). Wi-Fi down 30 min in a row, or Wi-Fi up but no adsb.fi data for 20 min
- *  while the radar wants it: only a full P4 reset re-initializes the C6. */
+ *  minute). Wi-Fi up but no adsb.fi data for 20 min while the radar wants it: only a
+ *  full P4 reset re-initializes the C6. Wi-Fi down: the reconnect rounds open the
+ *  setup portal at 30 min (wifi_setup.cpp; the portal has its own escalation), so
+ *  the Wi-Fi-down restart here is only a backstop at 60 min in case it never did. */
+unsigned long s_esc_no_data_since_ms = 0;
+unsigned long s_esc_force_poll_ms = 0;
+
+/** Night mode returns from loop() before the reconnect and the escalation checks run,
+ *  so their timers would read the whole night as an outage at wake and restart the
+ *  device before it even tried to reconnect or fetch. Restart them on wake. */
+void restartOutageTimersAfterNight() {
+  s_esc_no_data_since_ms = 0;
+  s_esc_force_poll_ms = 0;
+  if (g_wifi_down_since != 0) {
+    g_wifi_down_since = millis() != 0 ? millis() : 1;
+  }
+  g_last_reconnect_ms = 0;  // first reconnect round right after the grace period
+  wifiRestartOutageClock();
+}
+
 void tickNetworkEscalation(unsigned long now) {
-  static unsigned long s_no_data_since_ms = 0;
   static unsigned long s_last_try_ms = 0;
   const bool wifi_up = WiFi.status() == WL_CONNECTED;
 
   if (!wifi_up || !adsbFetchScreenActive() ||
       services::adsb::lastFetchOkAgeMs() < 60000UL) {
-    s_no_data_since_ms = 0;
-  } else if (s_no_data_since_ms == 0) {
-    s_no_data_since_ms = now != 0 ? now : 1;
+    s_esc_no_data_since_ms = 0;
+    s_esc_force_poll_ms = 0;
+  } else if (s_esc_no_data_since_ms == 0) {
+    s_esc_no_data_since_ms = now != 0 ? now : 1;
   }
 
   const char* why = nullptr;
   if (!wifi_up && g_wifi_down_since != 0 &&
-      now - g_wifi_down_since >= config::kEscalateWifiDownMs) {
-    why = "Wi-Fi down for 30 min";
-  } else if (s_no_data_since_ms != 0 && now - s_no_data_since_ms >= config::kEscalateNoAdsbMs) {
-    why = "Wi-Fi up but no adsb.fi data for 20 min";
+      now - g_wifi_down_since >= config::kEscalateWifiDownMs + config::kWifiPortalAfterDownMs) {
+    why = "Wi-Fi down for 60 min";
+  } else if (s_esc_no_data_since_ms != 0 &&
+             now - s_esc_no_data_since_ms >= config::kEscalateNoAdsbMs) {
+    // Failing polls back off to 5 min, so the internet may have come back since the
+    // last one: restart only on a poll that failed within the last minute. Otherwise
+    // ask for one poll now; if it cannot even run within 2 min (worker stuck, heap
+    // gate), restart anyway.
+    if (services::adsb::lastFetchFailAgeMs() <= 60000UL) {
+      s_esc_force_poll_ms = 0;
+      why = "Wi-Fi up but no adsb.fi data for 20 min";
+    } else if (s_esc_force_poll_ms == 0) {
+      s_esc_force_poll_ms = now != 0 ? now : 1;
+      g_last_adsb_fetch_ms = 0;  // poll on the next radar pass
+      Serial.println("[net] no adsb.fi data for 20 min - one more poll before a restart");
+    } else if (now - s_esc_force_poll_ms >= 120000UL) {
+      s_esc_force_poll_ms = 0;
+      why = "Wi-Fi up but no adsb.fi data for 20 min (poll could not run)";
+    }
   }
   if (why == nullptr || (s_last_try_ms != 0 && now - s_last_try_ms < 60000UL)) {
     return;
@@ -2497,26 +2532,33 @@ void tickAdsbFetch() {
         }
       }
 
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      // 4C: the radar sprites live in PSRAM (see recoverRadarHeapPressure), so dropping
+      // them frees no internal DMA RAM and only forced full rebuilds every 5 s.
       if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 3 &&
           (on_radar || on_detail)) {
         ui::radarDisplayReleasePressureSprites();
         Serial.printf("[fetch] sprite_release free=%u max_blk=%u\n", ladderFreeHeap(),
                       ladderMaxBlock());
       }
+#endif
       if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 5 &&
           canRecycleWifiForTlsMemory(now)) {
         // Last resort: recycling WiFi can only reclaim TLS/TCP memory. If the
         // fragmentation is held by something else (e.g. a stray long-lived
         // allocation splitting the heap), repeated recycles change nothing and
         // the device sits frozen forever — reboot instead; recovery takes ~15s.
-        ++s_stuck_recycles;
+        if (s_stuck_recycles < 255) {
+          ++s_stuck_recycles;
+        }
         if (s_stuck_recycles >= 3) {
           Serial.printf(
               "[fetch] heap unrecoverable after %u recycles free=%u max_blk=%u — restart\n",
               s_stuck_recycles, ladderFreeHeap(), ladderMaxBlock());
           fs_util::logInternalHeap("restart");
-          delay(200);
-          esp_restart();
+          // Same once-per-hour limit as the other escalation restarts; while held,
+          // keep recycling Wi-Fi below.
+          wifiEscalationRestart("heap unrecoverable after 3 Wi-Fi recycles");
         }
         recycleWifiForTls(now, "heap stuck — WiFi recycle");
         s_heap_recover_attempts = 0;
@@ -2548,8 +2590,10 @@ void tickAdsbFetch() {
   }
 }
 
-/** Boot weather check, once the radar has drawn its first frame (or 60 s after it was
- *  scheduled, whatever screen is up), so it never delays the disclaimer. */
+/** Boot weather check, once the radar has drawn its first frame and the first adsb.fi
+ *  poll has come back (or 90 s after it was scheduled, whatever screen is up). It runs
+ *  on the shared HTTPS worker ahead of ADS-B polls, so queueing it at the first radar
+ *  frame made the first planes wait behind Tomorrow.io + Open-Meteo. */
 void tickWeatherBootCheck() {
   static unsigned long s_scheduled_ms = 0;
   if (!g_weather_boot_check_pending) {
@@ -2561,7 +2605,8 @@ void tickWeatherBootCheck() {
   }
   const bool radar_drawn = g_screen == AppScreen::Radar && g_radar_visible &&
                            g_last_sweep_done_ms != 0;
-  if (!radar_drawn && now - s_scheduled_ms < 60000UL) {
+  const bool first_planes_in = services::adsb::lastFetchOkAgeMs() != UINT32_MAX;
+  if (!(radar_drawn && first_planes_in) && now - s_scheduled_ms < 90000UL) {
     return;
   }
   if (WiFi.status() != WL_CONNECTED) {
@@ -2745,6 +2790,22 @@ void loop() {
 #endif
   loopBody();
 
+  // A new OTA image boots "pending verify" and the bootloader rolls it back on any
+  // reset before it is confirmed. Waiting for the first adsb.fi fetch (or 30 min) let
+  // an internet outage, a no-data/heap/watchdog restart or a power cut roll back a
+  // good update. Two minutes of normal loop() passes (display up, loop running)
+  // prove the image works, network or not. No-op for a serial-flashed image.
+  static unsigned long s_first_pass_ms = 0;
+  static bool s_image_confirmed = false;
+  if (!s_image_confirmed) {
+    if (s_first_pass_ms == 0) {
+      s_first_pass_ms = loop_start != 0 ? loop_start : 1;
+    } else if (loop_start - s_first_pass_ms >= config::kOtaConfirmAfterLoopMs) {
+      s_image_confirmed = true;
+      services::ota_github::confirmRunningImage("2 min of normal running");
+    }
+  }
+
   const unsigned long loop_ms = millis() - loop_start;
   if (g_diag_loop_stats_reset_pending) {
     // [diag] printed during this pass: start the next interval clean.
@@ -2791,8 +2852,14 @@ static void loopBody() {
       (void)inputConsumePinchStep();
       settingsWebPoll();
       tickDiagLog();
+      g_outage_timers_paused = true;
       return;
     }
+  }
+  if (g_outage_timers_paused) {
+    // First full pass after night mode (scheduled end or a tap).
+    g_outage_timers_paused = false;
+    restartOutageTimersAfterNight();
   }
   tickBootDetailsSplash();
   tickDisclaimerCountdown();
@@ -2873,6 +2940,7 @@ static void loopBody() {
     if (wifi_reconnected || WiFi.status() == WL_CONNECTED) {
       g_wifi_down_since = 0;
       g_wifi_loss_logged = false;
+      wifiNoteLinkUp();
       tickLinkStatus();
       if (!g_online_services_started) {
         // Wi-Fi was unavailable at boot: start the services and the normal
@@ -2906,6 +2974,7 @@ static void loopBody() {
   } else {
     g_wifi_down_since = 0;
     g_wifi_loss_logged = false;
+    wifiNoteLinkUp();  // RAM only: clears failed-round counts the driver's own rejoin left
     if (!g_online_services_started) {
       // Came up on its own (auto-reconnect) after a boot without Wi-Fi.
       startOnlineServices();

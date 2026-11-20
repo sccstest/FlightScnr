@@ -92,6 +92,20 @@ WifiNetSlot s_nets[config::kWifiMaxNetworks];
 uint8_t s_nets_count = 0;
 bool s_nets_loaded = false;
 uint8_t s_reconnect_fail_rounds = 0;
+/** millis() when the current runtime outage's first reconnect round started; 0 while
+ *  the link is up. The setup portal opens only after kWifiPortalAfterDownMs of it. */
+unsigned long s_link_down_since_ms = 0;
+
+/** The link is up: forget the last outage's failed rounds, per-network fail streaks
+ *  and demotions, so failures never add up across separate outages. RAM only. */
+void clearOutageCounters() {
+  s_reconnect_fail_rounds = 0;
+  s_link_down_since_ms = 0;
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+    s_nets[i].fail_streak = 0;
+    s_nets[i].demoted = false;
+  }
+}
 
 void setPortalFlash(const char* msg) {
   if (msg == nullptr || msg[0] == '\0') {
@@ -120,50 +134,78 @@ void putStringIfChanged(Preferences& prefs, const char* key, const char* value) 
   prefs.putString(key, value);
 }
 
-/** Save the network list. Writes only keys that changed and never clear()s the
- *  namespace: the old clear-then-rewrite ran on every connect success/failure, and
- *  a power cut between the two lost every saved network. The count is written
- *  before the slots when the list shrinks and after them when it grows, so a cut
- *  mid-way can at worst repeat a network, never drop one. fail_streak lives in RAM
- *  only (it is per session anyway) so connect attempts no longer write flash. */
+/** Two copies of the list live in the namespace. Copy 0 is the original layout
+ *  (count "n", slots s<i>/p<i>), which older firmware reads; copy 1 (count "m",
+ *  slots t<i>/q<i>) only holds the list while copy 0 is being rewritten. Key "g" says
+ *  which copy is complete (missing = 0). */
+constexpr char kNetsGenKey[] = "g";
+struct NetsCopyKeys {
+  const char* count;
+  char ssid_prefix;
+  char pass_prefix;
+};
+constexpr NetsCopyKeys kNetsCopy[2] = {{kNetsCountKey, 's', 'p'}, {"m", 't', 'q'}};
+
+void removeKeyIfPresent(Preferences& prefs, const char* key) {
+  if (prefs.isKey(key)) {
+    prefs.remove(key);
+  }
+}
+
+/** Write the whole RAM list into one copy (slots, then its count). */
+void writeNetsCopy(Preferences& prefs, uint8_t copy) {
+  const NetsCopyKeys& k = kNetsCopy[copy];
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+    char sk[4];
+    char pk[4];
+    slotKey(sk, sizeof(sk), k.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), k.pass_prefix, i);
+    if (i < s_nets_count) {
+      putStringIfChanged(prefs, sk, s_nets[i].ssid);
+      putStringIfChanged(prefs, pk, s_nets[i].pass);
+    } else {
+      removeKeyIfPresent(prefs, sk);
+      removeKeyIfPresent(prefs, pk);
+    }
+  }
+  if (!prefs.isKey(k.count) || prefs.getUChar(k.count, 0) != s_nets_count) {
+    prefs.putUChar(k.count, s_nets_count);
+  }
+}
+
+void removeNetsCopy(Preferences& prefs, uint8_t copy) {
+  const NetsCopyKeys& k = kNetsCopy[copy];
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+    char sk[4];
+    char pk[4];
+    slotKey(sk, sizeof(sk), k.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), k.pass_prefix, i);
+    removeKeyIfPresent(prefs, sk);
+    removeKeyIfPresent(prefs, pk);
+  }
+  removeKeyIfPresent(prefs, k.count);
+}
+
+/** Save the network list so a power cut at any point keeps a complete list (the old
+ *  or the new one): write the full list into copy 1, point "g" at it (one NVS entry
+ *  write, atomic), rewrite copy 0, point "g" back, then drop copy 1. Removing or
+ *  reordering networks used to rewrite the slots in place, where a cut mid-way could
+ *  drop a network or pair an SSID with another network's password. Runs only when the
+ *  owner changes the list; fail_streak lives in RAM only, so connects never write. */
 void persistNets() {
   Preferences prefs;
   if (!prefs.begin(kNetsPrefsNamespace, false)) {
     return;
   }
-  const uint8_t stored_count = prefs.getUChar(kNetsCountKey, 0);
-  if (s_nets_count < stored_count) {
-    prefs.putUChar(kNetsCountKey, s_nets_count);
-  }
-  for (uint8_t i = 0; i < s_nets_count; ++i) {
-    char sk[4];
-    char pk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
-    putStringIfChanged(prefs, sk, s_nets[i].ssid);
-    putStringIfChanged(prefs, pk, s_nets[i].pass);
-  }
-  if (s_nets_count > stored_count) {
-    prefs.putUChar(kNetsCountKey, s_nets_count);
-  }
+  writeNetsCopy(prefs, 1);
+  prefs.putUChar(kNetsGenKey, 1);
+  writeNetsCopy(prefs, 0);
+  prefs.putUChar(kNetsGenKey, 0);
+  removeNetsCopy(prefs, 1);
   for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
-    char sk[4];
-    char pk[4];
     char fk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
     slotKey(fk, sizeof(fk), 'f', i);
-    if (prefs.isKey(fk)) {
-      prefs.remove(fk);  // fail streaks are no longer stored
-    }
-    if (i >= s_nets_count) {
-      if (prefs.isKey(sk)) {
-        prefs.remove(sk);
-      }
-      if (prefs.isKey(pk)) {
-        prefs.remove(pk);
-      }
-    }
+    removeKeyIfPresent(prefs, fk);  // fail streaks are no longer stored
   }
   prefs.end();
 }
@@ -179,12 +221,18 @@ void loadNetsFromPrefs() {
     s_nets_loaded = true;
     return;
   }
-  const uint8_t n = prefs.getUChar(kNetsCountKey, 0);
+  // "g" missing (older firmware, or never rewritten) = copy 0, the original layout.
+  const uint8_t copy = prefs.getUChar(kNetsGenKey, 0) == 1 ? 1 : 0;
+  const NetsCopyKeys& keys = kNetsCopy[copy];
+  const uint8_t n = prefs.getUChar(keys.count, 0);
+  if (copy == 1) {
+    Serial.println("[wifi] saved networks: using the backup copy (power cut during a save)");
+  }
   for (uint8_t i = 0; i < n && i < config::kWifiMaxNetworks; ++i) {
     char sk[4];
     char pk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
+    slotKey(sk, sizeof(sk), keys.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), keys.pass_prefix, i);
     String ssid = prefs.getString(sk, "");
     if (ssid.length() == 0) {
       continue;
@@ -198,6 +246,9 @@ void loadNetsFromPrefs() {
   }
   prefs.end();
   s_nets_loaded = true;
+  if (copy == 1) {
+    persistNets();  // finish the interrupted save so copy 0 is complete again
+  }
 }
 
 void ensureNetsLoaded() {
@@ -1190,12 +1241,20 @@ bool runConfigPortalFlow() {
   // Reopen the portal after each unsuccessful saved-network retry, so the device
   // is always either joinable for setup or back on a saved network.
   PortalResult result = PortalResult::RetriedSaved;
+  const unsigned long flow_start_ms = millis();
   while (result == PortalResult::RetriedSaved) {
     WiFiManager wm;
     configureWifiManager(wm);
     result = openConfigPortal(wm);
     s_active_wm = nullptr;
     if (result == PortalResult::RetriedSaved) {
+      // The loop (and its escalation checks) does not run while the portal is open.
+      // Saved networks still failing after this long, with nobody on the portal: the
+      // C6 may be wedged, and only a full reset re-initializes it. Rate-limited to
+      // once per hour of uptime; after it the boot flow retries and reopens the portal.
+      if (millis() - flow_start_ms >= config::kEscalateWifiDownMs) {
+        wifiEscalationRestart("saved networks unreachable from the setup portal for 30 min");
+      }
       Serial.println("[wifi] saved networks still unreachable — reopening setup portal");
     }
   }
@@ -1410,8 +1469,11 @@ bool wifiReconnect() {
 // minutes during an outage. This state machine does the same job one step per
 // call: WiFi.begin() for one saved network, then a look at the link at most every
 // kWifiReconnectPollMs, for up to kWifiConnectAttemptMs per network. No scan (the
-// scan only saved time on a blocking loop). After kWifiPortalAfterReconnectFails
-// failed rounds it opens the setup portal, exactly as before.
+// scan only saved time on a blocking loop). Rounds repeat (the loop starts one every
+// kWifiReconnectIntervalMs) while the normal screens show the "No Wi-Fi" badge. The
+// setup portal opens only once the link has been down kWifiPortalAfterDownMs (30 min)
+// in a row: it used to open after 3 failed rounds (~80 s with one network), so a
+// router reboot ended in the blocking portal and a restart.
 namespace {
 
 enum class ReconnectState : uint8_t { Idle, Begin, Waiting };
@@ -1432,16 +1494,18 @@ bool reconnectRoundFailed() {
   if (s_reconnect_fail_rounds < 255) {
     ++s_reconnect_fail_rounds;
   }
-  Serial.printf("[wifi] reconnect round failed (%u/%u, %lus)\n",
+  const unsigned long now = millis();
+  const unsigned long down_ms = s_link_down_since_ms != 0 ? now - s_link_down_since_ms : 0;
+  Serial.printf("[wifi] reconnect round failed (#%u, %lus; down %lus, setup portal after %lus)\n",
                 static_cast<unsigned>(s_reconnect_fail_rounds),
-                static_cast<unsigned>(config::kWifiPortalAfterReconnectFails),
-                (millis() - s_rc_round_start_ms) / 1000UL);
-  if (s_reconnect_fail_rounds >= config::kWifiPortalAfterReconnectFails) {
-    Serial.println("Opening WiFi setup portal (reconnect failed repeatedly; "
-                   "saved networks kept)");
+                (now - s_rc_round_start_ms) / 1000UL, down_ms / 1000UL,
+                config::kWifiPortalAfterDownMs / 1000UL);
+  if (s_reconnect_fail_rounds >= config::kWifiPortalAfterReconnectFails &&
+      down_ms >= config::kWifiPortalAfterDownMs) {
+    Serial.println("Opening WiFi setup portal (Wi-Fi down 30 min; saved networks kept)");
     s_reconnect_fail_rounds = 0;
     bootScreenShowPortalHint();
-    return runConfigPortalFlow();  // blocking, as before: the portal owns the screen
+    return runConfigPortalFlow();  // blocking: the portal owns the screen
   }
   return false;
 }
@@ -1460,7 +1524,7 @@ void reconnectSucceeded(unsigned long now) {
   if (idx >= 0) {
     noteConnectSuccess(static_cast<uint8_t>(idx));
   }
-  s_reconnect_fail_rounds = 0;
+  clearOutageCounters();
   s_rc_state = ReconnectState::Idle;
   Serial.printf("[wifi] reconnected to %s after %lus\n", ssid.c_str(),
                 (now - s_rc_round_start_ms) / 1000UL);
@@ -1470,6 +1534,29 @@ void reconnectSucceeded(unsigned long now) {
 }  // namespace
 
 bool wifiReconnectActive() { return s_rc_state != ReconnectState::Idle; }
+
+void wifiNoteLinkUp() {
+  // Called every loop pass while connected: return at once when there is nothing to
+  // clear (the driver's auto-reconnect can heal a drop with no round running).
+  if (s_reconnect_fail_rounds == 0 && s_link_down_since_ms == 0) {
+    bool any = false;
+    for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+      any = any || s_nets[i].fail_streak != 0 || s_nets[i].demoted;
+    }
+    if (!any) {
+      return;
+    }
+  }
+  clearOutageCounters();
+}
+
+void wifiRestartOutageClock() {
+  if (s_link_down_since_ms != 0 || s_reconnect_fail_rounds != 0) {
+    Serial.println("[wifi] outage clock restarted (no reconnect tries while asleep)");
+  }
+  s_link_down_since_ms = 0;
+  s_reconnect_fail_rounds = 0;
+}
 
 bool wifiReconnectStart() {
   if (s_rc_state != ReconnectState::Idle) {
@@ -1486,6 +1573,9 @@ bool wifiReconnectStart() {
   s_rc_pos = 0;
   s_rc_saw_down = false;
   s_rc_round_start_ms = millis();
+  if (s_link_down_since_ms == 0) {
+    s_link_down_since_ms = s_rc_round_start_ms != 0 ? s_rc_round_start_ms : 1;
+  }
   s_rc_begin_at_ms = s_rc_round_start_ms;
   s_rc_last_poll_ms = 0;
   s_rc_state = ReconnectState::Begin;

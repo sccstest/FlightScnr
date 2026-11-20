@@ -26,13 +26,30 @@ inline bool heapReadyForPhoto() {
          ESP.getMaxAllocHeap() >= config::kMinContiguousHeapForPhotoTls;
 }
 
-/** Let the prior TLS session release buffers before opening another connection. */
+/** Largest free block the TLS drain judges. On the 4C getMaxAllocHeap() includes a
+ *  31 KB RTC block the Wi-Fi link and lwIP cannot use (so the drain never waited):
+ *  judge internal DMA-capable RAM there, like main's heap ladder, and count it only
+ *  while its free total also clears the ADS-B bar. */
+inline uint32_t drainHeapBlock() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  constexpr uint32_t caps = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+  if (heap_caps_get_free_size(caps) < config::kMinFreeHeapForAdsbHttps) {
+    return 0;
+  }
+  return static_cast<uint32_t>(heap_caps_get_largest_free_block(caps));
+#else
+  return ESP.getMaxAllocHeap();
+#endif
+}
+
+/** Let the prior TLS session release buffers before opening another connection.
+ *  Worker tasks only on the 4C (it sleeps). */
 inline void drainTlsHeapAfterSession(uint32_t timeout_ms = 800) {
   vTaskDelay(pdMS_TO_TICKS(150));
   const unsigned long started = millis();
   const unsigned long deadline = started + timeout_ms;
   while (static_cast<long>(millis() - deadline) < 0) {  // wrap-safe
-    const uint32_t blk = ESP.getMaxAllocHeap();
+    const uint32_t blk = drainHeapBlock();
     if (blk >= config::kMinContiguousHeapForTlsReconnect) {
       return;
     }

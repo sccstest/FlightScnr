@@ -393,4 +393,20 @@ constexpr char kPresetFallbackIanaTz[] = "America/New_York";
 constexpr double kPresetFallbackTzRadiusDeg = 2.0;
 #endif
 
+/** Runtime Wi-Fi outage: the setup portal opens on its own only once the link has
+ *  been down this long without a break (a changed router password is the case it
+ *  serves). Shorter outages (router reboot, ISP/Wi-Fi drop) keep the normal screens
+ *  with the "No Wi-Fi" badge and keep retrying in the background. Overrides the
+ *  round count in kWifiPortalAfterReconnectFails, which alone was ~80 s. */
+constexpr unsigned long kWifiPortalAfterDownMs = 30UL * 60UL * 1000UL;
+
+/** A new OTA image is marked valid (no rollback) after loop() has run this long. */
+constexpr unsigned long kOtaConfirmAfterLoopMs = 2UL * 60UL * 1000UL;
+
+/** Clock already set but SNTP silent this long (network blocks UDP 123): compare
+ *  with adsb.fi's HTTP Date, at most this often, and correct it when it is off by
+ *  more than kHttpDateMaxSkewSec. */
+constexpr unsigned long kHttpDateResyncMs = 3UL * 60UL * 60UL * 1000UL;
+constexpr long kHttpDateMaxSkewSec = 30;
+
 }  // namespace config

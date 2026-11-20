@@ -129,6 +129,9 @@ bool fetchInProgress();
 /** Milliseconds since last successful ADS-B poll (UINT32_MAX if never). */
 uint32_t lastFetchOkAgeMs();
 
+/** Milliseconds since the last failed ADS-B poll (UINT32_MAX if none yet). */
+uint32_t lastFetchFailAgeMs();
+
 /** Consecutive failed ADS-B polls since last success. */
 uint32_t fetchFailStreak();
 

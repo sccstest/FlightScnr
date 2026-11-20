@@ -19,11 +19,18 @@ bool wifiReconnect();
  *  before). */
 bool wifiReconnectStart();
 /** Advance the reconnect round; cheap, call every loop pass. Returns true once when
- *  the link is back (web server restarted). After kWifiPortalAfterReconnectFails
- *  failed rounds it opens the setup portal (blocking, as before). */
+ *  the link is back (web server restarted). Once the link has been down
+ *  kWifiPortalAfterDownMs (30 min) in a row, a failed round opens the setup portal
+ *  (blocking; it reboots when a network connects). */
 bool wifiReconnectPoll();
 /** True while a reconnect round is in progress. */
 bool wifiReconnectActive();
+/** The link is up (call every loop pass while connected; RAM only, no RPC): clears
+ *  the failed-round count, per-network fail streaks and the outage clock. */
+void wifiNoteLinkUp();
+/** Restart the outage clock, e.g. on wake from night mode (no rounds run while
+ *  asleep, so a router switched off overnight must not open the portal at dawn). */
+void wifiRestartOutageClock();
 
 /** Disconnect and reconnect STA without erasing saved credentials (TLS recovery).
  *  Non-blocking: starts a reconnect round that wifiReconnectPoll() finishes. */

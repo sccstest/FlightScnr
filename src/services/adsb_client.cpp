@@ -402,6 +402,8 @@ volatile bool s_bg_job_busy = false;
 volatile unsigned long s_bg_job_busy_since_ms = 0;
 
 unsigned long s_last_fetch_ok_ms = 0;
+/** millis() of the last failed poll (0 = none yet); see lastFetchFailAgeMs(). */
+volatile unsigned long s_last_fetch_fail_ms = 0;
 volatile unsigned long s_fetch_busy_since_ms = 0;
 uint32_t s_fetch_fail_streak = 0;
 // Failed polls since the last good one, for the on-screen "feed down" badge.
@@ -1258,8 +1260,11 @@ void fetchWorkerTask(void* /*arg*/) {
         s_rate_limit_until_ms = 0;
         s_aircraft_staging_count = n;
         s_fetch_ready = true;
-      } else if (s_feed_fail_streak < UINT32_MAX) {
-        ++s_feed_fail_streak;
+      } else {
+        s_last_fetch_fail_ms = millis() != 0 ? millis() : 1;
+        if (s_feed_fail_streak < UINT32_MAX) {
+          ++s_feed_fail_streak;
+        }
       }
       if (!ok && !s_fetch_rate_limited) {
         // Genuine TLS/connection/parse failure feeds the WiFi-recycle streak;
@@ -1404,6 +1409,7 @@ void fetchWatchdog(unsigned long now_ms) {
   s_fetch_abort = false;
   ++s_fetch_fail_streak;
   ++s_feed_fail_streak;
+  s_last_fetch_fail_ms = now_ms != 0 ? now_ms : 1;
   fetchInit();
 }
 
@@ -1414,6 +1420,14 @@ uint32_t lastFetchOkAgeMs() {
     return UINT32_MAX;
   }
   return static_cast<uint32_t>(millis() - s_last_fetch_ok_ms);
+}
+
+uint32_t lastFetchFailAgeMs() {
+  const unsigned long at = s_last_fetch_fail_ms;
+  if (at == 0) {
+    return UINT32_MAX;
+  }
+  return static_cast<uint32_t>(millis() - at);
 }
 
 uint32_t fetchFailStreak() { return s_fetch_fail_streak; }
