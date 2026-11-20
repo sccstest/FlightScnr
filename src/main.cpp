@@ -2532,26 +2532,33 @@ void tickAdsbFetch() {
         }
       }
 
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+      // 4C: the radar sprites live in PSRAM (see recoverRadarHeapPressure), so dropping
+      // them frees no internal DMA RAM and only forced full rebuilds every 5 s.
       if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 3 &&
           (on_radar || on_detail)) {
         ui::radarDisplayReleasePressureSprites();
         Serial.printf("[fetch] sprite_release free=%u max_blk=%u\n", ladderFreeHeap(),
                       ladderMaxBlock());
       }
+#endif
       if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 5 &&
           canRecycleWifiForTlsMemory(now)) {
         // Last resort: recycling WiFi can only reclaim TLS/TCP memory. If the
         // fragmentation is held by something else (e.g. a stray long-lived
         // allocation splitting the heap), repeated recycles change nothing and
         // the device sits frozen forever — reboot instead; recovery takes ~15s.
-        ++s_stuck_recycles;
+        if (s_stuck_recycles < 255) {
+          ++s_stuck_recycles;
+        }
         if (s_stuck_recycles >= 3) {
           Serial.printf(
               "[fetch] heap unrecoverable after %u recycles free=%u max_blk=%u — restart\n",
               s_stuck_recycles, ladderFreeHeap(), ladderMaxBlock());
           fs_util::logInternalHeap("restart");
-          delay(200);
-          esp_restart();
+          // Same once-per-hour limit as the other escalation restarts; while held,
+          // keep recycling Wi-Fi below.
+          wifiEscalationRestart("heap unrecoverable after 3 Wi-Fi recycles");
         }
         recycleWifiForTls(now, "heap stuck — WiFi recycle");
         s_heap_recover_attempts = 0;
