@@ -177,7 +177,8 @@ void routeCode(const char* code, char* out, size_t out_len) {
   copyStr(out, out_len, code);
 }
 
-/** "Boeing 737-800" stays; "(long wing)" style notes are dropped. */
+/** Same maker / model names as the radar tags ("Robinson R44 Raven"), so the sign
+ *  and the tag never spell one type two ways. Short form drops the maker. */
 void friendlyType(const char* type_code, SignState* st) {
   st->type_full[0] = '\0';
   st->type_short[0] = '\0';
@@ -185,23 +186,17 @@ void friendlyType(const char* type_code, SignState* st) {
   if (type_code == nullptr || type_code[0] == '\0') {
     return;
   }
-  char desc[64];
-  if (!services::aircraft_type::lookupDescription(type_code, desc, sizeof(desc))) {
+  char make[24];
+  char model[32];
+  if (!services::aircraft_type::formatMakeModel(type_code, make, sizeof(make), model,
+                                                sizeof(model))) {
     return;
   }
-  char* paren = strchr(desc, '(');
-  if (paren != nullptr) {
-    *paren = '\0';
-  }
-  size_t n = strlen(desc);
-  while (n > 0 && desc[n - 1] == ' ') {
-    desc[--n] = '\0';
-  }
-  copyStr(st->type_full, sizeof(st->type_full), desc);
-  // Without the maker: "Airbus A-321neo" -> "A-321neo".
-  const char* space = strchr(desc, ' ');
-  if (space != nullptr && space[1] != '\0') {
-    copyStr(st->type_short, sizeof(st->type_short), space + 1);
+  if (model[0] != '\0') {
+    snprintf(st->type_full, sizeof(st->type_full), "%s %s", make, model);
+    copyStr(st->type_short, sizeof(st->type_short), model);
+  } else {
+    copyStr(st->type_full, sizeof(st->type_full), make);
   }
 }
 
