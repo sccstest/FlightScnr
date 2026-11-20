@@ -103,6 +103,11 @@ struct CachedAircraftMarker {
    *  rather than recomputed so a marker saved under an old layout still erases
    *  exactly where its text actually landed. */
   label_layout::Box tag_box{};
+  /** How the marker looks, from its view: a plane that sits still but changes color,
+   *  icon, highlight or tag text must still be pushed to the panel. */
+  uint16_t color = 0;
+  uint8_t look = 0;        ///< bit0 highlighted, bit1 notable, bit2 emergency
+  uint32_t text_hash = 0;  ///< both tag lines
 };
 
 static_assert(services::adsb::kMaxAircraft <= label_layout::kMaxTargets,
@@ -340,6 +345,19 @@ TagText tagText(const services::adsb::Aircraft& plane, const char* notable_tag) 
     t.line2[0] = '\0';
   }
   return t;
+}
+
+/** FNV-1a of both lines, so a marker can tell its tag text changed. */
+uint32_t tagTextHash(const TagText& t) {
+  uint32_t h = 2166136261u;
+  const char* const lines[] = {t.line1, t.line2};
+  for (const char* s : lines) {
+    for (; *s != '\0'; ++s) {
+      h = (h ^ static_cast<uint8_t>(*s)) * 16777619u;
+    }
+    h = (h ^ 0xFFu) * 16777619u;  // line break: "AB"+"C" differs from "A"+"BC"
+  }
+  return h;
 }
 
 // Layout is measured against the panel, never the sprite currently being drawn
@@ -2673,6 +2691,10 @@ size_t collectAircraftMarkers(CachedAircraftMarker* markers, size_t max_markers)
     marker.y = v.y;
     marker.beyond_dot = v.beyond;
     marker.tag_box = v.beyond ? label_layout::Box{} : v.tag_box;
+    marker.color = v.base_color;
+    marker.look = static_cast<uint8_t>((v.highlighted ? 1 : 0) | (v.notable ? 2 : 0) |
+                                       (v.emergency ? 4 : 0));
+    marker.text_hash = tagTextHash(v.text);
   }
   return count;
 }
@@ -2726,6 +2748,17 @@ bool markerVisualChanged(const CachedAircraftMarker& prev,
   if (prev.plane.db_flags != curr.plane.db_flags ||
       strcmp(prev.plane.squawk, curr.plane.squawk) != 0) {
     return true;  // highlight / color can follow these
+  }
+  // The icon follows the emitter category (often only on a later poll); watch-list
+  // and notable matches can follow the registration or the hex.
+  if (strcmp(prev.plane.category, curr.plane.category) != 0 ||
+      strcmp(prev.plane.registration, curr.plane.registration) != 0 ||
+      strcmp(prev.plane.hex, curr.plane.hex) != 0) {
+    return true;
+  }
+  // What the views made of it all: color, highlight, notable, emergency, tag text.
+  if (prev.color != curr.color || prev.look != curr.look || prev.text_hash != curr.text_hash) {
+    return true;
   }
   return false;
 }
