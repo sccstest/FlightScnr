@@ -664,6 +664,15 @@ uint32_t viewsSignature() {
   const uint8_t flags = (ui::displayPrefsHideBlipDetails() ? 1 : 0) |
                         (services::alert::typeColorsEnabled() ? 2 : 0);
   mix(&flags, sizeof(flags));
+  // Areas no tag may cover (banner, sign, link badge, rain label, mute icon): when
+  // one appears or goes, the tags must be placed again before anything is drawn.
+  const label_layout::Geometry geom = labelGeometry();
+  mix(&geom.blocked_count, sizeof(geom.blocked_count));
+  for (uint8_t i = 0; i < geom.blocked_count; ++i) {
+    const label_layout::Box& b = geom.blocked[i];
+    const int16_t box[4] = {b.x, b.y, b.w, b.h};
+    mix(box, sizeof(box));
+  }
   return h;
 }
 
