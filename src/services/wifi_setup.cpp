@@ -134,50 +134,78 @@ void putStringIfChanged(Preferences& prefs, const char* key, const char* value) 
   prefs.putString(key, value);
 }
 
-/** Save the network list. Writes only keys that changed and never clear()s the
- *  namespace: the old clear-then-rewrite ran on every connect success/failure, and
- *  a power cut between the two lost every saved network. The count is written
- *  before the slots when the list shrinks and after them when it grows, so a cut
- *  mid-way can at worst repeat a network, never drop one. fail_streak lives in RAM
- *  only (it is per session anyway) so connect attempts no longer write flash. */
+/** Two copies of the list live in the namespace. Copy 0 is the original layout
+ *  (count "n", slots s<i>/p<i>), which older firmware reads; copy 1 (count "m",
+ *  slots t<i>/q<i>) only holds the list while copy 0 is being rewritten. Key "g" says
+ *  which copy is complete (missing = 0). */
+constexpr char kNetsGenKey[] = "g";
+struct NetsCopyKeys {
+  const char* count;
+  char ssid_prefix;
+  char pass_prefix;
+};
+constexpr NetsCopyKeys kNetsCopy[2] = {{kNetsCountKey, 's', 'p'}, {"m", 't', 'q'}};
+
+void removeKeyIfPresent(Preferences& prefs, const char* key) {
+  if (prefs.isKey(key)) {
+    prefs.remove(key);
+  }
+}
+
+/** Write the whole RAM list into one copy (slots, then its count). */
+void writeNetsCopy(Preferences& prefs, uint8_t copy) {
+  const NetsCopyKeys& k = kNetsCopy[copy];
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+    char sk[4];
+    char pk[4];
+    slotKey(sk, sizeof(sk), k.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), k.pass_prefix, i);
+    if (i < s_nets_count) {
+      putStringIfChanged(prefs, sk, s_nets[i].ssid);
+      putStringIfChanged(prefs, pk, s_nets[i].pass);
+    } else {
+      removeKeyIfPresent(prefs, sk);
+      removeKeyIfPresent(prefs, pk);
+    }
+  }
+  if (!prefs.isKey(k.count) || prefs.getUChar(k.count, 0) != s_nets_count) {
+    prefs.putUChar(k.count, s_nets_count);
+  }
+}
+
+void removeNetsCopy(Preferences& prefs, uint8_t copy) {
+  const NetsCopyKeys& k = kNetsCopy[copy];
+  for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
+    char sk[4];
+    char pk[4];
+    slotKey(sk, sizeof(sk), k.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), k.pass_prefix, i);
+    removeKeyIfPresent(prefs, sk);
+    removeKeyIfPresent(prefs, pk);
+  }
+  removeKeyIfPresent(prefs, k.count);
+}
+
+/** Save the network list so a power cut at any point keeps a complete list (the old
+ *  or the new one): write the full list into copy 1, point "g" at it (one NVS entry
+ *  write, atomic), rewrite copy 0, point "g" back, then drop copy 1. Removing or
+ *  reordering networks used to rewrite the slots in place, where a cut mid-way could
+ *  drop a network or pair an SSID with another network's password. Runs only when the
+ *  owner changes the list; fail_streak lives in RAM only, so connects never write. */
 void persistNets() {
   Preferences prefs;
   if (!prefs.begin(kNetsPrefsNamespace, false)) {
     return;
   }
-  const uint8_t stored_count = prefs.getUChar(kNetsCountKey, 0);
-  if (s_nets_count < stored_count) {
-    prefs.putUChar(kNetsCountKey, s_nets_count);
-  }
-  for (uint8_t i = 0; i < s_nets_count; ++i) {
-    char sk[4];
-    char pk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
-    putStringIfChanged(prefs, sk, s_nets[i].ssid);
-    putStringIfChanged(prefs, pk, s_nets[i].pass);
-  }
-  if (s_nets_count > stored_count) {
-    prefs.putUChar(kNetsCountKey, s_nets_count);
-  }
+  writeNetsCopy(prefs, 1);
+  prefs.putUChar(kNetsGenKey, 1);
+  writeNetsCopy(prefs, 0);
+  prefs.putUChar(kNetsGenKey, 0);
+  removeNetsCopy(prefs, 1);
   for (uint8_t i = 0; i < config::kWifiMaxNetworks; ++i) {
-    char sk[4];
-    char pk[4];
     char fk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
     slotKey(fk, sizeof(fk), 'f', i);
-    if (prefs.isKey(fk)) {
-      prefs.remove(fk);  // fail streaks are no longer stored
-    }
-    if (i >= s_nets_count) {
-      if (prefs.isKey(sk)) {
-        prefs.remove(sk);
-      }
-      if (prefs.isKey(pk)) {
-        prefs.remove(pk);
-      }
-    }
+    removeKeyIfPresent(prefs, fk);  // fail streaks are no longer stored
   }
   prefs.end();
 }
@@ -193,12 +221,18 @@ void loadNetsFromPrefs() {
     s_nets_loaded = true;
     return;
   }
-  const uint8_t n = prefs.getUChar(kNetsCountKey, 0);
+  // "g" missing (older firmware, or never rewritten) = copy 0, the original layout.
+  const uint8_t copy = prefs.getUChar(kNetsGenKey, 0) == 1 ? 1 : 0;
+  const NetsCopyKeys& keys = kNetsCopy[copy];
+  const uint8_t n = prefs.getUChar(keys.count, 0);
+  if (copy == 1) {
+    Serial.println("[wifi] saved networks: using the backup copy (power cut during a save)");
+  }
   for (uint8_t i = 0; i < n && i < config::kWifiMaxNetworks; ++i) {
     char sk[4];
     char pk[4];
-    slotKey(sk, sizeof(sk), 's', i);
-    slotKey(pk, sizeof(pk), 'p', i);
+    slotKey(sk, sizeof(sk), keys.ssid_prefix, i);
+    slotKey(pk, sizeof(pk), keys.pass_prefix, i);
     String ssid = prefs.getString(sk, "");
     if (ssid.length() == 0) {
       continue;
@@ -212,6 +246,9 @@ void loadNetsFromPrefs() {
   }
   prefs.end();
   s_nets_loaded = true;
+  if (copy == 1) {
+    persistNets();  // finish the interrupted save so copy 0 is complete again
+  }
 }
 
 void ensureNetsLoaded() {
