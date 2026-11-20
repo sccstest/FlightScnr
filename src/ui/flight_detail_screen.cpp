@@ -761,7 +761,7 @@ void formatAltitudeShort(const services::adsb::Aircraft& ac, char* out, size_t o
   char raw[20];
   radar::formatAltitudeDisplay(ac.alt, raw, sizeof(raw));
   if (raw[0] == '\0') {
-    strncpy(out, "—", out_len - 1);
+    strncpy(out, "-", out_len - 1);
     out[out_len - 1] = '\0';
     return;
   }
@@ -777,7 +777,7 @@ void formatAltitudeShort(const services::adsb::Aircraft& ac, char* out, size_t o
 
 void formatSpeedShort(const services::adsb::Aircraft& ac, char* out, size_t out_len) {
   if (ac.gs_knots <= 0.5f) {
-    strncpy(out, "—", out_len - 1);
+    strncpy(out, "-", out_len - 1);
     out[out_len - 1] = '\0';
     return;
   }
@@ -923,7 +923,7 @@ void drawRouteRow(const char* origin, const char* dest, const char* origin_city,
 
 void formatTypeLine(const services::adsb::Aircraft& ac, char* out, size_t out_len) {
   if (ac.type[0] == '\0') {
-    strncpy(out, "—", out_len - 1);
+    strncpy(out, "-", out_len - 1);
     out[out_len - 1] = '\0';
     return;
   }
@@ -936,7 +936,7 @@ void formatTypeLine(const services::adsb::Aircraft& ac, char* out, size_t out_le
 
 constexpr int kTypeMaxLines = 2;
 constexpr int kFailsafeMaxLines = 3;
-constexpr char kFetchingDetails[] = "Fetching Details";
+constexpr char kFetchingDetails[] = "Looking up flight...";
 constexpr char kEnrichFailsafeMsg[] =
     "Data fetch took too long, please try again in a few seconds";
 constexpr char kNoApisEnabled[] = "No APIs Enabled";
@@ -956,7 +956,11 @@ bool alternateNoApisRoute(const services::adsb::Aircraft& ac) {
 }
 
 uint8_t noApisAlternatePhase(unsigned long now_ms) {
-  return static_cast<uint8_t>((now_ms / kNoApisAlternateMs) % 2UL);
+  // Steady text: flashing "No APIs Enabled" every second read as an error to a
+  // non-technical owner. Phase 1 is always "Airline unknown" / "Route unknown".
+  (void)now_ms;
+  (void)kNoApisAlternateMs;
+  return 1;
 }
 
 EnrichFieldPlaceholder enrichAirlinePlaceholder(const services::adsb::Aircraft& ac) {
@@ -1092,7 +1096,7 @@ void populateFlightDetailStrings(const services::adsb::Aircraft& ac,
     strncpy(out->callsign, ac.registration, sizeof(out->callsign) - 1);
     out->callsign[sizeof(out->callsign) - 1] = '\0';
   } else {
-    strncpy(out->callsign, "—", sizeof(out->callsign) - 1);
+    strncpy(out->callsign, "-", sizeof(out->callsign) - 1);
   }
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -1135,8 +1139,20 @@ void populateFlightDetailStrings(const services::adsb::Aircraft& ac,
   }
   out->airline[sizeof(out->airline) - 1] = '\0';
 
-  s_route_unknown_text =
-      cls == services::alert::TrafficClass::Airline ? "Route unknown" : "No published route";
+  switch (cls) {
+    case services::alert::TrafficClass::Airline:
+      s_route_unknown_text = "Route unknown";
+      break;
+    case services::alert::TrafficClass::Military:
+      s_route_unknown_text = "No route (military)";
+      break;
+    case services::alert::TrafficClass::Helicopter:
+      s_route_unknown_text = "No route (helicopter)";
+      break;
+    default:
+      s_route_unknown_text = "No route (private flight)";
+      break;
+  }
 
   routeEndpoint(ac.route_origin, out->route_origin, sizeof(out->route_origin), out->origin_city,
                 sizeof(out->origin_city));
@@ -1660,7 +1676,7 @@ void flightDetailDraw() {
     services::photo::draw(detailGfx(), ac.callsign, kCenterX, layout.y_photo);
     if (layout.photo_credit_h > 0) {
       char credit[48];
-      snprintf(credit, sizeof(credit), "© %s", services::photo::photographer(ac.callsign));
+      snprintf(credit, sizeof(credit), "(c) %s", services::photo::photographer(ac.callsign));
       int credit_y = layout.y_photo_credit;
       drawCenterLine(credit, &credit_y, fontSmall(), detailHint(), bg);
     }

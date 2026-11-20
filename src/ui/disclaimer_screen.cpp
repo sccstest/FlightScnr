@@ -19,7 +19,7 @@ constexpr int kBtnH = ui::sc(36);
 /** Keep inside the round bezel; room above for checkbox + countdown. */
 constexpr int kBtnBottomInset = ui::sc(24);
 constexpr int kBodyBtnGap = ui::sc(10);
-constexpr int kCheckSize = ui::sc(18);
+constexpr int kCheckSize = ui::sc(20);
 constexpr int kCheckGap = ui::sc(8);
 constexpr int kCheckRowGap = ui::sc(6);
 constexpr int kHitPad = ui::sc(10);
@@ -45,6 +45,21 @@ int s_check_hit_h = 0;
 bool s_remember_checked = false;
 bool s_countdown_mode = false;
 
+/** Minimum height and side margin of the "remember" row's tap target. */
+constexpr int kRowHitMinH = ui::sc(34);
+constexpr int kRowHitSidePad = ui::sc(30);
+
+/**
+ * Remembered boots still show this screen with a short countdown, so the
+ * checkbox says exactly that (it used to say "Don't show again").
+ */
+const char* rememberLabel() {
+  static char label[40];
+  snprintf(label, sizeof(label), "Next time: close after %lu s",
+           static_cast<unsigned long>(config::kDisclaimerRememberedTimeoutMs / 1000UL));
+  return label;
+}
+
 /** Snap rect to even coords so 2px borders survive pixelAlign2 panels. */
 int alignEven(int v) { return v & ~1; }
 
@@ -56,8 +71,7 @@ void updateControlRects() {
 
   displayFontApply(tft, displayFontScale());
   const int label_h = displayFontHeight(tft, displayFontScale());
-  const char* label = "Don't show again";
-  const int label_w = tft.textWidth(label);
+  const int label_w = tft.textWidth(rememberLabel());
   const int row_h = label_h > kCheckSize ? label_h : kCheckSize;
   const int row_w = kCheckSize + kCheckGap + label_w;
   const int row_x = alignEven(kCenterX - row_w / 2);
@@ -65,10 +79,21 @@ void updateControlRects() {
 
   s_check_box_x = row_x;
   s_check_box_y = alignEven(row_y + (row_h - kCheckSize) / 2);
-  s_check_hit_x = row_x - kHitPad;
-  s_check_hit_y = row_y - kHitPad;
-  s_check_hit_w = row_w + 2 * kHitPad;
-  s_check_hit_h = row_h + 2 * kHitPad;
+  // The whole row is the tap target (at least ~60 px tall), not just the small
+  // box: from well left of the box to well right of the label, stopping short of
+  // the Accept button below.
+  const int hit_w = row_w + 2 * kRowHitSidePad;
+  s_check_hit_x = kCenterX - hit_w / 2;
+  s_check_hit_w = hit_w;
+  int hit_h = row_h + 2 * kHitPad;
+  if (hit_h < kRowHitMinH) {
+    hit_h = kRowHitMinH;
+  }
+  s_check_hit_y = row_y + row_h / 2 - hit_h / 2;
+  if (s_check_hit_y + hit_h > s_btn_y - 2) {
+    s_check_hit_y = s_btn_y - 2 - hit_h;
+  }
+  s_check_hit_h = hit_h;
 }
 
 bool canDrawLine(int y, int h, int limit_y) { return y >= 0 && (y + h) <= limit_y; }
@@ -90,7 +115,7 @@ void drawCountdown(int countdown_sec, uint16_t fg, uint16_t bg) {
   tft.fillRect(kCountdownRegionX, kCountdownY, kCountdownRegionW,
                kCountdownRegionH, bg);
   char countdown[28];
-  snprintf(countdown, sizeof(countdown), "Continuing in %d…", countdown_sec);
+  snprintf(countdown, sizeof(countdown), "Continuing in %d...", countdown_sec);
   displayFontApply(tft, displayFontDetail());
   tft.setTextDatum(TextDatum::TopCenter);
   tft.setTextColor(fg, bg);
@@ -156,8 +181,8 @@ void disclaimerScreenDraw(int countdown_sec) {
       "situational awareness or",
       "safety decisions.",
       "",
-      "It heavily relies on external",
-      "APIs. Uptime is not guaranteed.",
+      "It shows free online flight data,",
+      "which can be late or missing.",
   };
 
   const UiTextStyle title_style = displayFontBody();
@@ -224,7 +249,7 @@ void disclaimerScreenDraw(int countdown_sec) {
   displayFontApply(tft, displayFontScale());
   tft.setTextDatum(TextDatum::MiddleLeft);
   tft.setTextColor(body_fg, bg);
-  tft.drawString("Don't show again", s_check_box_x + kCheckSize + kCheckGap,
+  tft.drawString(rememberLabel(), s_check_box_x + kCheckSize + kCheckGap,
                  s_check_box_y + kCheckSize / 2);
 
   // Accept button last so it never sits under text; even-aligned 2px border.

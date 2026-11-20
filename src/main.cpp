@@ -1134,7 +1134,20 @@ void onRangeStep(int8_t delta) {
 
 void noteSwipeNavigation() {
   g_ignore_swipes_until_ms = millis() + config::kSwipeNavDebounceMs;
+  if (g_ignore_swipes_until_ms == 0) {
+    g_ignore_swipes_until_ms = 1;  // 0 means "no debounce pending"
+  }
   inputDiscardPendingInteractions();
+}
+
+/** Clock settings opened by swiping past the last settings page: swipe right goes back there. */
+bool g_clock_settings_from_settings = false;
+
+void showSettingsPageLogged() {
+  showSettings();
+  Serial.printf("Screen: settings (%d/%d)\n", ui::infoScreenPageNumber(),
+                ui::infoScreenPageCount());
+  logNavContext("settings_page");
 }
 
 void handleNavigation() {
@@ -1143,9 +1156,14 @@ void handleNavigation() {
     return;
   }
 
-  if (millis() < g_ignore_swipes_until_ms) {
-    inputConsumeSwipe();
-    return;
+  // Signed difference: a plain millis() < until comparison breaks when millis()
+  // wraps after 49.7 days (and would block swipes for days once it does).
+  if (g_ignore_swipes_until_ms != 0) {
+    if (static_cast<long>(millis() - g_ignore_swipes_until_ms) < 0) {
+      inputConsumeSwipe();
+      return;
+    }
+    g_ignore_swipes_until_ms = 0;
   }
 
   const SwipeGesture swipe = inputConsumeSwipe();
@@ -1161,6 +1179,11 @@ void handleNavigation() {
     noteClockWeatherActivity();
   }
 
+  // One rule for the owner: swipe up or down closes any secondary screen and goes
+  // back to the radar. (Flight detail is the exception: up/down there steps
+  // through the aircraft on touch boards.)
+  const bool vertical = swipe == SwipeUp || swipe == SwipeDown;
+
   bool navigated = false;
   if (swipe == SwipeDown && g_screen == AppScreen::Radar) {
     openClockFromRadar();
@@ -1168,13 +1191,14 @@ void handleNavigation() {
   } else if (swipe == SwipeUp && g_screen == AppScreen::Radar) {
     openDetailsFromRadar();
     navigated = true;
-  } else if (swipe == SwipeDown && g_screen == AppScreen::Details) {
+  } else if (g_screen == AppScreen::Details) {
+    // About: any swipe closes it (it used to need exactly a swipe down).
     returnToRadar(false, true);
     navigated = true;
-  } else if (swipe == SwipeUp && g_screen == AppScreen::Clock) {
-    returnToRadar(false, true);
-    navigated = true;
-  } else if (swipe == SwipeUp && g_screen == AppScreen::Weather) {
+  } else if (vertical && (g_screen == AppScreen::Clock || g_screen == AppScreen::Weather ||
+                          g_screen == AppScreen::Settings ||
+                          g_screen == AppScreen::ClockSettings)) {
+    g_clock_settings_from_settings = false;
     returnToRadar(false, true);
     navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Clock) {
@@ -1187,44 +1211,38 @@ void handleNavigation() {
     logNavContext("clock_swipe");
     navigated = true;
   } else if (swipe == SwipeLeft && g_screen == AppScreen::Clock) {
+    g_clock_settings_from_settings = false;
     openClockSettingsFromClock();
     navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::ClockSettings) {
-    g_screen = AppScreen::Clock;
-    showClock();
-    Serial.println("Screen: clock");
-    logNavContext("clock_swipe");
+    if (g_clock_settings_from_settings) {
+      g_clock_settings_from_settings = false;
+      g_screen = AppScreen::Settings;
+      showSettingsPageLogged();
+    } else {
+      g_screen = AppScreen::Clock;
+      showClock();
+      Serial.println("Screen: clock");
+      logNavContext("clock_swipe");
+    }
     navigated = true;
   } else if (swipe == SwipeLeft && g_screen == AppScreen::Radar) {
     openSettingsFromRadar();
     navigated = true;
-  } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Main) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Display);
-    ui::infoScreenResetDisplayFocus();
-    showSettings();
-    Serial.println("Screen: settings (2/4)");
-    logNavContext("settings_p2");
-    navigated = true;
-  } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Display) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Colors);
-    ui::infoScreenResetColorsFocus();
-    showSettings();
-    Serial.println("Screen: settings (3/4)");
-    logNavContext("settings_p3");
-    navigated = true;
-  } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Colors) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Alerts);
-    ui::infoScreenResetAlertsFocus();
-    showSettings();
-    Serial.println("Screen: settings (4/4) alerts");
-    logNavContext("settings_p4");
-    navigated = true;
+  } else if (swipe == SwipeLeft && g_screen == AppScreen::Settings) {
+    if (ui::infoScreenNextPage()) {
+      ui::infoScreenResetDisplayFocus();
+      showSettingsPageLogged();
+      navigated = true;
+    } else if (ui::infoScreenOnLastPage()) {
+      // Past the last settings page: clock settings (otherwise only reachable by
+      // swiping left on the clock).
+      openClockSettingsFromClock();
+      g_clock_settings_from_settings = true;
+      navigated = true;
+    }
 #if !FLIGHTSCNR_HAS_ENCODER
-  } else if ((swipe == SwipeUp || swipe == SwipeDown) &&
-             g_screen == AppScreen::FlightDetail) {
+  } else if (vertical && g_screen == AppScreen::FlightDetail) {
     // Touch only (4C): swipe up = next aircraft, down = previous (the dial's job).
     noteSecondaryActivity();
     onFlightDetailStep(swipe == SwipeUp ? 1 : -1);
@@ -1237,31 +1255,13 @@ void handleNavigation() {
   } else if (swipe == SwipeRight && g_screen == AppScreen::Orientation) {
     cancelOrientationAdjust();
     navigated = true;
-  } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Alerts) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Colors);
-    ui::infoScreenResetColorsFocus();
-    showSettings();
-    Serial.println("Screen: settings (3/4)");
-    logNavContext("settings_p3");
-    navigated = true;
-  } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Colors) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Display);
-    ui::infoScreenResetDisplayFocus();
-    showSettings();
-    Serial.println("Screen: settings (2/4)");
-    logNavContext("settings_p2");
-    navigated = true;
-  } else if (swipe == SwipeRight && g_screen == AppScreen::Settings &&
-             ui::infoScreenPage() == ui::InfoSettingsPage::Display) {
-    ui::infoScreenSetPage(ui::InfoSettingsPage::Main);
-    showSettings();
-    Serial.println("Screen: settings (1/4)");
-    logNavContext("settings_p1");
-    navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings) {
-    returnToRadar(false, true);
+    if (ui::infoScreenPrevPage()) {
+      ui::infoScreenResetDisplayFocus();
+      showSettingsPageLogged();
+    } else {
+      returnToRadar(false, true);
+    }
     navigated = true;
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   } else if (g_screen == AppScreen::SkyEvent) {

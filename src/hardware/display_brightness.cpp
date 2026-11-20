@@ -103,11 +103,18 @@ void displayBrightnessStep(int8_t delta) {
     return;
   }
 
+  // Stop at the ends: wrapping from 100% straight to 20% looked like a fault.
   size_t idx = levelIndexFor(s_percent);
   if (delta > 0) {
-    idx = (idx + 1) % kLevelCount;
+    if (idx + 1 >= kLevelCount) {
+      return;
+    }
+    ++idx;
   } else {
-    idx = (idx == 0) ? kLevelCount - 1 : idx - 1;
+    if (idx == 0) {
+      return;
+    }
+    --idx;
   }
   s_percent = kLevels[idx];
 

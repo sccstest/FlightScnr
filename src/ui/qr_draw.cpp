@@ -10,26 +10,17 @@
 
 namespace {
 
-/** Version 3 (29×29): enough for WIFI:nopass + FlightScnr-AP-XXXX. */
+/** Version 3 (29x29): enough for WIFI:nopass + FlightScnr-AP-XXXX or a short URL. */
 constexpr uint8_t kQrVersion = 3;
 constexpr uint8_t kQuietModules = 4;
 
-}  // namespace
-
-bool drawWifiJoinQr(int center_x, int center_y, int module_px, const char* ssid) {
-  if (ssid == nullptr || ssid[0] == '\0' || module_px < 1) {
-    return false;
-  }
-
-  char payload[64];
-  const int n =
-      snprintf(payload, sizeof(payload), "WIFI:T:nopass;S:%s;;", ssid);
-  if (n <= 0 || static_cast<size_t>(n) >= sizeof(payload)) {
+bool drawQrPayload(int center_x, int center_y, int module_px, const char* payload) {
+  if (payload == nullptr || payload[0] == '\0' || module_px < 1) {
     return false;
   }
 
   QRCode qr;
-  // Version 3 → ((29*29)+7)/8 = 106 bytes; pad for safety.
+  // Version 3 -> ((29*29)+7)/8 = 106 bytes; pad for safety.
   uint8_t modules[128];
   if (sizeof(modules) < qrcode_getBufferSize(kQrVersion)) {
     return false;
@@ -62,4 +53,26 @@ bool drawWifiJoinQr(int center_x, int center_y, int module_px, const char* ssid)
     }
   }
   return true;
+}
+
+}  // namespace
+
+bool drawWifiJoinQr(int center_x, int center_y, int module_px, const char* ssid) {
+  if (ssid == nullptr || ssid[0] == '\0') {
+    return false;
+  }
+  char payload[64];
+  const int n = snprintf(payload, sizeof(payload), "WIFI:T:nopass;S:%s;;", ssid);
+  if (n <= 0 || static_cast<size_t>(n) >= sizeof(payload)) {
+    return false;
+  }
+  return drawQrPayload(center_x, center_y, module_px, payload);
+}
+
+bool drawUrlQr(int center_x, int center_y, int module_px, const char* url) {
+  // Version 3 at medium error correction holds 42 bytes: plenty for http://<ip>/.
+  if (url == nullptr || strlen(url) > 42) {
+    return false;
+  }
+  return drawQrPayload(center_x, center_y, module_px, url);
 }

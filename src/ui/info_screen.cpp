@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -16,69 +17,53 @@
 #include "services/aircraft_alert.h"
 #include "services/api_keys.h"
 #include "services/device_identity.h"
-#include "services/map_center.h"
 #include "services/rain_radar.h"
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 #include "services/sky_events.h"
 #endif
 #include "services/wifi_setup.h"
 #include "ui/display_prefs.h"
+#include "ui/qr_draw.h"
 #include "ui/radar_accent.h"
+#include "ui/radar_display.h"
 #include "ui/radar_scale.h"
 #include "ui/radar_theme.h"
+#include "ui/settings_rows.h"
 #include "ui/ui_scale.h"
 
 namespace {
 
 constexpr int kBezelInsetPx = ui::sc(10);
-constexpr int kTextPadPx = ui::sc(6);
 constexpr int kTitleGap = ui::sc(6);
 constexpr int kLineGap = ui::sc(4);
 constexpr int kSectionGap = ui::sc(6);
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
-const int kCircleRadius = kCenterX - kBezelInsetPx;
 
-ui::InfoSettingsPage s_page = ui::InfoSettingsPage::Main;
+// ---------------------------------------------------------------------------
+// Rows and pages
+// ---------------------------------------------------------------------------
 
-enum class DisplayAdjustRow : uint8_t {
+/** Every adjustable setting. Pages below list which rows they show, in order. */
+enum class Row : uint8_t {
   Brightness,
+  RadarColor,
   Units,
   Range,
-  Compass,
   Rings,
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  OverheadSign,  // touch rows map by index: keep in draw order
-#endif
+  Compass,
   Facing,
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  Rain,
-  Airliners,
-#endif
-};
-
-DisplayAdjustRow s_display_focus = DisplayAdjustRow::Brightness;
-
-// Page 3/3: radar behavior timeouts, sweep, color, and audio.
-enum class ColorsAdjustRow : uint8_t {
   Sweep,
-  BlipDetails,
+  PlaneLabels,
+  TypeColors,
+  IdleClock,
   DetailTimeout,
   ClockTimeout,
-  IdleClock,
-  Color,
   BeepOn,
 #if !FLIGHTSCNR_HAS_HAPTIC
   BeepTone,
 #endif
-};
-
-ColorsAdjustRow s_colors_focus = ColorsAdjustRow::Sweep;
-
-// Page 4/4: quick-glance type colors and per-class alerts.
-enum class AlertsAdjustRow : uint8_t {
-  TypeColors,
   Military,
   Emergency,
   Helicopters,
@@ -86,27 +71,102 @@ enum class AlertsAdjustRow : uint8_t {
   When,
   OverheadAny,
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  Airliners,
+  OverheadSign,
+  Rain,
   Notable,
-  SkyLaunches,  // Space Coast rocket launch banner + chime
-  SkyIss,       // visible ISS pass banner + chime
+  SkyLaunches,
+  SkyIss,
 #endif
-  Count,
 };
 
-AlertsAdjustRow s_alerts_focus = AlertsAdjustRow::TypeColors;
+struct PageDef {
+  ui::InfoSettingsPage page;
+  const char* title;
+  const Row* rows;
+  uint8_t row_count;
+  bool type_key;  ///< draw the "Military Heli Private" color key under the rows
+};
 
-#if !FLIGHTSCNR_HAS_ENCODER
-// Touch-only boards (Waveshare 4C): remember where each option row was drawn so a
-// tap can select a row, and the selected row's left/right half can step its value.
-constexpr int kMaxTouchRows = 10;
-int s_row_top[kMaxTouchRows] = {};
-int s_row_bottom[kMaxTouchRows] = {};
-int s_row_count = 0;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+// 4C: at most seven ~70 px rows per page so each is easy to tap at desk distance.
+// The longest labels sit mid-page where the round face is widest.
+constexpr Row kDisplayRows[] = {Row::Brightness, Row::RadarColor, Row::Units, Row::Range,
+                                Row::Rings,      Row::Compass,    Row::Facing};
+constexpr Row kRadarRows[] = {Row::Sweep,     Row::PlaneLabels,  Row::TypeColors,
+                              Row::Airliners, Row::OverheadSign, Row::Rain};
+// Long labels first: the seventh row sits low on the round face where it is narrow.
+constexpr Row kAlertRows[] = {Row::OverheadAny, Row::When,        Row::Notable,  Row::Private,
+                              Row::Helicopters, Row::Emergency,   Row::Military};
+constexpr Row kSoundRows[] = {Row::BeepOn, Row::BeepTone, Row::SkyLaunches, Row::SkyIss};
+constexpr Row kTimerRows[] = {Row::DetailTimeout, Row::ClockTimeout, Row::IdleClock};
+
+#define FS_ROWS(a) a, static_cast<uint8_t>(sizeof(a) / sizeof(a[0]))
+const PageDef kPages[] = {
+    {ui::InfoSettingsPage::Main, "Status", nullptr, 0, false},
+    {ui::InfoSettingsPage::Display, "Display", FS_ROWS(kDisplayRows), false},
+    {ui::InfoSettingsPage::Colors, "Radar", FS_ROWS(kRadarRows), true},
+    {ui::InfoSettingsPage::Alerts, "Alerts", FS_ROWS(kAlertRows), false},
+    {ui::InfoSettingsPage::Sound, "Sound & sky", FS_ROWS(kSoundRows), false},
+    {ui::InfoSettingsPage::Timers, "Screen timers", FS_ROWS(kTimerRows), false},
+};
+#else
+// Knob boards: the original three option pages (compact rows, dial to adjust).
+constexpr Row kDisplayRows[] = {Row::Brightness, Row::Units, Row::Range,
+                                Row::Compass,    Row::Rings, Row::Facing};
+constexpr Row kColorsRows[] = {Row::Sweep,        Row::PlaneLabels, Row::DetailTimeout,
+                               Row::ClockTimeout, Row::IdleClock,   Row::RadarColor,
+                               Row::BeepOn,
+#if !FLIGHTSCNR_HAS_HAPTIC
+                               Row::BeepTone,
 #endif
+};
+constexpr Row kAlertRows[] = {Row::TypeColors, Row::Military, Row::Emergency, Row::Helicopters,
+                              Row::Private,    Row::When,     Row::OverheadAny};
+
+#define FS_ROWS(a) a, static_cast<uint8_t>(sizeof(a) / sizeof(a[0]))
+const PageDef kPages[] = {
+    {ui::InfoSettingsPage::Main, "Status", nullptr, 0, false},
+    {ui::InfoSettingsPage::Display, "Display", FS_ROWS(kDisplayRows), false},
+    {ui::InfoSettingsPage::Colors, "Radar & sound", FS_ROWS(kColorsRows), false},
+    {ui::InfoSettingsPage::Alerts, "Alerts", FS_ROWS(kAlertRows), true},
+};
+#endif
+#undef FS_ROWS
+
+constexpr int kPageCount = static_cast<int>(sizeof(kPages) / sizeof(kPages[0]));
+
+int s_page_index = 0;
+uint8_t s_focus = 0;
+
+const PageDef& currentPage() { return kPages[s_page_index]; }
+
+int pageIndexFor(ui::InfoSettingsPage page) {
+  for (int i = 0; i < kPageCount; ++i) {
+    if (kPages[i].page == page) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+bool focusedRow(Row* out) {
+  const PageDef& p = currentPage();
+  if (p.row_count == 0 || s_focus >= p.row_count) {
+    return false;
+  }
+  *out = p.rows[s_focus];
+  return true;
+}
+
+// Row bands from the last draw, for touch hit tests.
+int s_rows_top = 0;
+int s_row_pitch = 0;
+int s_rows_drawn = 0;
 
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
-// No knob button to hold for a Wi-Fi wipe: page 1 gets a "Reset Wi-Fi" row
-// instead. First tap arms it ("Tap again to reset"), a second tap within
+// No knob button to hold for a Wi-Fi wipe: the status page gets a "Reset Wi-Fi"
+// button instead. First tap arms it ("Tap again to reset"), a second tap within
 // kWifiResetConfirmMs wipes saved networks and reboots into the setup portal.
 constexpr unsigned long kWifiResetConfirmMs = 5000UL;
 unsigned long s_wifi_reset_armed_ms = 0;
@@ -114,587 +174,477 @@ int s_wifi_reset_row_top = -1;
 int s_wifi_reset_row_bottom = -1;
 #endif
 
-/** Selected rows get "<  ... >" on touch-only boards: tap a side to change it. */
-const char* focusDecorate(const char* text, bool focused, char* buf, size_t len) {
-#if !FLIGHTSCNR_HAS_ENCODER
-  if (focused) {
-    snprintf(buf, len, "<  %s  >", text);
-    return buf;
-  }
-#else
-  (void)focused;
-  (void)buf;
-  (void)len;
-#endif
-  return text;
-}
+// ---------------------------------------------------------------------------
+// Text helpers
+// ---------------------------------------------------------------------------
 
-int circleHalfWidthAtRow(int row_y, int row_h) {
-  if (kCircleRadius <= 0 || row_h <= 0) {
-    return 0;
-  }
-  const int row_center_y = row_y + row_h / 2;
-  const int dy = row_center_y - kCenterY;
-  if (std::abs(dy) >= kCircleRadius) {
-    return 0;
-  }
-  const float half =
-      std::sqrt(static_cast<float>(kCircleRadius * kCircleRadius - dy * dy));
-  const int usable = static_cast<int>(half) - kTextPadPx;
-  return usable > 0 ? usable : 0;
-}
-
-void fitLineToWidth(char* text, size_t len, UiTextStyle style, int max_width_px) {
-  if (max_width_px <= 0 || text[0] == '\0') {
-    return;
-  }
-  displayFontApply(tft, style);
-  if (tft.textWidth(text) <= max_width_px) {
-    return;
-  }
-
-  const size_t raw_len = strlen(text);
-  for (size_t n = raw_len; n > 0; --n) {
-    snprintf(text, len, "%.*s…", static_cast<int>(n), text);
-    if (tft.textWidth(text) <= max_width_px) {
-      return;
-    }
-  }
-  strncpy(text, "…", len);
-  text[len - 1] = '\0';
-}
-
-void drawCenterLine(const char* text, int* y, UiTextStyle style, uint16_t fg,
-                    uint16_t bg) {
+void drawCenterLine(const char* text, int* y, UiTextStyle style, uint16_t fg, uint16_t bg) {
   displayFontApply(tft, style);
   const int h = displayFontHeight(tft, style);
-  const int max_half_w = circleHalfWidthAtRow(*y, h);
-  const int max_w = max_half_w * 2;
-
   char line[64];
   strncpy(line, text, sizeof(line) - 1);
   line[sizeof(line) - 1] = '\0';
-  fitLineToWidth(line, sizeof(line), style, max_w);
-
+  ui::settings_rows::fitText(line, sizeof(line), style,
+                             2 * ui::settings_rows::halfWidthForBand(*y, h));
+  displayFontApply(tft, style);
   tft.setTextDatum(TextDatum::TopCenter);
   tft.setTextColor(fg, bg);
   tft.drawString(line, kCenterX, *y);
   *y += h + kLineGap;
 }
 
-struct InfoLine {
-  const char* text;
-  UiTextStyle style;
-  uint16_t color;
-};
-
-int measureBlockHeight(const InfoLine* lines, size_t count) {
-  int total = 0;
-  for (size_t i = 0; i < count; ++i) {
-    total += displayFontHeight(tft, lines[i].style);
-    if (i + 1 < count) {
-      total += kLineGap;
+/** "8mi" -> "8 mi": units always get a space. */
+void spaceBeforeUnit(const char* in, char* out, size_t len) {
+  size_t o = 0;
+  for (size_t i = 0; in[i] != '\0' && o + 1 < len; ++i) {
+    if (i > 0 && isdigit(static_cast<unsigned char>(in[i - 1])) &&
+        isalpha(static_cast<unsigned char>(in[i])) && o + 2 < len) {
+      out[o++] = ' ';
     }
+    out[o++] = in[i];
   }
-  return total;
+  out[o] = '\0';
 }
 
-void formatRouteApiLine(const char* name, bool enabled, bool has_key, bool can_use,
-                        char* out, size_t out_len) {
-  if (!enabled) {
-    snprintf(out, out_len, "%s: off", name);
-  } else if (!has_key) {
-    snprintf(out, out_len, "%s: no key", name);
-  } else if (!can_use) {
-    snprintf(out, out_len, "%s: limit", name);
-  } else {
-    snprintf(out, out_len, "%s: active", name);
-  }
+const char* onOff(bool v) { return v ? "on" : "off"; }
+
+/** Timeout labels: "Manual" means the screen stays until you close it. */
+const char* timeoutText(const char* label) {
+  return strcmp(label, "Manual") == 0 ? "stays open" : label;
 }
 
-void buildApiStatusStrings(char* airlabs_line, size_t airlabs_len, char* fa_line,
-                           size_t fa_len, char* fr24_line, size_t fr24_len,
-                           char* adsbdb_line, size_t adsbdb_len) {
-  services::apikeys::load();
-  formatRouteApiLine("AirLabs", services::apikeys::useAirLabs(),
-                     services::apikeys::hasAirLabs(), services::apikeys::canUseAirLabs(),
-                     airlabs_line, airlabs_len);
-  formatRouteApiLine("FlightAware", services::apikeys::useFlightAware(),
-                     services::apikeys::hasFlightAware(),
-                     services::apikeys::canUseFlightAware(), fa_line, fa_len);
-  formatRouteApiLine("FR24", services::apikeys::useFr24(), services::apikeys::hasFr24(),
-                     services::apikeys::canUseFr24(), fr24_line, fr24_len);
-  // adsbdb is key-less: simple on/off status (no key/limit states). Naming
-  // the source here doubles as the ToS-requested route-data attribution.
-  snprintf(adsbdb_line, adsbdb_len, "adsbdb.com: %s",
-           services::apikeys::useAdsbDb() ? "on" : "off");
-}
-
-void buildMainStrings(char* ip_line, size_t ip_len, char* wifi_line, size_t wifi_len,
-                      char* saved_line, size_t saved_len, char* lat_line, size_t lat_len,
-                      char* lon_line, size_t lon_len, char* alt_line, size_t alt_len,
-                      char* web_line, size_t web_len) {
-  if (WiFi.status() == WL_CONNECTED) {
-    snprintf(ip_line, ip_len, "IP: %s", WiFi.localIP().toString().c_str());
-    snprintf(wifi_line, wifi_len, "Wi-Fi: %s", WiFi.SSID().c_str());
-  } else {
-    snprintf(ip_line, ip_len, "IP: Not connected");
-    snprintf(wifi_line, wifi_len, "Wi-Fi: —");
-  }
-  snprintf(saved_line, saved_len, "Saved: %u/%u",
-           static_cast<unsigned>(wifiNetsCount()),
-           static_cast<unsigned>(config::kWifiMaxNetworks));
-
-  snprintf(lat_line, lat_len, "Lat: %.5f", services::map_center::latitude());
-  snprintf(lon_line, lon_len, "Lon: %.5f", services::map_center::longitude());
-
-  const int min_ft = services::adsb::altitudeFloorFt();
-  if (min_ft > 0) {
-    snprintf(alt_line, alt_len, "Min alt: %d ft", min_ft);
-  } else {
-    snprintf(alt_line, alt_len, "Min alt: off");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    snprintf(web_line, web_len, "Web: %s.local",
-             services::device_identity::portalHostname());
-  } else {
-    snprintf(web_line, web_len, "Web: —");
-  }
-}
-
-void buildDisplayStrings(char* bright_line, size_t bright_len, char* units_line,
-                         size_t units_len, char* range_line, size_t range_len,
-                         char* compass_line, size_t compass_len, char* facing_line,
-                         size_t facing_len) {
-  snprintf(bright_line, bright_len, "Brightness: %u%%",
-           static_cast<unsigned>(hardware::displayBrightnessPercent()));
-  snprintf(units_line, units_len, "Units: %s", ui::radar::distanceUnitLabel());
-  char range_tag[12];
-  ui::radar::formatActiveScaleTag(range_tag, sizeof(range_tag));
-  snprintf(range_line, range_len, "Range: %s", range_tag);
-  snprintf(compass_line, compass_len, "Compass Rose: %s",
-           ui::radar::showCompassRose() ? "on" : "off");
-  char facing_tag[12];
-  ui::radar::facingLabel(facing_tag, sizeof(facing_tag));
-  snprintf(facing_line, facing_len, "Facing: %s", facing_tag);
-}
-
-void buildColorsStrings(char* sweep_line, size_t sweep_len, char* blip_line,
-                        size_t blip_len, char* detail_line, size_t detail_len,
-                        char* clock_line, size_t clock_len, char* idle_line,
-                        size_t idle_len, char* color_line, size_t color_len,
-                        char* beep_line, size_t beep_len
-#if !FLIGHTSCNR_HAS_HAPTIC
-                        ,
-                        char* beep_tone_line, size_t beep_tone_len
-#endif
-) {
-  snprintf(sweep_line, sweep_len, "Radar Sweep: %s",
-           ui::displayPrefsSweepLineEnabled() ? "on" : "off");
-  snprintf(blip_line, blip_len, "Hide Blip Details: %s",
-           ui::displayPrefsHideBlipDetails() ? "on" : "off");
-  snprintf(detail_line, detail_len, "Flight Detail: %s",
-           ui::displayPrefsFlightDetailTimeoutLabel());
-  snprintf(clock_line, clock_len, "Clock/Forecast: %s",
-           ui::displayPrefsClockWeatherTimeoutLabel());
-  snprintf(idle_line, idle_len, "Idle Clock: %s",
-           ui::displayPrefsAutoIdleClockEnabled() ? "on" : "off");
-  snprintf(color_line, color_len, "Radar color: %s", ui::radar::accentColorName());
+void formatRow(Row row, char* out, size_t len) {
+  switch (row) {
+    case Row::Brightness:
+      snprintf(out, len, "Brightness: %u%%",
+               static_cast<unsigned>(hardware::displayBrightnessPercent()));
+      break;
+    case Row::RadarColor:
+      snprintf(out, len, "Radar color: %s", ui::radar::accentColorName());
+      break;
+    case Row::Units:
+      snprintf(out, len, "Units: %s", ui::radar::distanceUnitLabel());
+      break;
+    case Row::Range: {
+      char tag[12];
+      char spaced[16];
+      ui::radar::formatActiveScaleTag(tag, sizeof(tag));
+      spaceBeforeUnit(tag, spaced, sizeof(spaced));
+      snprintf(out, len, "Range: %s", spaced);
+      break;
+    }
+    case Row::Rings:
+      snprintf(out, len, "Range rings: %s", ui::radar::gridModeLabel());
+      break;
+    case Row::Compass:
+      snprintf(out, len, "Compass rose: %s", onOff(ui::radar::showCompassRose()));
+      break;
+    case Row::Facing: {
+      char tag[12];
+      ui::radar::facingLabel(tag, sizeof(tag));
+      snprintf(out, len, "Facing: %s", tag);
+      break;
+    }
+    case Row::Sweep:
+      snprintf(out, len, "Radar sweep: %s", onOff(ui::displayPrefsSweepLineEnabled()));
+      break;
+    case Row::PlaneLabels:
+      // Same setting as "Hide Blip Details", worded the positive way round.
+      snprintf(out, len, "Plane labels: %s", onOff(!ui::displayPrefsHideBlipDetails()));
+      break;
+    case Row::TypeColors:
+      snprintf(out, len, "Color planes by type: %s",
+               onOff(services::alert::typeColorsEnabled()));
+      break;
+    case Row::IdleClock:
+      snprintf(out, len, "Idle clock: %s", onOff(ui::displayPrefsAutoIdleClockEnabled()));
+      break;
+    case Row::DetailTimeout:
+      snprintf(out, len, "Flight detail: %s",
+               timeoutText(ui::displayPrefsFlightDetailTimeoutLabel()));
+      break;
+    case Row::ClockTimeout:
+      snprintf(out, len, "Clock/forecast: %s",
+               timeoutText(ui::displayPrefsClockWeatherTimeoutLabel()));
+      break;
+    case Row::BeepOn:
 #if FLIGHTSCNR_HAS_HAPTIC
-  snprintf(beep_line, beep_len, "Vibration: %s",
-           hardware::buzzerEnabled() ? "on" : "off");
+      snprintf(out, len, "Vibration: %s", onOff(hardware::buzzerEnabled()));
 #elif FLIGHTSCNR_HAS_SPEAKER
-  snprintf(beep_line, beep_len, "Alert Sound: %s",
-           hardware::buzzerEnabled() ? "on" : "off");
-  snprintf(beep_tone_line, beep_tone_len, "Chime Volume: %c",
-           hardware::buzzerToneLetter());
+      snprintf(out, len, "Alert sound: %s", onOff(hardware::buzzerEnabled()));
 #else
-  snprintf(beep_line, beep_len, "UI Beep: %s",
-           hardware::buzzerEnabled() ? "on" : "off");
-  snprintf(beep_tone_line, beep_tone_len, "Beep Tone: %c",
-           hardware::buzzerToneLetter());
+      snprintf(out, len, "UI beep: %s", onOff(hardware::buzzerEnabled()));
 #endif
+      break;
+#if !FLIGHTSCNR_HAS_HAPTIC
+    case Row::BeepTone:
+#if FLIGHTSCNR_HAS_SPEAKER
+      // Letters A-E read as a code; show the step out of five.
+      snprintf(out, len, "Chime volume: %d of 5", hardware::buzzerToneLetter() - 'A' + 1);
+#else
+      snprintf(out, len, "Beep tone: %c", hardware::buzzerToneLetter());
+#endif
+      break;
+#endif
+    case Row::Military:
+      snprintf(out, len, "Military: %s", onOff(services::alert::militaryAlertEnabled()));
+      break;
+    case Row::Emergency:
+      snprintf(out, len, "Emergency: %s", onOff(services::alert::emergencyAlertEnabled()));
+      break;
+    case Row::Helicopters:
+      snprintf(out, len, "Helicopters: %s", onOff(services::alert::helicopterAlertEnabled()));
+      break;
+    case Row::Private:
+      snprintf(out, len, "Private planes: %s", onOff(services::alert::privateAlertEnabled()));
+      break;
+    case Row::When:
+      snprintf(out, len, "Alert when: %s",
+               services::alert::alertOnApproachEnabled() ? "overhead" : "entering");
+      break;
+    case Row::OverheadAny:
+      snprintf(out, len, "Overhead alert: %s", onOff(services::alert::overheadAnyEnabled()));
+      break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case Row::Airliners:
+      snprintf(out, len, "Airliners: %s",
+               services::alert::airlinersHidden() ? "hidden" : "shown");
+      break;
+    case Row::OverheadSign:
+      snprintf(out, len, "Overhead sign: %s", onOff(ui::displayPrefsOverheadSignEnabled()));
+      break;
+    case Row::Rain:
+      snprintf(out, len, "Rain: %s", onOff(services::rain::enabled()));
+      break;
+    case Row::Notable:
+      snprintf(out, len, "Special planes alert: %s",
+               onOff(services::alert::notableAlertEnabled()));
+      break;
+    case Row::SkyLaunches:
+      snprintf(out, len, "Rocket launches: %s", onOff(services::sky::launchesEnabled()));
+      break;
+    case Row::SkyIss:
+      snprintf(out, len, "ISS passes: %s", onOff(services::sky::issEnabled()));
+      break;
+#endif
+  }
 }
 
-void drawMainPage(uint16_t bg, uint16_t fg, uint16_t label_fg, uint16_t hint_fg) {
-  char ip_line[40];
-  char wifi_line[40];
-  char saved_line[24];
-  char lat_line[24];
-  char lon_line[24];
-  char alt_line[24];
-  char web_line[36];
-  char airlabs_line[24];
-  char fa_line[28];
-  char fr24_line[20];
-  char adsbdb_line[20];
+/**
+ * Step the row's value. Ordered values (brightness, range, volume, timeouts) stop
+ * at the ends instead of wrapping around; on/off rows toggle.
+ */
+void stepRow(Row row, int8_t delta) {
+  const int dir = delta > 0 ? 1 : -1;
+  switch (row) {
+    case Row::Brightness:
+      hardware::displayBrightnessStep(static_cast<int8_t>(dir));
+      break;
+    case Row::RadarColor:
+      ui::radar::accentStep(delta);
+      break;
+    case Row::Units:
+      ui::radar::cycleDistanceUnits();
+      break;
+    case Row::Range: {
+      const int idx = ui::radar::scaleActiveIndex();
+      const int last = static_cast<int>(ui::radar::kRangeMileOptionCount) - 1;
+      if ((dir < 0 && idx <= 0) || (dir > 0 && idx >= last)) {
+        break;
+      }
+      ui::radar::scaleStep(static_cast<int8_t>(dir));
+      services::alert::notifyRangeChanged();
+      break;
+    }
+    case Row::Rings:
+      ui::radar::gridModeStep(delta);
+      break;
+    case Row::Compass:
+      ui::radar::toggleCompassRose();
+      break;
+    case Row::Facing:
+      // The dial / side tap opens orientation adjust from main.cpp.
+      break;
+    case Row::Sweep:
+      ui::displayPrefsToggleSweepLine();
+      break;
+    case Row::PlaneLabels:
+      ui::displayPrefsToggleHideBlipDetails();
+      break;
+    case Row::TypeColors:
+      services::alert::toggleTypeColors();
+      break;
+    case Row::IdleClock:
+      ui::displayPrefsToggleAutoIdleClock();
+      break;
+    case Row::DetailTimeout: {
+      // Shown in the order 10, 20, 30 sec, stays open (the stored list starts
+      // with "stays open", so its ends are 0 s and 10 s).
+      const unsigned long sec = ui::displayPrefsFlightDetailTimeoutMs() / 1000UL;
+      if ((dir < 0 && sec == 10) || (dir > 0 && sec == 0)) {
+        break;
+      }
+      ui::displayPrefsFlightDetailTimeoutStep(static_cast<int8_t>(dir));
+      break;
+    }
+    case Row::ClockTimeout: {
+      // Shown in the order 5, 10, 15 sec, stays open.
+      const unsigned long sec = ui::displayPrefsClockWeatherTimeoutMs() / 1000UL;
+      if ((dir < 0 && sec == 5) || (dir > 0 && sec == 0)) {
+        break;
+      }
+      ui::displayPrefsClockWeatherTimeoutStep(static_cast<int8_t>(dir));
+      break;
+    }
+    case Row::BeepOn:
+      hardware::buzzerSetEnabled(!hardware::buzzerEnabled());
+      break;
+#if !FLIGHTSCNR_HAS_HAPTIC
+    case Row::BeepTone: {
+      const char letter = hardware::buzzerToneLetter();
+      if ((dir < 0 && letter <= 'A') || (dir > 0 && letter >= 'E')) {
+        break;
+      }
+      hardware::buzzerToneStep(static_cast<int8_t>(dir));
+      break;
+    }
+#endif
+    case Row::Military:
+      services::alert::toggleMilitaryAlert();
+      break;
+    case Row::Emergency:
+      services::alert::toggleEmergencyAlert();
+      break;
+    case Row::Helicopters:
+      services::alert::toggleHelicopterAlert();
+      break;
+    case Row::Private:
+      services::alert::togglePrivateAlert();
+      break;
+    case Row::When:
+      services::alert::toggleAlertOnApproach();
+      break;
+    case Row::OverheadAny:
+      services::alert::toggleOverheadAny();
+      break;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    case Row::Airliners:
+      services::alert::toggleHideAirliners();
+      break;
+    case Row::OverheadSign:
+      ui::displayPrefsToggleOverheadSign();
+      break;
+    case Row::Rain:
+      services::rain::toggleEnabled();
+      break;
+    case Row::Notable:
+      services::alert::toggleNotableAlert();
+      break;
+    case Row::SkyLaunches:
+      services::sky::toggleLaunches();
+      break;
+    case Row::SkyIss:
+      services::sky::toggleIss();
+      break;
+#endif
+  }
+}
 
-  buildMainStrings(ip_line, sizeof(ip_line), wifi_line, sizeof(wifi_line), saved_line,
-                   sizeof(saved_line), lat_line, sizeof(lat_line), lon_line, sizeof(lon_line),
-                   alt_line, sizeof(alt_line), web_line, sizeof(web_line));
-  buildApiStatusStrings(airlabs_line, sizeof(airlabs_line), fa_line, sizeof(fa_line),
-                        fr24_line, sizeof(fr24_line), adsbdb_line, sizeof(adsbdb_line));
+// ---------------------------------------------------------------------------
+// Status page (page 1)
+// ---------------------------------------------------------------------------
 
-  const int title_h = displayFontHeight(tft, displayFontTitle());
-  const InfoLine main_lines[] = {
-      {ip_line, displayFontBody(), fg},
-      {wifi_line, displayFontBody(), fg},
-      {saved_line, displayFontDetail(), label_fg},
-      {lat_line, displayFontDetail(), label_fg},
-      {lon_line, displayFontDetail(), label_fg},
-      {alt_line, displayFontDetail(), label_fg},
-      {web_line, displayFontDetail(), hint_fg},
-  };
-  const InfoLine api_lines[] = {
-      {"Route APIs", displayFontDetail(), hint_fg},
-      {airlabs_line, displayFontDetail(), label_fg},
-      {fa_line, displayFontDetail(), label_fg},
-      {fr24_line, displayFontDetail(), label_fg},
-      {adsbdb_line, displayFontDetail(), label_fg},
-  };
-  const int main_h = measureBlockHeight(main_lines, sizeof(main_lines) / sizeof(main_lines[0]));
-  const int api_h = measureBlockHeight(api_lines, sizeof(api_lines) / sizeof(api_lines[0]));
-  int block_h = title_h + kTitleGap + main_h + kSectionGap + api_h;
-#if !FLIGHTSCNR_HAS_KNOB_BUTTON
-  block_h += kSectionGap + displayFontHeight(tft, displayFontDetail());
+/**
+ * WiFi.SSID() is an RPC to the C6 on the 4C: read it at most every 30 s, not on
+ * every redraw (the page redraws on each tap and on the Wi-Fi reset timer).
+ */
+constexpr unsigned long kSsidCacheMs = 30000UL;
+char s_ssid_cache[33] = {};
+unsigned long s_ssid_cache_ms = 0;
+bool s_ssid_cache_valid = false;
+
+const char* cachedSsid() {
+  const unsigned long now = millis();
+  if (!s_ssid_cache_valid || now - s_ssid_cache_ms >= kSsidCacheMs) {
+    strncpy(s_ssid_cache, WiFi.SSID().c_str(), sizeof(s_ssid_cache) - 1);
+    s_ssid_cache[sizeof(s_ssid_cache) - 1] = '\0';
+    s_ssid_cache_ms = now;
+    s_ssid_cache_valid = true;
+  }
+  return s_ssid_cache;
+}
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** QR for the settings page URL (IP form: works even where .local names don't). */
+constexpr int kStatusQrModulePx = 5;
 #endif
 
-  int y = kCenterY - block_h / 2;
-  if (y < kBezelInsetPx) {
-    y = kBezelInsetPx;
-  }
-
-  displayFontApply(tft, displayFontTitle());
-  tft.setTextDatum(TextDatum::TopCenter);
-  tft.setTextColor(fg, bg);
-  tft.drawString("Settings 1/4", kCenterX, y);
-  y += title_h + kTitleGap;
-
-  for (const InfoLine& line : main_lines) {
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-  }
-
-  y += kSectionGap;
-
-  auto api_color = [&](bool enabled, bool has_key, bool can_use) -> uint16_t {
-    return (enabled && has_key && can_use) ? fg : label_fg;
-  };
-
-  drawCenterLine("Route APIs", &y, displayFontDetail(), hint_fg, bg);
-  drawCenterLine(airlabs_line, &y, displayFontDetail(),
-                 api_color(services::apikeys::useAirLabs(), services::apikeys::hasAirLabs(),
-                           services::apikeys::canUseAirLabs()),
-                 bg);
-  drawCenterLine(fa_line, &y, displayFontDetail(),
-                 api_color(services::apikeys::useFlightAware(),
-                           services::apikeys::hasFlightAware(),
-                           services::apikeys::canUseFlightAware()),
-                 bg);
-  drawCenterLine(fr24_line, &y, displayFontDetail(),
-                 api_color(services::apikeys::useFr24(), services::apikeys::hasFr24(),
-                           services::apikeys::canUseFr24()),
-                 bg);
-  drawCenterLine(adsbdb_line, &y, displayFontDetail(),
-                 services::apikeys::useAdsbDb() ? fg : label_fg, bg);
-
+void drawResetButton(int top, uint16_t fg, uint16_t bg) {
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
-  y += kSectionGap;
   const bool armed = s_wifi_reset_armed_ms != 0;
-  s_wifi_reset_row_top = y;
-  drawCenterLine(armed ? "Tap again to reset" : "[ Reset Wi-Fi ]", &y, displayFontDetail(),
-                 armed ? tft.color565(255, 90, 80) : label_fg, bg);
-  s_wifi_reset_row_bottom = y;
-#endif
-}
-
-uint16_t settingsActiveFg() {
-  uint8_t r = 0;
-  uint8_t g = 0;
-  uint8_t b = 0;
-  ui::radar::accentHighlightRgb(&r, &g, &b);
-  return tft.color565(r, g, b);
-}
-
-void drawDisplayPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
-  char bright_line[32];
-  char units_line[24];
-  char range_line[24];
-  char compass_line[28];
-  char facing_line[24];
-  buildDisplayStrings(bright_line, sizeof(bright_line), units_line, sizeof(units_line),
-                      range_line, sizeof(range_line), compass_line, sizeof(compass_line),
-                      facing_line, sizeof(facing_line));
-
-  const uint16_t active_fg = settingsActiveFg();
-  const uint16_t bright_fg =
-      (s_display_focus == DisplayAdjustRow::Brightness) ? active_fg : label_fg;
-  const uint16_t units_fg =
-      (s_display_focus == DisplayAdjustRow::Units) ? active_fg : label_fg;
-  const uint16_t range_fg =
-      (s_display_focus == DisplayAdjustRow::Range) ? active_fg : label_fg;
-  const uint16_t compass_fg =
-      (s_display_focus == DisplayAdjustRow::Compass) ? active_fg : label_fg;
-  const uint16_t facing_fg =
-      (s_display_focus == DisplayAdjustRow::Facing) ? active_fg : label_fg;
-
-  const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[9][48];
-  char rings_line[28];
-  snprintf(rings_line, sizeof(rings_line), "Rings: %s", ui::radar::gridModeLabel());
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  char sign_line[28];
-  snprintf(sign_line, sizeof(sign_line), "Overhead Sign: %s",
-           ui::displayPrefsOverheadSignEnabled() ? "on" : "off");
-  char rain_line[24];
-  snprintf(rain_line, sizeof(rain_line), "Rain: %s", services::rain::enabled() ? "On" : "Off");
-  char jets_line[28];
-  snprintf(jets_line, sizeof(jets_line), "Airliners: %s",
-           services::alert::airlinersHidden() ? "hidden" : "shown");
-#endif
-  const InfoLine option_lines[] = {
-      {focusDecorate(bright_line, s_display_focus == DisplayAdjustRow::Brightness, deco[0], 48),
-       displayFontBody(), bright_fg},
-      {focusDecorate(units_line, s_display_focus == DisplayAdjustRow::Units, deco[1], 48),
-       displayFontBody(), units_fg},
-      {focusDecorate(range_line, s_display_focus == DisplayAdjustRow::Range, deco[2], 48),
-       displayFontBody(), range_fg},
-      {focusDecorate(compass_line, s_display_focus == DisplayAdjustRow::Compass, deco[3], 48),
-       displayFontBody(), compass_fg},
-      {focusDecorate(rings_line, s_display_focus == DisplayAdjustRow::Rings, deco[5], 48),
-       displayFontBody(),
-       s_display_focus == DisplayAdjustRow::Rings ? active_fg : label_fg},
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      {focusDecorate(sign_line, s_display_focus == DisplayAdjustRow::OverheadSign, deco[6], 48),
-       displayFontBody(),
-       s_display_focus == DisplayAdjustRow::OverheadSign ? active_fg : label_fg},
-#endif
-      {focusDecorate(facing_line, s_display_focus == DisplayAdjustRow::Facing, deco[4], 48),
-       displayFontBody(), facing_fg},
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      {focusDecorate(rain_line, s_display_focus == DisplayAdjustRow::Rain, deco[7], 48),
-       displayFontBody(), s_display_focus == DisplayAdjustRow::Rain ? active_fg : label_fg},
-      {focusDecorate(jets_line, s_display_focus == DisplayAdjustRow::Airliners, deco[8], 48),
-       displayFontBody(), s_display_focus == DisplayAdjustRow::Airliners ? active_fg : label_fg},
-#endif
-  };
-  const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
-  const int block_h = title_h + kTitleGap + options_h;
-
-  int y = kCenterY - block_h / 2;
-  if (y < kBezelInsetPx) {
-    y = kBezelInsetPx;
+  const char* label = armed ? "Tap again to reset" : "Reset Wi-Fi";
+  const uint16_t color = armed ? tft.color565(255, 90, 80) : fg;
+  const UiTextStyle style = displayFontDetail();
+  displayFontApply(tft, style);
+  const int text_w = tft.textWidth(label);
+  const int h = ui::sc(34);
+  int w = text_w + 2 * ui::sc(22);
+  const int max_w = 2 * ui::settings_rows::halfWidthForBand(top, h);
+  if (w > max_w) {
+    w = max_w;
   }
-
-  displayFontApply(tft, displayFontTitle());
+  const int x = kCenterX - w / 2;
+  const int r = h / 2;
+  // Outlined pill: 2 px ring drawn as an outer fill with an inner bg fill.
+  tft.fillRect(static_cast<int16_t>(x + r), static_cast<int16_t>(top),
+               static_cast<int16_t>(w - 2 * r), static_cast<int16_t>(h), color);
+  tft.fillCircle(static_cast<int16_t>(x + r), static_cast<int16_t>(top + r),
+                 static_cast<int16_t>(r), color);
+  tft.fillCircle(static_cast<int16_t>(x + w - r), static_cast<int16_t>(top + r),
+                 static_cast<int16_t>(r), color);
+  tft.fillRect(static_cast<int16_t>(x + r), static_cast<int16_t>(top + 2),
+               static_cast<int16_t>(w - 2 * r), static_cast<int16_t>(h - 4), bg);
+  tft.fillCircle(static_cast<int16_t>(x + r), static_cast<int16_t>(top + r),
+                 static_cast<int16_t>(r - 2), bg);
+  tft.fillCircle(static_cast<int16_t>(x + w - r), static_cast<int16_t>(top + r),
+                 static_cast<int16_t>(r - 2), bg);
+  tft.setTextDatum(TextDatum::MiddleCenter);
+  tft.setTextColor(color, bg);
+  tft.drawString(label, kCenterX, top + h / 2);
   tft.setTextDatum(TextDatum::TopCenter);
-  tft.setTextColor(fg, bg);
-  tft.drawString("Settings 2/4", kCenterX, y);
-  y += title_h + kTitleGap;
-
-#if !FLIGHTSCNR_HAS_ENCODER
-  s_row_count = 0;
-#endif
-  for (const InfoLine& line : option_lines) {
-#if !FLIGHTSCNR_HAS_ENCODER
-    const int top = y;
-#endif
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-#if !FLIGHTSCNR_HAS_ENCODER
-    if (s_row_count < kMaxTouchRows) {
-      s_row_top[s_row_count] = top;
-      s_row_bottom[s_row_count] = y;
-      ++s_row_count;
-    }
-#endif
-  }
-}
-
-void drawColorsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
-  char sweep_line[24];
-  char blip_line[28];
-  char detail_line[28];
-  char clock_line[28];
-  char idle_line[24];
-  char color_line[28];
-  char beep_line[24];
-#if !FLIGHTSCNR_HAS_HAPTIC
-  char beep_tone_line[28];
-#endif
-  buildColorsStrings(sweep_line, sizeof(sweep_line), blip_line, sizeof(blip_line),
-                     detail_line, sizeof(detail_line), clock_line, sizeof(clock_line),
-                     idle_line, sizeof(idle_line), color_line, sizeof(color_line),
-                     beep_line, sizeof(beep_line)
-#if !FLIGHTSCNR_HAS_HAPTIC
-                     ,
-                     beep_tone_line, sizeof(beep_tone_line)
-#endif
-  );
-
-  const uint16_t active_fg = settingsActiveFg();
-  const uint16_t sweep_fg =
-      (s_colors_focus == ColorsAdjustRow::Sweep) ? active_fg : label_fg;
-  const uint16_t blip_fg =
-      (s_colors_focus == ColorsAdjustRow::BlipDetails) ? active_fg : label_fg;
-  const uint16_t detail_fg =
-      (s_colors_focus == ColorsAdjustRow::DetailTimeout) ? active_fg : label_fg;
-  const uint16_t clock_fg =
-      (s_colors_focus == ColorsAdjustRow::ClockTimeout) ? active_fg : label_fg;
-  const uint16_t idle_fg =
-      (s_colors_focus == ColorsAdjustRow::IdleClock) ? active_fg : label_fg;
-  const uint16_t color_fg =
-      (s_colors_focus == ColorsAdjustRow::Color) ? active_fg : label_fg;
-  const uint16_t beep_fg =
-      (s_colors_focus == ColorsAdjustRow::BeepOn) ? active_fg : label_fg;
-#if !FLIGHTSCNR_HAS_HAPTIC
-  const uint16_t beep_tone_fg =
-      (s_colors_focus == ColorsAdjustRow::BeepTone) ? active_fg : label_fg;
-#endif
-
-  const int title_h = displayFontHeight(tft, displayFontTitle());
-  char deco[8][48];
-  const ColorsAdjustRow f = s_colors_focus;
-  const InfoLine option_lines[] = {
-      {focusDecorate(sweep_line, f == ColorsAdjustRow::Sweep, deco[0], 48), displayFontBody(),
-       sweep_fg},
-      {focusDecorate(blip_line, f == ColorsAdjustRow::BlipDetails, deco[1], 48),
-       displayFontBody(), blip_fg},
-      {focusDecorate(detail_line, f == ColorsAdjustRow::DetailTimeout, deco[2], 48),
-       displayFontBody(), detail_fg},
-      {focusDecorate(clock_line, f == ColorsAdjustRow::ClockTimeout, deco[3], 48),
-       displayFontBody(), clock_fg},
-      {focusDecorate(idle_line, f == ColorsAdjustRow::IdleClock, deco[4], 48),
-       displayFontBody(), idle_fg},
-      {focusDecorate(color_line, f == ColorsAdjustRow::Color, deco[5], 48), displayFontBody(),
-       color_fg},
-      {focusDecorate(beep_line, f == ColorsAdjustRow::BeepOn, deco[6], 48), displayFontBody(),
-       beep_fg},
-#if !FLIGHTSCNR_HAS_HAPTIC
-      {focusDecorate(beep_tone_line, f == ColorsAdjustRow::BeepTone, deco[7], 48),
-       displayFontBody(), beep_tone_fg},
-#endif
-  };
-  const int options_h = measureBlockHeight(option_lines, sizeof(option_lines) / sizeof(option_lines[0]));
-  const int block_h = title_h + kTitleGap + options_h;
-
-  int y = kCenterY - block_h / 2;
-  if (y < kBezelInsetPx) {
-    y = kBezelInsetPx;
-  }
-
-  displayFontApply(tft, displayFontTitle());
-  tft.setTextDatum(TextDatum::TopCenter);
-  tft.setTextColor(fg, bg);
-  tft.drawString("Settings 3/4", kCenterX, y);  y += title_h + kTitleGap;
-
-#if !FLIGHTSCNR_HAS_ENCODER
-  s_row_count = 0;
-#endif
-  for (const InfoLine& line : option_lines) {
-#if !FLIGHTSCNR_HAS_ENCODER
-    const int top = y;
-#endif
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-#if !FLIGHTSCNR_HAS_ENCODER
-    if (s_row_count < kMaxTouchRows) {
-      s_row_top[s_row_count] = top;
-      s_row_bottom[s_row_count] = y;
-      ++s_row_count;
-    }
-#endif
-  }
-}
-
-void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
-  const uint16_t active_fg = settingsActiveFg();
-  auto onOff = [](bool v) { return v ? "on" : "off"; };
-  constexpr int kRows = static_cast<int>(AlertsAdjustRow::Count);
-  char rows[kRows][32];
-  snprintf(rows[0], sizeof(rows[0]), "Type colors: %s",
-           onOff(services::alert::typeColorsEnabled()));
-  snprintf(rows[1], sizeof(rows[1]), "Military: %s",
-           onOff(services::alert::militaryAlertEnabled()));
-  snprintf(rows[2], sizeof(rows[2]), "Emergency: %s",
-           onOff(services::alert::emergencyAlertEnabled()));
-  snprintf(rows[3], sizeof(rows[3]), "Helicopters: %s",
-           onOff(services::alert::helicopterAlertEnabled()));
-  snprintf(rows[4], sizeof(rows[4]), "Private planes: %s",
-           onOff(services::alert::privateAlertEnabled()));
-  snprintf(rows[5], sizeof(rows[5]), "Alert when: %s",
-           services::alert::alertOnApproachEnabled() ? "overhead" : "entering");
-  snprintf(rows[6], sizeof(rows[6]), "Overhead (any): %s",
-           onOff(services::alert::overheadAnyEnabled()));
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  snprintf(rows[static_cast<int>(AlertsAdjustRow::Notable)], sizeof(rows[0]),
-           "Notable planes: %s", onOff(services::alert::notableAlertEnabled()));
-  snprintf(rows[static_cast<int>(AlertsAdjustRow::SkyLaunches)], sizeof(rows[0]), "Rocket launches: %s",
-           onOff(services::sky::launchesEnabled()));
-  snprintf(rows[static_cast<int>(AlertsAdjustRow::SkyIss)], sizeof(rows[0]), "ISS passes: %s", onOff(services::sky::issEnabled()));
-#endif
-
-  char deco[kRows][48];
-  InfoLine option_lines[kRows];
-  for (int i = 0; i < kRows; ++i) {
-    const bool focused = static_cast<int>(s_alerts_focus) == i;
-    option_lines[i] = {focusDecorate(rows[i], focused, deco[i], 48), displayFontBody(),
-                       focused ? active_fg : label_fg};
-  }
-  // Legend for the type colors (same hues as the radar icons).
-  const char* legend = "Red mil / Blue heli / White private";
-
-  const int title_h = displayFontHeight(tft, displayFontTitle());
-  const int legend_h = displayFontHeight(tft, displayFontDetail());
-  const int options_h = measureBlockHeight(option_lines, kRows);
-  const int block_h = title_h + kTitleGap + options_h + kSectionGap + legend_h;
-
-  int y = kCenterY - block_h / 2;
-  if (y < kBezelInsetPx) {
-    y = kBezelInsetPx;
-  }
-
-  displayFontApply(tft, displayFontTitle());
-  tft.setTextDatum(TextDatum::TopCenter);
-  tft.setTextColor(fg, bg);
-  tft.drawString("Alerts 4/4", kCenterX, y);
-  y += title_h + kTitleGap;
-
-#if !FLIGHTSCNR_HAS_ENCODER
-  s_row_count = 0;
-#endif
-  for (const InfoLine& line : option_lines) {
-#if !FLIGHTSCNR_HAS_ENCODER
-    const int top = y;
-#endif
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-#if !FLIGHTSCNR_HAS_ENCODER
-    if (s_row_count < kMaxTouchRows) {
-      s_row_top[s_row_count] = top;
-      s_row_bottom[s_row_count] = y;
-      ++s_row_count;
-    }
-#endif
-  }
-  y += kSectionGap;
-  // Color key: each word drawn in its radar icon color (dark-radar palette).
-  (void)legend;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // Ten rows push the key down to where the circle is narrow: keep it short.
-  const char* words[] = {"Military", "Heli", "Private"};
+  s_wifi_reset_row_top = top;
+  s_wifi_reset_row_bottom = top + h;
 #else
-  const char* words[] = {"Military", "Helicopter", "Private"};
+  (void)top;
+  (void)fg;
+  (void)bg;
 #endif
+}
+
+void drawStatusPage(const char* title, uint16_t bg, uint16_t fg, uint16_t label_fg,
+                    uint16_t hint_fg) {
+  const bool wifi_up = WiFi.status() == WL_CONNECTED;
+  if (!wifi_up) {
+    s_ssid_cache_valid = false;  // re-read the name after a reconnect
+  }
+
+  char host_line[48];
+  snprintf(host_line, sizeof(host_line), "%s.local",
+           services::device_identity::portalHostname());
+  char wifi_line[48];
+  char feed_line[40];
+  uint16_t wifi_fg = label_fg;
+  uint16_t feed_fg = label_fg;
+  if (wifi_up) {
+    snprintf(wifi_line, sizeof(wifi_line), "Wi-Fi: %s", cachedSsid());
+    if (services::adsb::feedLooksDown() ||
+        ui::radarDisplayLinkStatus() == ui::RadarLinkStatus::FeedDown) {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: offline");
+      feed_fg = tft.color565(255, 170, 20);
+    } else if (services::adsb::lastFetchOkAgeMs() == UINT32_MAX) {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: starting");
+    } else {
+      snprintf(feed_line, sizeof(feed_line), "Flight data: OK");
+    }
+  } else {
+    snprintf(wifi_line, sizeof(wifi_line), "Wi-Fi: not connected");
+    wifi_fg = tft.color565(255, 90, 80);
+    snprintf(feed_line, sizeof(feed_line), "Retrying saved networks");
+    feed_fg = hint_fg;
+  }
+  const bool show_routes_credit = services::apikeys::useAdsbDb();
+
+  const UiTextStyle title_style = displayFontTitle();
+  const UiTextStyle label_style = displayFontDetail();
+  const UiTextStyle host_style = displayFontBody();
+  const UiTextStyle small_style = displayFontScale();
+  const int title_h = displayFontHeight(tft, title_style);
+  const int label_h = displayFontHeight(tft, label_style);
+  const int host_h = displayFontHeight(tft, host_style);
+  const int small_h = displayFontHeight(tft, small_style);
+
+  int qr_px = 0;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  char url[40] = {};
+  if (wifi_up) {
+    snprintf(url, sizeof(url), "http://%s/", WiFi.localIP().toString().c_str());
+    qr_px = 37 * kStatusQrModulePx;  // version 3 + 4-module quiet zone each side
+  }
+#endif
+
+  int block_h = title_h + kTitleGap;
+  if (wifi_up) {
+    block_h += label_h + kLineGap + host_h + kSectionGap;
+    if (qr_px > 0) {
+      block_h += qr_px + kSectionGap;
+    }
+  }
+  block_h += 2 * (label_h + kLineGap);
+  if (show_routes_credit) {
+    block_h += small_h + kLineGap;
+  }
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  block_h += kSectionGap + ui::sc(34);
+#endif
+
+  int y = kCenterY - block_h / 2;
+  if (y < kBezelInsetPx) {
+    y = kBezelInsetPx;
+  }
+
+  displayFontApply(tft, title_style);
+  tft.setTextDatum(TextDatum::TopCenter);
+  tft.setTextColor(fg, bg);
+  tft.drawString(title, kCenterX, y);
+  y += title_h + kTitleGap;
+
+  if (wifi_up) {
+    // The web address is how the owner changes settings: lead with it, in white.
+    drawCenterLine("Phone settings:", &y, label_style, label_fg, bg);
+    drawCenterLine(host_line, &y, host_style, fg, bg);
+    y += kSectionGap - kLineGap;
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    if (qr_px > 0) {
+      if (!drawUrlQr(kCenterX, y + qr_px / 2, kStatusQrModulePx, url)) {
+        drawCenterLine(url, &y, label_style, fg, bg);
+      } else {
+        y += qr_px;
+      }
+      y += kSectionGap;
+    }
+#endif
+  }
+  drawCenterLine(wifi_line, &y, label_style, wifi_fg, bg);
+  drawCenterLine(feed_line, &y, label_style, feed_fg, bg);
+  if (show_routes_credit) {
+    // Route data attribution (adsbdb.com asks for it).
+    drawCenterLine("Routes: adsbdb.com", &y, small_style, hint_fg, bg);
+  }
+
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  y += kSectionGap - kLineGap;
+  drawResetButton(y, label_fg, bg);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Option pages
+// ---------------------------------------------------------------------------
+
+void drawTypeKey(int y, uint16_t bg) {
+  // Color key: each word drawn in its radar icon color (dark-radar palette).
+  const char* words[] = {"Military", "Heli", "Private"};
   const uint16_t colors[] = {tft.color565(255, 50, 40), tft.color565(64, 170, 255),
                              tft.color565(235, 235, 235)};
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // Two more rows (sky events) push the key lower, where the circle is narrower.
-  displayFontApply(tft, displayFontScale());
-#else
-  displayFontApply(tft, displayFontDetail());
-#endif
+  const UiTextStyle style = displayFontDetail();
+  displayFontApply(tft, style);
   const int gap = ui::sc(14);
   int total = 2 * gap;
   for (const char* w : words) {
     total += tft.textWidth(w);
+  }
+  if (total > 2 * ui::settings_rows::halfWidthForBand(y, displayFontHeight(tft, style))) {
+    return;
   }
   int x = kCenterX - total / 2;
   tft.setTextDatum(TextDatum::TopLeft);
@@ -706,81 +656,137 @@ void drawAlertsPage(uint16_t bg, uint16_t fg, uint16_t label_fg) {
   tft.setTextDatum(TextDatum::TopCenter);
 }
 
-void toggleAlertsRow(AlertsAdjustRow row) {
-  switch (row) {
-    case AlertsAdjustRow::TypeColors:
-      services::alert::toggleTypeColors();
-      break;
-    case AlertsAdjustRow::Military:
-      services::alert::toggleMilitaryAlert();
-      break;
-    case AlertsAdjustRow::Emergency:
-      services::alert::toggleEmergencyAlert();
-      break;
-    case AlertsAdjustRow::Helicopters:
-      services::alert::toggleHelicopterAlert();
-      break;
-    case AlertsAdjustRow::Private:
-      services::alert::togglePrivateAlert();
-      break;
-    case AlertsAdjustRow::When:
-      services::alert::toggleAlertOnApproach();
-      break;
-    case AlertsAdjustRow::OverheadAny:
-      services::alert::toggleOverheadAny();
-      break;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    case AlertsAdjustRow::SkyLaunches:
-      services::sky::toggleLaunches();
-      break;
-    case AlertsAdjustRow::SkyIss:
-      services::sky::toggleIss();
-      break;
-    case AlertsAdjustRow::Notable:
-      services::alert::toggleNotableAlert();
-      break;
-#endif
-    default:
-      break;
+void drawOptionPage(const PageDef& page, const char* title, uint16_t bg, uint16_t fg,
+                    uint16_t hint_fg) {
+  const ui::settings_rows::Colors colors = ui::settings_rows::defaultColors();
+  const UiTextStyle row_style = displayFontBody();
+  const int pitch = ui::settings_rows::rowPitch(row_style);
+  const int title_h = displayFontHeight(tft, displayFontTitle());
+  const int key_h = page.type_key ? kSectionGap + displayFontHeight(tft, displayFontDetail()) : 0;
+  // The last page points at clock settings (one more swipe left).
+  const bool show_more_hint = (s_page_index == kPageCount - 1);
+  const int hint_h = show_more_hint ? kSectionGap + displayFontHeight(tft, displayFontScale()) : 0;
+  const int block_h = title_h + kTitleGap + pitch * page.row_count + key_h + hint_h;
+
+  int y = kCenterY - block_h / 2;
+  if (y < kBezelInsetPx) {
+    y = kBezelInsetPx;
   }
+
+  displayFontApply(tft, displayFontTitle());
+  tft.setTextDatum(TextDatum::TopCenter);
+  tft.setTextColor(fg, bg);
+  tft.drawString(title, kCenterX, y);
+  y += title_h + kTitleGap;
+
+  s_rows_top = y;
+  s_row_pitch = pitch;
+  s_rows_drawn = page.row_count;
+  for (uint8_t i = 0; i < page.row_count; ++i) {
+    char text[48];
+    formatRow(page.rows[i], text, sizeof(text));
+    ui::settings_rows::drawOptionRow(text, y, pitch, row_style, i == s_focus, colors);
+    y += pitch;
+  }
+
+  if (page.type_key) {
+    y += kSectionGap;
+    drawTypeKey(y, bg);
+    y += displayFontHeight(tft, displayFontDetail());
+  }
+  if (show_more_hint) {
+    y += kSectionGap;
+    drawCenterLine("Swipe left: clock settings", &y, displayFontScale(), hint_fg, bg);
+  }
+}
+
+/** Row index under (x, y) on the current option page, or -1. */
+int rowHit(int16_t y) {
+  if (s_rows_drawn <= 0 || s_row_pitch <= 0) {
+    return -1;
+  }
+  // A little slack above the first and below the last row.
+  const int slack = ui::sc(8);
+  const int top = s_rows_top - slack;
+  const int bottom = s_rows_top + s_rows_drawn * s_row_pitch + slack;
+  if (y < top || y >= bottom) {
+    return -1;
+  }
+  int hit = (y - s_rows_top) / s_row_pitch;
+  if (y < s_rows_top) {
+    hit = 0;
+  }
+  if (hit >= s_rows_drawn) {
+    hit = s_rows_drawn - 1;
+  }
+  return hit;
+}
+
+void resetFocus() { s_focus = 0; }
+
+void cycleFocus() {
+  const PageDef& p = currentPage();
+  if (p.row_count == 0) {
+    s_focus = 0;
+    return;
+  }
+  s_focus = static_cast<uint8_t>((s_focus + 1) % p.row_count);
 }
 
 }  // namespace
 
 namespace ui {
 
-void infoScreenResetToMain() { infoScreenSetPage(ui::InfoSettingsPage::Main); }
+void infoScreenResetToMain() { infoScreenSetPage(InfoSettingsPage::Main); }
+
+InfoSettingsPage infoScreenPage() { return currentPage().page; }
+
+void infoScreenSetPage(InfoSettingsPage page) {
+  const int idx = pageIndexFor(page);
+  if (idx != s_page_index) {
+    s_focus = 0;
+  }
+  s_page_index = idx;
+  s_rows_drawn = 0;
+#if !FLIGHTSCNR_HAS_KNOB_BUTTON
+  s_wifi_reset_armed_ms = 0;
+  s_wifi_reset_row_top = -1;
+#endif
+}
+
+bool infoScreenNextPage() {
+  if (s_page_index + 1 >= kPageCount) {
+    return false;
+  }
+  infoScreenSetPage(kPages[s_page_index + 1].page);
+  return true;
+}
+
+bool infoScreenPrevPage() {
+  if (s_page_index <= 0) {
+    return false;
+  }
+  infoScreenSetPage(kPages[s_page_index - 1].page);
+  return true;
+}
+
+bool infoScreenOnLastPage() { return s_page_index == kPageCount - 1; }
+
+int infoScreenPageNumber() { return s_page_index + 1; }
+
+int infoScreenPageCount() { return kPageCount; }
 
 int8_t infoScreenTouch(int16_t x, int16_t y) {
 #if !FLIGHTSCNR_HAS_ENCODER
-  if (s_page != InfoSettingsPage::Display && s_page != InfoSettingsPage::Colors &&
-      s_page != InfoSettingsPage::Alerts) {
+  if (currentPage().row_count == 0) {
     return 0;
   }
-  // Rows are drawn edge to edge; give each the gap below it so taps never fall through.
-  int hit = -1;
-  for (int i = 0; i < s_row_count; ++i) {
-    const int bottom = (i + 1 < s_row_count) ? s_row_top[i + 1] : s_row_bottom[i] + ui::sc(6);
-    const int top = (i == 0) ? s_row_top[i] - ui::sc(6) : s_row_top[i];
-    if (y >= top && y < bottom) {
-      hit = i;
-      break;
-    }
-  }
+  const int hit = rowHit(y);
   if (hit < 0) {
     return 0;
   }
-  const int focused = (s_page == InfoSettingsPage::Display)  ? static_cast<int>(s_display_focus)
-                      : (s_page == InfoSettingsPage::Colors) ? static_cast<int>(s_colors_focus)
-                                                             : static_cast<int>(s_alerts_focus);
-  if (hit != focused) {
-    if (s_page == InfoSettingsPage::Display) {
-      s_display_focus = static_cast<DisplayAdjustRow>(hit);
-    } else if (s_page == InfoSettingsPage::Colors) {
-      s_colors_focus = static_cast<ColorsAdjustRow>(hit);
-    } else {
-      s_alerts_focus = static_cast<AlertsAdjustRow>(hit);
-    }
+  if (hit != s_focus) {
+    s_focus = static_cast<uint8_t>(hit);
     return 0;
   }
   return x < kCenterX ? -1 : 1;
@@ -791,110 +797,38 @@ int8_t infoScreenTouch(int16_t x, int16_t y) {
 #endif
 }
 
-void infoScreenResetDisplayFocus() {
-  s_display_focus = DisplayAdjustRow::Brightness;
-}
+void infoScreenResetDisplayFocus() { resetFocus(); }
 
-void infoScreenCycleDisplayFocus() {
-  switch (s_display_focus) {
-    case DisplayAdjustRow::Brightness:
-      s_display_focus = DisplayAdjustRow::Units;
-      break;
-    case DisplayAdjustRow::Units:
-      s_display_focus = DisplayAdjustRow::Range;
-      break;
-    case DisplayAdjustRow::Range:
-      s_display_focus = DisplayAdjustRow::Compass;
-      break;
-    case DisplayAdjustRow::Compass:
-      s_display_focus = DisplayAdjustRow::Rings;
-      break;
-    case DisplayAdjustRow::Rings:
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-      s_display_focus = DisplayAdjustRow::OverheadSign;
-      break;
-    case DisplayAdjustRow::OverheadSign:
-#endif
-      s_display_focus = DisplayAdjustRow::Facing;
-      break;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    case DisplayAdjustRow::Facing:
-      s_display_focus = DisplayAdjustRow::Rain;
-      break;
-    case DisplayAdjustRow::Rain:
-      s_display_focus = DisplayAdjustRow::Airliners;
-      break;
-#endif
-    default:
-      s_display_focus = DisplayAdjustRow::Brightness;
-      break;
-  }
-}
+void infoScreenCycleDisplayFocus() { cycleFocus(); }
 
 bool infoScreenFacingFocused() {
-  return s_page == ui::InfoSettingsPage::Display &&
-         s_display_focus == DisplayAdjustRow::Facing;
+  Row row;
+  return focusedRow(&row) && row == Row::Facing;
 }
 
-void infoScreenResetColorsFocus() { s_colors_focus = ColorsAdjustRow::Sweep; }
+void infoScreenResetColorsFocus() { resetFocus(); }
 
-void infoScreenResetAlertsFocus() { s_alerts_focus = AlertsAdjustRow::TypeColors; }
+void infoScreenCycleColorsFocus() { cycleFocus(); }
 
-void infoScreenCycleAlertsFocus() {
-  const int next =
-      (static_cast<int>(s_alerts_focus) + 1) % static_cast<int>(AlertsAdjustRow::Count);
-  s_alerts_focus = static_cast<AlertsAdjustRow>(next);
-}
+void infoScreenResetAlertsFocus() { resetFocus(); }
 
-void infoScreenCycleColorsFocus() {
-  switch (s_colors_focus) {
-    case ColorsAdjustRow::Sweep:
-      s_colors_focus = ColorsAdjustRow::BlipDetails;
-      break;
-    case ColorsAdjustRow::BlipDetails:
-      s_colors_focus = ColorsAdjustRow::DetailTimeout;
-      break;
-    case ColorsAdjustRow::DetailTimeout:
-      s_colors_focus = ColorsAdjustRow::ClockTimeout;
-      break;
-    case ColorsAdjustRow::ClockTimeout:
-      s_colors_focus = ColorsAdjustRow::IdleClock;
-      break;
-    case ColorsAdjustRow::IdleClock:
-      s_colors_focus = ColorsAdjustRow::Color;
-      break;
-    case ColorsAdjustRow::Color:
-      s_colors_focus = ColorsAdjustRow::BeepOn;
-      break;
-    case ColorsAdjustRow::BeepOn:
-#if FLIGHTSCNR_HAS_HAPTIC
-      s_colors_focus = ColorsAdjustRow::Sweep;
-#else
-      s_colors_focus = ColorsAdjustRow::BeepTone;
-#endif
-      break;
-    default:
-      s_colors_focus = ColorsAdjustRow::Sweep;
-      break;
-  }
-}
-
-InfoSettingsPage infoScreenPage() { return s_page; }
-
-void infoScreenSetPage(InfoSettingsPage page) {
-  s_page = page;
-#if !FLIGHTSCNR_HAS_KNOB_BUTTON
-  s_wifi_reset_armed_ms = 0;
-#endif
-}
+void infoScreenCycleAlertsFocus() { cycleFocus(); }
 
 MainPageTap infoScreenMainTap(int16_t x, int16_t y) {
-  (void)x;
 #if !FLIGHTSCNR_HAS_KNOB_BUTTON
-  if (s_page != InfoSettingsPage::Main || s_wifi_reset_row_top < 0) {
+  if (currentPage().page != InfoSettingsPage::Main) {
+    // Option pages without their own branch in main.cpp (the 4C's Sound and
+    // Timers pages) arrive here: same handling as the other option pages.
+    const int8_t step = infoScreenTouch(x, y);
+    if (step != 0) {
+      infoScreenHandleKnob(step);
+    }
+    return MainPageTap::Handled;
+  }
+  if (s_wifi_reset_row_top < 0) {
     return MainPageTap::None;
   }
-  // Generous hit box: the row plus a little margin above and below.
+  // Generous hit box: the button band plus a margin above and below.
   if (y < s_wifi_reset_row_top - ui::sc(10) || y >= s_wifi_reset_row_bottom + ui::sc(10)) {
     // A tap anywhere else cancels a pending confirm.
     if (s_wifi_reset_armed_ms != 0) {
@@ -911,6 +845,7 @@ MainPageTap infoScreenMainTap(int16_t x, int16_t y) {
   s_wifi_reset_armed_ms = now != 0 ? now : 1;
   return MainPageTap::ResetArmed;
 #else
+  (void)x;
   (void)y;
   return MainPageTap::None;
 #endif
@@ -935,14 +870,13 @@ void infoScreenDraw() {
 
   tft.fillScreen(bg);
 
-  if (s_page == ui::InfoSettingsPage::Main) {
-    drawMainPage(bg, fg, label_fg, hint_fg);
-  } else if (s_page == ui::InfoSettingsPage::Display) {
-    drawDisplayPage(bg, fg, label_fg);
-  } else if (s_page == ui::InfoSettingsPage::Colors) {
-    drawColorsPage(bg, fg, label_fg);
+  const PageDef& page = currentPage();
+  char title[32];
+  snprintf(title, sizeof(title), "%s %d/%d", page.title, s_page_index + 1, kPageCount);
+  if (page.row_count == 0) {
+    drawStatusPage(title, bg, fg, label_fg, hint_fg);
   } else {
-    drawAlertsPage(bg, fg, label_fg);
+    drawOptionPage(page, title, bg, fg, hint_fg);
   }
 
   tft.setTextDatum(TextDatum::TopLeft);
@@ -953,85 +887,11 @@ void infoScreenHandleKnob(int8_t delta) {
   if (delta == 0) {
     return;
   }
-
-  if (s_page == ui::InfoSettingsPage::Alerts) {
-    // Every row is on/off: any dial step or side tap toggles it.
-    toggleAlertsRow(s_alerts_focus);
-    infoScreenDraw();
+  Row row;
+  if (!focusedRow(&row) || row == Row::Facing) {
     return;
   }
-
-  if (s_page == ui::InfoSettingsPage::Colors) {
-    switch (s_colors_focus) {
-      case ColorsAdjustRow::Sweep:
-        ui::displayPrefsToggleSweepLine();
-        break;
-      case ColorsAdjustRow::BlipDetails:
-        ui::displayPrefsToggleHideBlipDetails();
-        break;
-      case ColorsAdjustRow::DetailTimeout:
-        ui::displayPrefsFlightDetailTimeoutStep(delta);
-        break;
-      case ColorsAdjustRow::ClockTimeout:
-        ui::displayPrefsClockWeatherTimeoutStep(delta);
-        break;
-      case ColorsAdjustRow::IdleClock:
-        ui::displayPrefsToggleAutoIdleClock();
-        break;
-      case ColorsAdjustRow::Color:
-        ui::radar::accentStep(delta);
-        break;
-      case ColorsAdjustRow::BeepOn:
-        hardware::buzzerSetEnabled(!hardware::buzzerEnabled());
-        break;
-#if !FLIGHTSCNR_HAS_HAPTIC
-      case ColorsAdjustRow::BeepTone:
-        hardware::buzzerToneStep(delta);
-        break;
-#endif
-    }
-    infoScreenDraw();
-    return;
-  }
-
-  if (s_page != ui::InfoSettingsPage::Display) {
-    return;
-  }
-
-  switch (s_display_focus) {
-    case DisplayAdjustRow::Brightness:
-      hardware::displayBrightnessStep(delta);
-      break;
-    case DisplayAdjustRow::Units:
-      ui::radar::cycleDistanceUnits();
-      break;
-    case DisplayAdjustRow::Range:
-      ui::radar::scaleStep(delta);
-      services::alert::notifyRangeChanged();
-      break;
-    case DisplayAdjustRow::Compass:
-      ui::radar::toggleCompassRose();
-      break;
-    case DisplayAdjustRow::Rings:
-      ui::radar::gridModeStep(delta);
-      break;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    case DisplayAdjustRow::OverheadSign:
-      ui::displayPrefsToggleOverheadSign();
-      break;
-#endif
-    case DisplayAdjustRow::Facing:
-      // Dial enters orientation adjust from main.cpp; no-op here.
-      return;
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    case DisplayAdjustRow::Rain:
-      services::rain::toggleEnabled();
-      break;
-    case DisplayAdjustRow::Airliners:
-      services::alert::toggleHideAirliners();
-      break;
-#endif
-  }
+  stepRow(row, delta);
   infoScreenDraw();
 }
 
