@@ -242,6 +242,21 @@ void loadPrefs() {
   s_meta.valid = prefs.getBool(kValidKey, false);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   s_detail_mask = prefs.getUChar(kDetailMaskKey, 0);
+  // A new main bake (or a clear) deletes every detail file, so any detail file still
+  // on flash belongs to the current bake: re-adopt it. This undoes a bit that was
+  // switched off by a passing decode failure.
+  if (prefs.getBool(kValidKey, false) && ensureFs()) {
+    char path[24];
+    uint8_t adopted = s_detail_mask;
+    for (size_t i = 0; i < ui::radar::kRangeMileOptionCount && i < 8; ++i) {
+      detailPath(ui::radar::kRangeMileOptions[i], path, sizeof(path));
+      if ((adopted & (1U << i)) == 0 && LittleFS.exists(path)) {
+        adopted = static_cast<uint8_t>(adopted | (1U << i));
+        Serial.printf("[basemap] detail bake %s re-adopted\n", path);
+      }
+    }
+    s_detail_mask = adopted;
+  }
 #endif
   if (s_meta.valid) {
     s_meta.lat = prefs.getDouble(kLatKey, 0);
@@ -885,11 +900,13 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   bool jpeg_cached = false;  // owned by s_raw: do not free here
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   RawJpeg* raw_free = nullptr;
+  RawJpeg* raw_hit = nullptr;
   for (RawJpeg& raw : s_raw) {
     if (raw.data != nullptr && strcmp(raw.path, path) == 0) {
       jpeg = raw.data;
       len = raw.len;
       jpeg_cached = true;
+      raw_hit = &raw;
       break;
     }
     if (raw.data == nullptr && raw_free == nullptr) {
@@ -931,14 +948,8 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
       psramFree(jpeg);
       return nullptr;
     }
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    if (raw_free != nullptr && strlen(path) < sizeof(raw_free->path)) {
-      strncpy(raw_free->path, path, sizeof(raw_free->path) - 1);
-      raw_free->data = jpeg;
-      raw_free->len = len;
-      jpeg_cached = true;
-    }
-#endif
+    // Kept in s_raw only after it decodes (below): a bad read once stayed cached, so
+    // every retry reused it until the range's bake was switched off.
   }
   const unsigned long read_ms = millis() - t0;
 
@@ -954,6 +965,7 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   const unsigned long t_decode = millis();
   bool ok = false;
   bool used_hw = false;
+  bool hw_failed = false;
 #if FS_BASEMAP_HW_JPEG
   if (s_hw_state == HwState::Ok || s_hw_state == HwState::OkSwapped ||
       s_hw_state == HwState::OkYuv || s_hw_state == HwState::OkPpa) {
@@ -962,9 +974,8 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
       ok = true;
       used_hw = true;
       s_hw_failures = 0;
-    } else if (r < 0 && ++s_hw_failures >= 3) {
-      s_hw_state = HwState::Off;
-      Serial.println("[basemap] hw jpeg off after 3 errors, using JPEGDEC");
+    } else if (r < 0) {
+      hw_failed = true;
     }
   }
 #endif
@@ -973,8 +984,32 @@ CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
   }
   const unsigned long decode_ms = millis() - t_decode;
 #if FS_BASEMAP_HW_JPEG
+  // Count a hardware error only when JPEGDEC then read the same bytes fine: if both
+  // fail, the data is bad, not the engine.
+  if (hw_failed && ok && ++s_hw_failures >= 3) {
+    s_hw_state = HwState::Off;
+    Serial.println("[basemap] hw jpeg off after 3 errors, using JPEGDEC");
+  }
   if (ok && !used_hw && s_hw_state == HwState::Untested) {
     hwSelfCheck(jpeg, len, slot->px);
+  }
+#endif
+  if (!ok) {
+    Serial.printf("[basemap] decode failed %s len=%u head=%02x%02x tail=%02x%02x cached=%d\n",
+                  path, static_cast<unsigned>(len), jpeg[0], jpeg[1], jpeg[len - 2],
+                  jpeg[len - 1], jpeg_cached ? 1 : 0);
+  }
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  if (jpeg_cached && !ok && raw_hit != nullptr) {
+    psramFree(raw_hit->data);  // re-read from flash next time
+    *raw_hit = RawJpeg{};
+    jpeg_cached = false;
+    jpeg = nullptr;
+  } else if (!jpeg_cached && ok && raw_free != nullptr && strlen(path) < sizeof(raw_free->path)) {
+    strncpy(raw_free->path, path, sizeof(raw_free->path) - 1);
+    raw_free->data = jpeg;
+    raw_free->len = len;
+    jpeg_cached = true;
   }
 #endif
   if (!jpeg_cached) {
@@ -1123,6 +1158,133 @@ void zoomBlit(const uint16_t* src, uint16_t* dst, float scale) {
     }
   }
 }
+
+#if FS_BASEMAP_HW_JPEG
+// ---- PPA zoom: the same center-crop stretch in hardware ---------------------------
+// A range with no bake of its own (3 mi stretches the 6 mi bake 2x) took 79 ms in
+// zoomBlit. The PPA scales the crop in a few ms. The first zoom of each boot runs
+// both and keeps the PPA only if its picture matches the software one.
+enum class PpaZoom : uint8_t { Untested, On, Off };
+PpaZoom s_ppa_zoom = PpaZoom::Untested;
+uint16_t* s_ppa_zoom_out = nullptr;  // aligned scratch, only when the target isn't aligned
+
+/** Crop width for a live/bake ratio when the PPA can reproduce zoomBlit exactly: a
+ *  whole-pixel centered crop and a scale that is a whole number of 1/16 steps. */
+int ppaZoomCropWidth(uint8_t live_mi, uint8_t baked_mi) {
+  if (baked_mi == 0 || live_mi >= baked_mi) {
+    return 0;
+  }
+  const int num = kPixelSize * live_mi;
+  if (num % baked_mi != 0) {
+    return 0;
+  }
+  const int w = num / baked_mi;
+  if (w <= 0 || ((kPixelSize - w) & 1) != 0 || (kPixelSize * 16) % w != 0) {
+    return 0;
+  }
+  return w;
+}
+
+bool ppaZoomInto(const uint16_t* src, uint16_t* out, int crop_w) {
+  ppa_client_config_t cc = {};
+  cc.oper_type = PPA_OPERATION_SRM;
+  cc.max_pending_trans_num = 1;
+  ppa_client_handle_t client = nullptr;
+  esp_err_t err = ppa_register_client(&cc, &client);
+  if (err != ESP_OK || client == nullptr) {
+    Serial.printf("[basemap] ppa zoom client: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  const float scale = static_cast<float>(kPixelSize) / static_cast<float>(crop_w);
+  ppa_srm_oper_config_t op = {};
+  op.in.buffer = src;
+  op.in.pic_w = kPixelSize;
+  op.in.pic_h = kPixelSize;
+  op.in.block_w = static_cast<uint32_t>(crop_w);
+  op.in.block_h = static_cast<uint32_t>(crop_w);
+  op.in.block_offset_x = static_cast<uint32_t>((kPixelSize - crop_w) / 2);
+  op.in.block_offset_y = static_cast<uint32_t>((kPixelSize - crop_w) / 2);
+  op.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+  op.out.buffer = out;
+  op.out.buffer_size = kSlotBytes;
+  op.out.pic_w = kPixelSize;
+  op.out.pic_h = kPixelSize;
+  op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+  op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+  op.scale_x = scale;
+  op.scale_y = scale;
+  op.mode = PPA_TRANS_MODE_BLOCKING;
+  // The bake may have been written by the CPU (JPEGDEC fallback): flush it so the PPA
+  // reads the real pixels, then clean the target as for any DMA write.
+  esp_cache_msync(const_cast<uint16_t*>(src), kSlotBytes,
+                  ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+  cacheCleanForDma(out, kSlotBytes);
+  err = ppa_do_scale_rotate_mirror(client, &op);
+  ppa_unregister_client(client);
+  if (err != ESP_OK) {
+    Serial.printf("[basemap] ppa zoom: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+/** Stretch with the PPA when it is known to match; false = caller uses zoomBlit. */
+bool tryPpaZoom(const uint16_t* src, uint16_t* dst, uint8_t live_mi, uint8_t baked_mi) {
+  if (s_ppa_zoom == PpaZoom::Off) {
+    return false;
+  }
+  const int crop_w = ppaZoomCropWidth(live_mi, baked_mi);
+  if (crop_w == 0) {
+    return false;
+  }
+  const bool dst_aligned = (reinterpret_cast<uintptr_t>(dst) % kSlotAlign) == 0;
+  uint16_t* out = dst;
+  if (!dst_aligned || s_ppa_zoom == PpaZoom::Untested) {
+    if (s_ppa_zoom_out == nullptr) {
+      s_ppa_zoom_out = static_cast<uint16_t*>(heap_caps_aligned_alloc(
+          kSlotAlign, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (s_ppa_zoom_out == nullptr) {
+        return false;
+      }
+    }
+    out = s_ppa_zoom_out;
+  }
+  const unsigned long t0 = millis();
+  if (!ppaZoomInto(src, out, crop_w)) {
+    s_ppa_zoom = PpaZoom::Off;
+    return false;
+  }
+  const unsigned long ppa_ms = millis() - t0;
+  if (s_ppa_zoom == PpaZoom::Untested) {
+    // Reference: the software stretch straight into dst (shown either way).
+    const unsigned long ts = millis();
+    zoomBlit(src, dst, static_cast<float>(live_mi) / static_cast<float>(baked_mi));
+    const unsigned long sw_ms = millis() - ts;
+    const Diff d = compare565(dst, out, false);
+    // Stricter than the decoder check: a nearest-neighbour stretch would pass a
+    // colour test but look blocky, and that shows mostly as a larger mean difference.
+    const bool same = d.mean_abs_x100 <= 40 && std::abs(d.bias_r_x100) <= 25 &&
+                      std::abs(d.bias_g_x100) <= 25 && std::abs(d.bias_b_x100) <= 25;
+    s_ppa_zoom = same ? PpaZoom::On : PpaZoom::Off;
+    Serial.printf(
+        "[basemap] ppa zoom self-check: %s live=%u bake=%u ppa_ms=%lu sw_ms=%lu diff=%ld "
+        "bias=%ld/%ld/%ld\n",
+        same ? "ok, using PPA" : "no match, using software", static_cast<unsigned>(live_mi),
+        static_cast<unsigned>(baked_mi), ppa_ms, sw_ms, static_cast<long>(d.mean_abs_x100),
+        static_cast<long>(d.bias_r_x100), static_cast<long>(d.bias_g_x100),
+        static_cast<long>(d.bias_b_x100));
+    if (!dst_aligned && s_ppa_zoom == PpaZoom::Off) {
+      psramFree(s_ppa_zoom_out);
+      s_ppa_zoom_out = nullptr;
+    }
+    return true;  // dst already holds the software picture
+  }
+  if (out != dst) {
+    memcpy(dst, out, kSlotBytes);
+  }
+  return true;
+}
+#endif  // FS_BASEMAP_HW_JPEG
 
 }  // namespace
 
@@ -1308,11 +1470,18 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
         // Missing or repeatedly bad detail bake: forget it so the next frame uses the
         // main one. A one-off failure (a passing memory shortage) keeps it: dropping
         // the bit is saved to flash, which disabled a good bake until the next Make map.
+        // Only a missing file is forgotten for good. Repeated decode failures skip the
+        // bake until the next restart (RAM only): a bad read once switched off a good
+        // 6 mi bake permanently.
         const bool missing = !ensureFs() || !LittleFS.exists(path);
         if (missing || ++s_detail_fails[fail_idx] >= 3) {
           s_detail_fails[fail_idx] = 0;
           s_detail_mask = static_cast<uint8_t>(s_detail_mask & ~(1U << fail_idx));
-          persistDetailMask();
+          if (missing) {
+            persistDetailMask();
+          }
+          Serial.printf("[basemap] detail bake %u mi %s\n", static_cast<unsigned>(baked_mi),
+                        missing ? "missing: forgotten" : "failing: skipped until restart");
         }
       }
 #endif
@@ -1338,11 +1507,19 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
 
   // Zoomed in vs bake: bilinear-sample the center crop and stretch to the panel.
   // Nearest-neighbor looked blocky; bilinear softens upscales (no new detail).
-  zoomBlit(slot->px, dst, static_cast<float>(live_mi) / static_cast<float>(baked_mi));
+  bool used_ppa = false;
+#if FS_BASEMAP_HW_JPEG
+  used_ppa = s_ppa_zoom != PpaZoom::Off && tryPpaZoom(slot->px, dst, live_mi, baked_mi);
+#endif
+  if (!used_ppa) {
+    zoomBlit(slot->px, dst, static_cast<float>(live_mi) / static_cast<float>(baked_mi));
+  }
   const unsigned long now = millis();
-  Serial.printf("[basemap] blit zoom live=%u bake=%u bilinear ms=%lu\n",
-                static_cast<unsigned>(live_mi), static_cast<unsigned>(baked_mi), now - t0);
-  Serial.printf("[perf] blit zoom ms=%lu total_ms=%lu\n", now - t_blit, now - t0);
+  Serial.printf("[basemap] blit zoom live=%u bake=%u %s ms=%lu\n",
+                static_cast<unsigned>(live_mi), static_cast<unsigned>(baked_mi),
+                used_ppa ? "ppa" : "bilinear", now - t0);
+  Serial.printf("[perf] blit zoom ms=%lu total_ms=%lu ppa=%d\n", now - t_blit, now - t0,
+                used_ppa ? 1 : 0);
   return true;
 }
 
