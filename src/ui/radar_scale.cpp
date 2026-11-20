@@ -523,7 +523,7 @@ void formatAltitudeDisplay(const char* alt_ft_tag, char* out, size_t out_len) {
 
 void formatSpeedLabel(char* out, size_t out_len, float gs_knots) {
   if (gs_knots <= 0.5f) {
-    strncpy(out, "Speed: —", out_len - 1);
+    strncpy(out, "Speed: -", out_len - 1);  // ASCII: the device fonts have no em dash
     out[out_len - 1] = '\0';
     return;
   }
