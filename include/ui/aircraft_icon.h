@@ -26,4 +26,8 @@ bool isGeneralAviationIcon(uint8_t category);
 bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color, uint8_t category,
           int base_side_px);
 
+/** Farthest pixel offset from the center that draw() can light at this base side,
+ *  for the largest icon (some are scaled up, e.g. the glider at 150%). */
+int maxReachPx(int base_side_px);
+
 }  // namespace ui::aircraft_icon

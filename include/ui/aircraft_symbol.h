@@ -16,6 +16,11 @@ int radiusPx();
 /** Half the side of the compact (beyond-range rim) symbol, in pixels. */
 int compactHalfPx();
 
+/** Farthest pixel from the center that the full / compact symbol can light, at any
+ *  heading and for any icon (some are drawn larger than the base side). */
+int fullReachPx();
+int compactReachPx();
+
 /** Full-size symbol on the radar grid, rotated so nose points along heading_deg.
  *  Uses Pi-style category PNG silhouette when available; else vector V-wing. */
 void draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,

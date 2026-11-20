@@ -103,6 +103,11 @@ struct CachedAircraftMarker {
    *  rather than recomputed so a marker saved under an old layout still erases
    *  exactly where its text actually landed. */
   label_layout::Box tag_box{};
+  /** How the marker looks, from its view: a plane that sits still but changes color,
+   *  icon, highlight or tag text must still be pushed to the panel. */
+  uint16_t color = 0;
+  uint8_t look = 0;        ///< bit0 highlighted, bit1 notable, bit2 emergency
+  uint32_t text_hash = 0;  ///< both tag lines
 };
 
 static_assert(services::adsb::kMaxAircraft <= label_layout::kMaxTargets,
@@ -340,6 +345,19 @@ TagText tagText(const services::adsb::Aircraft& plane, const char* notable_tag) 
     t.line2[0] = '\0';
   }
   return t;
+}
+
+/** FNV-1a of both lines, so a marker can tell its tag text changed. */
+uint32_t tagTextHash(const TagText& t) {
+  uint32_t h = 2166136261u;
+  const char* const lines[] = {t.line1, t.line2};
+  for (const char* s : lines) {
+    for (; *s != '\0'; ++s) {
+      h = (h ^ static_cast<uint8_t>(*s)) * 16777619u;
+    }
+    h = (h ^ 0xFFu) * 16777619u;  // line break: "AB"+"C" differs from "A"+"BC"
+  }
+  return h;
 }
 
 // Layout is measured against the panel, never the sprite currently being drawn
@@ -646,6 +664,15 @@ uint32_t viewsSignature() {
   const uint8_t flags = (ui::displayPrefsHideBlipDetails() ? 1 : 0) |
                         (services::alert::typeColorsEnabled() ? 2 : 0);
   mix(&flags, sizeof(flags));
+  // Areas no tag may cover (banner, sign, link badge, rain label, mute icon): when
+  // one appears or goes, the tags must be placed again before anything is drawn.
+  const label_layout::Geometry geom = labelGeometry();
+  mix(&geom.blocked_count, sizeof(geom.blocked_count));
+  for (uint8_t i = 0; i < geom.blocked_count; ++i) {
+    const label_layout::Box& b = geom.blocked[i];
+    const int16_t box[4] = {b.x, b.y, b.w, b.h};
+    mix(box, sizeof(box));
+  }
   return h;
 }
 
@@ -1319,17 +1346,31 @@ void paintItem(const IntRect& bounds, DrawFn&& draw) {
 
 // --- Item bounds (conservative: every pixel the item can touch) --------------------
 
+/** Half-side of a box that holds the full symbol at any heading. The icon is sc(28)
+ *  square and rotates, so its corners reach ~sc(20); half + pad covers that. Some
+ *  icons are drawn larger (the glider at 150%): never less than the farthest pixel
+ *  the icon rasterizer can light for the largest of them. */
+int symbolBoundHalfPx() {
+  static const int half =
+      std::max(aircraftSymbolHalfPx() + ui::sc(6), aircraft_symbol::fullReachPx());
+  return half;
+}
+
+/** Same for the compact rim icon (its corners reach ~1.4x the half-side). */
+int dotBoundRadiusPx() {
+  static const int r = std::max({aircraft_symbol::radiusPx() / 2 + 4,
+                                 aircraft_symbol::compactHalfPx() * 3 / 2 + 2,
+                                 aircraft_symbol::compactReachPx()});
+  return r;
+}
+
 IntRect symbolBounds(const PlaneView& v) {
-  // The full icon is sc(28) square and rotates, so its corners reach ~sc(20);
-  // half + pad covers that.
-  const int half = aircraftSymbolHalfPx() + ui::sc(6);
+  const int half = symbolBoundHalfPx();
   return IntRect(v.x - half, v.y - half, 2 * half + 1, 2 * half + 1);
 }
 
 IntRect dotBounds(const PlaneView& v) {
-  // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
-  const int r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
-                         aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
+  const int r = dotBoundRadiusPx();
   return IntRect(v.x - r, v.y - r, 2 * r + 1, 2 * r + 1);
 }
 
@@ -1359,10 +1400,10 @@ uint16_t viewColor(const PlaneView& v, bool pulse_on) {
 
 /**
  * Planes, tags and overlays from the cached views, in their fixed stacking order.
- * `update_sign`: let the overhead sign pick its plane (full rebuilds); region
- * rebuilds keep the sign as it is on screen.
+ * The overhead sign is drawn as it stands: it picks its plane in
+ * refreshViewsAndSign(), before the tags are placed around it.
  */
-void drawAircraftLayer(bool update_sign) {
+void drawAircraftLayer() {
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
   if (planes == nullptr) {
     return;
@@ -1398,9 +1439,6 @@ void drawAircraftLayer(bool update_sign) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   // Over the planes and tags, under the link badge. The sign needs the target
   // buffer for its see-through backing; direct-to-panel fallbacks get a solid one.
-  if (update_sign) {
-    overheadSignUpdate();
-  }
   {
     IntRect band;
     if (overheadSignBounds(&band.x, &band.y, &band.w, &band.h)) {
@@ -1414,8 +1452,6 @@ void drawAircraftLayer(bool update_sign) {
       });
     }
   }
-#else
-  (void)update_sign;
 #endif
   {
     IntRect badge;
@@ -1458,10 +1494,24 @@ void drawAircraftLayer(bool update_sign) {
   s_draw->setTextDatum(TextDatum::TopLeft);
 }
 
+/**
+ * Let the overhead sign pick its plane, then rebuild the views. In that order: the
+ * sign's band is a blocked area for the tag layout. True when the sign changed.
+ */
+bool refreshViewsAndSign() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  const bool sign_changed = overheadSignUpdate();
+#else
+  const bool sign_changed = false;
+#endif
+  refreshPlaneViews();
+  return sign_changed;
+}
+
 /** Full aircraft layer onto the current target (refreshes the views first). */
 void drawAircraft() {
-  refreshPlaneViews();
-  drawAircraftLayer(true);
+  refreshViewsAndSign();
+  drawAircraftLayer();
 }
 
 // --- Background label mask -------------------------------------------------------
@@ -2101,9 +2151,9 @@ bool rebuildContentBase(bool refresh_views) {
   {
     const DrawScope scope(s_content.gfx());
     if (refresh_views) {
-      refreshPlaneViews();
+      refreshViewsAndSign();
     }
-    drawAircraftLayer(true);
+    drawAircraftLayer();
   }
 
   s_content_base_valid = true;
@@ -2138,7 +2188,7 @@ bool rebuildContentRegion(const RegionList& region) {
   s_paint_failed = false;
   {
     const DrawScope scope(s_content.gfx());
-    drawAircraftLayer(false);
+    drawAircraftLayer();
   }
   s_paint_region = nullptr;
   if (s_paint_failed) {
@@ -2661,13 +2711,13 @@ void recoverSweepAfterGap(unsigned long gap_ms) {
 /** Symbol plus the tag box it was drawn with; the box MUST be the resolved one
  *  rather than a re-derived guess, or old text ghosts on the panel. */
 IntRect aircraftMarkerBounds(int x, int y, const label_layout::Box& tag) {
-  const int symbol_half = aircraftSymbolHalfPx();
+  const int symbol_half = symbolBoundHalfPx();
   constexpr int kPad = ui::sc(6);
 
-  int min_x = x - symbol_half - kPad;
-  int max_x = x + symbol_half + kPad;
-  int min_y = y - symbol_half - kPad;
-  int max_y = y + symbol_half + kPad;
+  int min_x = x - symbol_half;
+  int max_x = x + symbol_half;
+  int min_y = y - symbol_half;
+  int max_y = y + symbol_half;
 
   if (!tag.empty()) {
     min_x = std::min(min_x, tag.x - kPad);
@@ -2695,15 +2745,17 @@ size_t collectAircraftMarkers(CachedAircraftMarker* markers, size_t max_markers)
     marker.y = v.y;
     marker.beyond_dot = v.beyond;
     marker.tag_box = v.beyond ? label_layout::Box{} : v.tag_box;
+    marker.color = v.base_color;
+    marker.look = static_cast<uint8_t>((v.highlighted ? 1 : 0) | (v.notable ? 2 : 0) |
+                                       (v.emergency ? 4 : 0));
+    marker.text_hash = tagTextHash(v.text);
   }
   return count;
 }
 
 IntRect markerBounds(const CachedAircraftMarker& marker) {
   if (marker.beyond_dot) {
-    // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
-    const int dot_r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
-                               aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
+    const int dot_r = dotBoundRadiusPx();
     return clampRectToScreen(IntRect(marker.x - dot_r, marker.y - dot_r, dot_r * 2 + 1,
                                      dot_r * 2 + 1));
   }
@@ -2750,6 +2802,17 @@ bool markerVisualChanged(const CachedAircraftMarker& prev,
   if (prev.plane.db_flags != curr.plane.db_flags ||
       strcmp(prev.plane.squawk, curr.plane.squawk) != 0) {
     return true;  // highlight / color can follow these
+  }
+  // The icon follows the emitter category (often only on a later poll); watch-list
+  // and notable matches can follow the registration or the hex.
+  if (strcmp(prev.plane.category, curr.plane.category) != 0 ||
+      strcmp(prev.plane.registration, curr.plane.registration) != 0 ||
+      strcmp(prev.plane.hex, curr.plane.hex) != 0) {
+    return true;
+  }
+  // What the views made of it all: color, highlight, notable, emergency, tag text.
+  if (prev.color != curr.color || prev.look != curr.look || prev.text_hash != curr.text_hash) {
+    return true;
   }
   return false;
 }
@@ -2996,13 +3059,11 @@ void radarDisplayDraw() {
 
 void radarDisplayRefreshAircraft() {
   initPalette();
-#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // First: whether the sign shows decides where tags may go.
-  const bool sign_changed = overheadSignUpdate();
-#endif
-  // One pass per poll: positions, highlights, tag text and the new tag layout. The
-  // dirty rects must cover where the labels are about to land, not where they were.
-  refreshPlaneViews();
+  // One pass per poll: the sign first (whether it shows decides where tags may go),
+  // then positions, highlights, tag text and the new tag layout. The dirty rects must
+  // cover where the labels are about to land, not where they were. The rebuild below
+  // reuses these views and leaves the sign alone, so nothing changes after this.
+  const bool sign_changed = refreshViewsAndSign();
 
   const size_t curr_count = collectAircraftMarkers(s_current_aircraft_markers,
                                                     services::adsb::kMaxAircraft);
@@ -3015,6 +3076,8 @@ void radarDisplayRefreshAircraft() {
     overheadSignBounds(&band.x, &band.y, &band.w, &band.h);
     regionAdd(&s_dirty, band);
   }
+#else
+  (void)sign_changed;
 #endif
   if (s_dirty.empty()) {
     return;
