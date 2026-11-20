@@ -400,4 +400,7 @@ constexpr double kPresetFallbackTzRadiusDeg = 2.0;
  *  round count in kWifiPortalAfterReconnectFails, which alone was ~80 s. */
 constexpr unsigned long kWifiPortalAfterDownMs = 30UL * 60UL * 1000UL;
 
+/** A new OTA image is marked valid (no rollback) after loop() has run this long. */
+constexpr unsigned long kOtaConfirmAfterLoopMs = 2UL * 60UL * 1000UL;
+
 }  // namespace config

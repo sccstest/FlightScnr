@@ -2780,6 +2780,22 @@ void loop() {
 #endif
   loopBody();
 
+  // A new OTA image boots "pending verify" and the bootloader rolls it back on any
+  // reset before it is confirmed. Waiting for the first adsb.fi fetch (or 30 min) let
+  // an internet outage, a no-data/heap/watchdog restart or a power cut roll back a
+  // good update. Two minutes of normal loop() passes (display up, loop running)
+  // prove the image works, network or not. No-op for a serial-flashed image.
+  static unsigned long s_first_pass_ms = 0;
+  static bool s_image_confirmed = false;
+  if (!s_image_confirmed) {
+    if (s_first_pass_ms == 0) {
+      s_first_pass_ms = loop_start != 0 ? loop_start : 1;
+    } else if (loop_start - s_first_pass_ms >= config::kOtaConfirmAfterLoopMs) {
+      s_image_confirmed = true;
+      services::ota_github::confirmRunningImage("2 min of normal running");
+    }
+  }
+
   const unsigned long loop_ms = millis() - loop_start;
   if (g_diag_loop_stats_reset_pending) {
     // [diag] printed during this pass: start the next interval clean.

@@ -28,9 +28,9 @@ bool checkInProgress();
 
 /**
  * After an OTA install the new image boots "pending verify"; this marks it good so
- * the bootloader keeps it (call after the first good adsb.fi fetch; pollIfDue also
- * calls it after 30 min uptime). Safe to call often and from any task; no-op for a
- * serial-flashed image.
+ * the bootloader keeps it (main's loop() calls it after 2 min of normal running; the
+ * first good adsb.fi fetch and pollIfDue's 30 min mark still call it too). Safe to
+ * call often and from any task; no-op for a serial-flashed image.
  */
 void confirmRunningImage(const char* why);
 
