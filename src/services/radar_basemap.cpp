@@ -1,3 +1,6 @@
+// The zoom blit touches every pixel of a 720x720 map; the framework default is -Os.
+#pragma GCC optimize("O2")
+
 #include "services/radar_basemap.h"
 
 #include <Arduino.h>
@@ -13,6 +16,16 @@
 #include <cstring>
 
 #include <esp_heap_caps.h>
+
+// ESP32-P4 hardware JPEG decoder (esp_driver_jpeg). Real device only; the simulator
+// and the S3 boards use JPEGDEC.
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM) && \
+    defined(CONFIG_SOC_JPEG_DECODE_SUPPORTED) && __has_include(<driver/jpeg_decode.h>)
+#include <driver/jpeg_decode.h>
+#define FS_BASEMAP_HW_JPEG 1
+#else
+#define FS_BASEMAP_HW_JPEG 0
+#endif
 
 #include "services/map_center.h"
 #include "services/https_lock.h"
@@ -62,10 +75,30 @@ uint8_t s_contrast_dark_pct = kDefaultContrastDarkPct;
 uint8_t s_contrast_light_pct = kDefaultContrastLightPct;
 uint8_t s_wash_vfr_pct = kDefaultWashVfrPct;
 
-uint16_t* s_cache = nullptr;
-bool s_cache_valid = false;
-/** Coverage (miles) of the bake currently decoded into s_cache. */
-uint8_t s_cache_mi = 0;
+/** Decoded bakes kept in PSRAM (1 MB each on the 4C), so zooming between ranges that
+ *  were seen recently is a copy or a stretch, not a new JPEG decode. */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+constexpr size_t kCacheSlots = 3;
+#else
+constexpr size_t kCacheSlots = 1;
+#endif
+/** A new slot is only allocated while this much PSRAM stays free after it; otherwise
+ *  the least recently used slot's buffer is reused. */
+constexpr size_t kPsramReserveBytes = 4u * 1024u * 1024u;
+/** Slot buffers are cache-line aligned so the hardware decoder can write them. */
+constexpr size_t kSlotAlign = 128;
+
+struct CacheSlot {
+  uint16_t* px = nullptr;
+  bool valid = false;
+  uint8_t mi = 0;  // coverage (miles) of the bake decoded here
+  uint32_t stamp = 0;
+};
+CacheSlot s_slots[kCacheSlots];
+uint32_t s_slot_clock = 0;
+
+constexpr size_t kSlotPixels = static_cast<size_t>(kPixelSize) * static_cast<size_t>(kPixelSize);
+constexpr size_t kSlotBytes = kSlotPixels * sizeof(uint16_t);
 
 /** Cache LittleFS presence — exists()/open on a missing path spams VFS errors
  *  and was hit from every stalled radar full-draw retry. */
@@ -214,11 +247,62 @@ void loadPrefs() {
   prefs.end();
 }
 
+void freeSlot(CacheSlot* slot) {
+  psramFree(slot->px);
+  *slot = CacheSlot{};
+}
+
+/** Forget every decoded bake (new bake, clear, orphaned file). */
 void freeCache() {
-  psramFree(s_cache);
-  s_cache = nullptr;
-  s_cache_valid = false;
-  s_cache_mi = 0;
+  for (CacheSlot& slot : s_slots) {
+    freeSlot(&slot);
+  }
+}
+
+CacheSlot* findSlot(uint8_t mi) {
+  for (CacheSlot& slot : s_slots) {
+    if (slot.valid && slot.mi == mi) {
+      return &slot;
+    }
+  }
+  return nullptr;
+}
+
+/** Slot to decode a new bake into, with a buffer: a spare allocated one, a new one
+ *  while PSRAM has room, else the least recently used. Null if nothing can be had. */
+CacheSlot* claimSlot() {
+  CacheSlot* spare = nullptr;
+  CacheSlot* empty = nullptr;
+  CacheSlot* lru = nullptr;
+  for (CacheSlot& slot : s_slots) {
+    if (slot.px != nullptr && !slot.valid) {
+      spare = spare != nullptr ? spare : &slot;
+    } else if (slot.px == nullptr) {
+      empty = empty != nullptr ? empty : &slot;
+    } else if (lru == nullptr || slot.stamp < lru->stamp) {
+      lru = &slot;
+    }
+  }
+  if (spare != nullptr) {
+    return spare;
+  }
+  if (empty != nullptr) {
+    const size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    // Always allow the first slot (the old single cache did); more only with headroom.
+    if (lru == nullptr || free_psram >= kSlotBytes + kPsramReserveBytes) {
+      empty->px = static_cast<uint16_t*>(
+          heap_caps_aligned_alloc(kSlotAlign, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (empty->px != nullptr) {
+        empty->valid = false;
+        return empty;
+      }
+    }
+  }
+  if (lru != nullptr) {
+    lru->valid = false;
+    return lru;
+  }
+  return nullptr;
 }
 
 void noteFilePresent() { s_file_state = FileState::Present; }
@@ -295,99 +379,303 @@ int jpegDrawCallback(JPEGDRAW* draw) {
   return 1;
 }
 
-bool decodeFileToCache(const char* path) {
-  const unsigned long t0 = millis();
-  freeCache();
-  if (!ensureFs() || !LittleFS.exists(path)) {
-    return false;
-  }
-
-  File f = LittleFS.open(path, "r");
-  if (!f) {
-    return false;
-  }
-  const size_t len = f.size();
-  if (len < 64 || len > kMaxJpegBytes) {
-    f.close();
-    Serial.printf("[basemap] reject size %u\n", static_cast<unsigned>(len));
-    return false;
-  }
-
-  uint8_t* jpeg = static_cast<uint8_t*>(psramAlloc(len));
-  if (jpeg == nullptr) {
-    f.close();
-    Serial.println("[basemap] jpeg alloc failed");
-    return false;
-  }
-  const size_t got = f.read(jpeg, len);
-  f.close();
-  if (got != len) {
-    psramFree(jpeg);
-    return false;
-  }
-
-  const size_t px_bytes =
-      static_cast<size_t>(kPixelSize) * static_cast<size_t>(kPixelSize) * sizeof(uint16_t);
-  s_cache = static_cast<uint16_t*>(psramAlloc(px_bytes));
-  if (s_cache == nullptr) {
-    psramFree(jpeg);
-    Serial.println("[basemap] pixel alloc failed");
-    return false;
-  }
-  memset(s_cache, 0, px_bytes);
-
-  s_draw_ctx.pixels = s_cache;
+/** Software decode (JPEGDEC) of a whole bake into `out` (kPixelSize square). */
+bool softDecode(uint8_t* jpeg, size_t len, uint16_t* out) {
+  memset(out, 0, kSlotBytes);
+  s_draw_ctx.pixels = out;
   s_draw_ctx.w = kPixelSize;
   s_draw_ctx.h = kPixelSize;
 
   // JPEGDEC embeds large file/huffman buffers — keep it out of .bss / internal RAM.
   void* jpeg_obj_mem = psramAlloc(sizeof(JPEGDEC));
   if (jpeg_obj_mem == nullptr) {
-    psramFree(jpeg);
-    freeCache();
+    s_draw_ctx.pixels = nullptr;
     Serial.println("[basemap] JPEGDEC alloc failed");
     return false;
   }
   auto* dec = new (jpeg_obj_mem) JPEGDEC();
-
+  bool ok = false;
   if (!dec->openRAM(jpeg, static_cast<int>(len), jpegDrawCallback)) {
     Serial.println("[basemap] jpeg open failed");
-    dec->~JPEGDEC();
-    psramFree(jpeg_obj_mem);
-    psramFree(jpeg);
-    freeCache();
-    return false;
-  }
-  dec->setPixelType(RGB565_LITTLE_ENDIAN);
-  const int jw = dec->getWidth();
-  const int jh = dec->getHeight();
-  if (jw < kPixelSize - 8 || jh < kPixelSize - 8 || jw > kPixelSize + 16 ||
-      jh > kPixelSize + 16) {
-    Serial.printf("[basemap] unexpected size %dx%d (want %d)\n", jw, jh, kPixelSize);
+  } else {
+    dec->setPixelType(RGB565_LITTLE_ENDIAN);
+    const int jw = dec->getWidth();
+    const int jh = dec->getHeight();
+    if (jw < kPixelSize - 8 || jh < kPixelSize - 8 || jw > kPixelSize + 16 ||
+        jh > kPixelSize + 16) {
+      Serial.printf("[basemap] unexpected size %dx%d (want %d)\n", jw, jh, kPixelSize);
+    } else {
+      ok = dec->decode(0, 0, 0) == 1;
+      if (!ok) {
+        Serial.println("[basemap] jpeg decode failed");
+      }
+    }
     dec->close();
-    dec->~JPEGDEC();
-    psramFree(jpeg_obj_mem);
-    psramFree(jpeg);
-    freeCache();
-    return false;
   }
-  const unsigned long t_decode = millis();
-  const int ok = dec->decode(0, 0, 0);
-  const unsigned long decode_ms = millis() - t_decode;
-  dec->close();
   dec->~JPEGDEC();
   psramFree(jpeg_obj_mem);
-  psramFree(jpeg);
   s_draw_ctx.pixels = nullptr;
-  if (ok != 1) {
-    Serial.println("[basemap] jpeg decode failed");
-    freeCache();
-    return false;
+  return ok;
+}
+
+#if FS_BASEMAP_HW_JPEG
+// ---- ESP32-P4 hardware JPEG decoder ----------------------------------------------
+// About 10x faster than JPEGDEC. The first decode of each boot runs both decoders and
+// compares them; the hardware one is only used when its picture matches (colors, byte
+// order). Any later error falls back to JPEGDEC; three in a row turn it off until
+// reboot. The engine is created per decode and deleted right after, so it holds no
+// interrupt or DMA memory between zooms.
+enum class HwState : uint8_t { Untested, Ok, OkSwapped, Off };
+HwState s_hw_state = HwState::Untested;
+uint8_t s_hw_failures = 0;
+/** Internal DMA-capable RAM the decoder may use (descriptors, header tables) must not
+ *  starve the Wi-Fi link: skip the hardware below this much free. */
+constexpr size_t kMinDmaFreeForHw = 48u * 1024u;
+
+size_t dmaFree() { return heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL); }
+
+uint8_t* allocJpegInput(size_t len) {
+  jpeg_decode_memory_alloc_cfg_t cfg = {};
+  cfg.buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER;
+  size_t got = 0;
+  return static_cast<uint8_t*>(jpeg_alloc_decoder_mem(len, &cfg, &got));
+}
+
+/** 1 = decoded into `out` (a cache-line aligned slot), 0 = not attempted (size or
+ *  memory precondition), -1 = the hardware failed. */
+int hwDecode(const uint8_t* jpeg, size_t len, uint16_t* out) {
+  jpeg_decode_picture_info_t info = {};
+  if (jpeg_decoder_get_info(jpeg, static_cast<uint32_t>(len), &info) != ESP_OK) {
+    return -1;
   }
-  s_cache_valid = true;
+  // The hardware pads output to 16 px; only an exact 720x720 bake goes straight in.
+  if (info.width != static_cast<uint32_t>(kPixelSize) ||
+      info.height != static_cast<uint32_t>(kPixelSize)) {
+    return 0;
+  }
+  const size_t dma_free = dmaFree();
+  if (dma_free < kMinDmaFreeForHw) {
+    Serial.printf("[basemap] hw jpeg skipped: dma free %u\n", static_cast<unsigned>(dma_free));
+    return 0;
+  }
+  jpeg_decode_engine_cfg_t eng_cfg = {};
+  eng_cfg.intr_priority = 0;
+  eng_cfg.timeout_ms = 500;
+  jpeg_decoder_handle_t eng = nullptr;
+  esp_err_t err = jpeg_new_decoder_engine(&eng_cfg, &eng);
+  if (err != ESP_OK || eng == nullptr) {
+    Serial.printf("[basemap] hw jpeg engine: %s\n", esp_err_to_name(err));
+    return -1;
+  }
+  jpeg_decode_cfg_t dec_cfg = {};
+  dec_cfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
+  dec_cfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;  // little-endian RGB565
+  dec_cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;      // JFIF
+  uint32_t out_size = 0;
+  err = jpeg_decoder_process(eng, &dec_cfg, jpeg, static_cast<uint32_t>(len),
+                             reinterpret_cast<uint8_t*>(out), static_cast<uint32_t>(kSlotBytes),
+                             &out_size);
+  jpeg_del_decoder_engine(eng);
+  if (err != ESP_OK || out_size < kSlotBytes) {
+    Serial.printf("[basemap] hw jpeg decode: %s out=%lu\n", esp_err_to_name(err),
+                  static_cast<unsigned long>(out_size));
+    return -1;
+  }
+  return 1;
+}
+
+void swapBytes(uint16_t* px, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    px[i] = static_cast<uint16_t>((px[i] << 8) | (px[i] >> 8));
+  }
+}
+
+/** Mean |difference| per channel (in 5-bit steps, green halved) and mean signed
+ *  difference per channel, x100, over every 3rd pixel in both directions. */
+struct Diff {
+  int32_t mean_abs_x100;
+  int32_t bias_r_x100;
+  int32_t bias_g_x100;
+  int32_t bias_b_x100;
+};
+
+Diff compare565(const uint16_t* ref, const uint16_t* test, bool swap) {
+  int64_t sum_abs = 0;
+  int64_t sr = 0;
+  int64_t sg = 0;
+  int64_t sb = 0;
+  int64_t n = 0;
+  for (int y = 1; y < kPixelSize; y += 3) {
+    for (int x = 1; x < kPixelSize; x += 3) {
+      const size_t i = static_cast<size_t>(y) * kPixelSize + static_cast<size_t>(x);
+      const uint16_t a = ref[i];
+      uint16_t b = test[i];
+      if (swap) {
+        b = static_cast<uint16_t>((b << 8) | (b >> 8));
+      }
+      const int dr = static_cast<int>(a >> 11) - static_cast<int>(b >> 11);
+      const int dg = static_cast<int>((a >> 5) & 0x3F) - static_cast<int>((b >> 5) & 0x3F);
+      const int db = static_cast<int>(a & 0x1F) - static_cast<int>(b & 0x1F);
+      sum_abs += 2 * std::abs(dr) + std::abs(dg) + 2 * std::abs(db);  // green is 6-bit
+      sr += dr;
+      sg += dg;
+      sb += db;
+      ++n;
+    }
+  }
+  Diff d{};
+  if (n > 0) {
+    d.mean_abs_x100 = static_cast<int32_t>(sum_abs * 100 / (6 * n));
+    d.bias_r_x100 = static_cast<int32_t>(sr * 100 / n);
+    d.bias_g_x100 = static_cast<int32_t>(sg * 100 / (2 * n));
+    d.bias_b_x100 = static_cast<int32_t>(sb * 100 / n);
+  }
+  return d;
+}
+
+bool diffAcceptable(const Diff& d) {
+  // Two correct decoders differ by rounding and chroma upsampling: well under one step
+  // on average, with no overall color shift. A wrong byte order is far off.
+  return d.mean_abs_x100 <= 100 && std::abs(d.bias_r_x100) <= 50 &&
+         std::abs(d.bias_g_x100) <= 50 && std::abs(d.bias_b_x100) <= 50;
+}
+
+/** First decode of the boot: `ref` is JPEGDEC's picture. Decode again in hardware and
+ *  keep the hardware only if it matches. */
+void hwSelfCheck(const uint8_t* jpeg, size_t len, const uint16_t* ref) {
+  if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < kSlotBytes + kPsramReserveBytes) {
+    return;  // try on a later decode
+  }
+  auto* tmp = static_cast<uint16_t*>(
+      heap_caps_aligned_alloc(kSlotAlign, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (tmp == nullptr) {
+    return;
+  }
+  const size_t dma_before = dmaFree();
+  const unsigned long t0 = millis();
+  const int r = hwDecode(jpeg, len, tmp);
+  const unsigned long hw_ms = millis() - t0;
+  if (r == 0) {
+    psramFree(tmp);
+    return;  // not applicable to this bake; try the next one
+  }
+  if (r < 0) {
+    s_hw_state = HwState::Off;
+    Serial.println("[basemap] hw jpeg self-check: decoder error, using JPEGDEC");
+    psramFree(tmp);
+    return;
+  }
+  const Diff direct = compare565(ref, tmp, false);
+  const Diff swapped = compare565(ref, tmp, true);
+  const char* verdict = "off (no match), using JPEGDEC";
+  if (diffAcceptable(direct)) {
+    s_hw_state = HwState::Ok;
+    verdict = "ok";
+  } else if (diffAcceptable(swapped)) {
+    s_hw_state = HwState::OkSwapped;
+    verdict = "ok (byte-swapped)";
+  } else {
+    s_hw_state = HwState::Off;
+  }
+  Serial.printf(
+      "[basemap] hw jpeg self-check: %s hw_ms=%lu diff=%ld bias=%ld/%ld/%ld swapped_diff=%ld "
+      "(x100, 5-bit steps) dma_free=%u->%u\n",
+      verdict, hw_ms, static_cast<long>(direct.mean_abs_x100),
+      static_cast<long>(direct.bias_r_x100), static_cast<long>(direct.bias_g_x100),
+      static_cast<long>(direct.bias_b_x100), static_cast<long>(swapped.mean_abs_x100),
+      static_cast<unsigned>(dma_before), static_cast<unsigned>(dmaFree()));
+  psramFree(tmp);
+}
+#endif  // FS_BASEMAP_HW_JPEG
+
+/** Decode the bake at `path` (coverage `mi` miles) into a cache slot. */
+CacheSlot* decodeFileToSlot(const char* path, uint8_t mi) {
+  const unsigned long t0 = millis();
+  if (!ensureFs() || !LittleFS.exists(path)) {
+    return nullptr;
+  }
+
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    return nullptr;
+  }
+  const size_t len = f.size();
+  if (len < 64 || len > kMaxJpegBytes) {
+    f.close();
+    Serial.printf("[basemap] reject size %u\n", static_cast<unsigned>(len));
+    return nullptr;
+  }
+
+  uint8_t* jpeg = nullptr;
+#if FS_BASEMAP_HW_JPEG
+  if (s_hw_state != HwState::Off) {
+    jpeg = allocJpegInput(len);  // DMA-readable input for the hardware decoder
+  }
+#endif
+  if (jpeg == nullptr) {
+    jpeg = static_cast<uint8_t*>(psramAlloc(len));
+  }
+  if (jpeg == nullptr) {
+    f.close();
+    Serial.println("[basemap] jpeg alloc failed");
+    return nullptr;
+  }
+  const size_t got = f.read(jpeg, len);
+  f.close();
+  if (got != len) {
+    psramFree(jpeg);
+    return nullptr;
+  }
+  const unsigned long read_ms = millis() - t0;
+
+  CacheSlot* slot = claimSlot();
+  if (slot == nullptr) {
+    psramFree(jpeg);
+    Serial.println("[basemap] pixel alloc failed");
+    return nullptr;
+  }
+
+  const unsigned long t_decode = millis();
+  bool ok = false;
+  bool used_hw = false;
+#if FS_BASEMAP_HW_JPEG
+  if (s_hw_state == HwState::Ok || s_hw_state == HwState::OkSwapped) {
+    const int r = hwDecode(jpeg, len, slot->px);
+    if (r > 0) {
+      if (s_hw_state == HwState::OkSwapped) {
+        swapBytes(slot->px, kSlotPixels);
+      }
+      ok = true;
+      used_hw = true;
+      s_hw_failures = 0;
+    } else if (r < 0 && ++s_hw_failures >= 3) {
+      s_hw_state = HwState::Off;
+      Serial.println("[basemap] hw jpeg off after 3 errors, using JPEGDEC");
+    }
+  }
+#endif
+  if (!ok) {
+    ok = softDecode(jpeg, len, slot->px);
+  }
+  const unsigned long decode_ms = millis() - t_decode;
+#if FS_BASEMAP_HW_JPEG
+  if (ok && !used_hw && s_hw_state == HwState::Untested) {
+    hwSelfCheck(jpeg, len, slot->px);
+  }
+#endif
+  psramFree(jpeg);
+  if (!ok) {
+    freeSlot(slot);
+    return nullptr;
+  }
+  slot->valid = true;
+  slot->mi = mi;
+  slot->stamp = ++s_slot_clock;
   Serial.printf("[basemap] decoded %dx%d jpeg=%uB decode_ms=%lu total_ms=%lu\n", kPixelSize,
                 kPixelSize, static_cast<unsigned>(len), decode_ms, millis() - t0);
-  return true;
+  Serial.printf("[perf] decode ms=%lu read_ms=%lu hw=%d bake=%u mi\n", decode_ms, read_ms,
+                used_hw ? 1 : 0, static_cast<unsigned>(mi));
+  return slot;
 }
 
 bool anglesNear(uint16_t a, uint16_t b) {
@@ -399,6 +687,125 @@ bool anglesNear(uint16_t a, uint16_t b) {
     d -= 360;
   }
   return d >= -2 && d <= 2;
+}
+
+// ---- Bilinear zoom ----------------------------------------------------------------
+// The output is a uniform stretch of the center of the bake, so each output column
+// always samples the same two source columns with the same weight, and each output row
+// the same two source rows: both go in tables once per blit. Weights are 1/32 px. Each
+// source row is interpolated horizontally once (rows repeat while zoomed in), with the
+// three channels kept apart in two words so nothing is rounded until the end.
+
+/** Same sample position as the old float code: center + (i - center) * scale. */
+struct Taps {
+  uint16_t a[kPixelSize];   // left / top source index
+  uint16_t b[kPixelSize];   // right / bottom source index
+  uint8_t w[kPixelSize];    // weight of b, 0..32
+  bool inside[kPixelSize];  // false: outside the bake, draw black
+};
+
+void buildTaps(float scale, Taps* t) {
+  const float c = static_cast<float>(kPixelSize - 1) * 0.5f;
+  const int lim = kPixelSize - 1;
+  for (int i = 0; i < kPixelSize; ++i) {
+    const float s = c + (static_cast<float>(i) - c) * scale;
+    t->inside[i] = !(s < -1.0f || s > static_cast<float>(kPixelSize));
+    const int i0 = static_cast<int>(floorf(s));
+    int wt = static_cast<int>((s - static_cast<float>(i0)) * 32.0f + 0.5f);
+    wt = wt < 0 ? 0 : (wt > 32 ? 32 : wt);
+    const int ia = i0 < 0 ? 0 : (i0 > lim ? lim : i0);
+    const int ib = i0 + 1 < 0 ? 0 : (i0 + 1 > lim ? lim : i0 + 1);
+    t->a[i] = static_cast<uint16_t>(ia);
+    t->b[i] = static_cast<uint16_t>(ib);
+    t->w[i] = static_cast<uint8_t>(wt);
+  }
+}
+
+/** RGB565 -> blue in bits 0-4, red in bits 16-20 (room to scale by 1024). */
+inline uint32_t spreadRb(uint16_t c) {
+  return (static_cast<uint32_t>(c) & 0x001Fu) | ((static_cast<uint32_t>(c) & 0xF800u) << 5);
+}
+
+/** One source row, interpolated at every output column (fields scaled by 32). */
+void hRow(const uint16_t* src_row, const Taps& tx, uint32_t* rb, uint16_t* g) {
+  for (int x = 0; x < kPixelSize; ++x) {
+    const uint16_t ca = src_row[tx.a[x]];
+    const uint16_t cb = src_row[tx.b[x]];
+    const uint32_t wb = tx.w[x];
+    const uint32_t wa = 32u - wb;
+    rb[x] = spreadRb(ca) * wa + spreadRb(cb) * wb;
+    g[x] = static_cast<uint16_t>(((ca >> 5) & 0x3Fu) * wa + ((cb >> 5) & 0x3Fu) * wb);
+  }
+}
+
+struct ZoomScratch {
+  Taps tx;
+  Taps ty;
+  uint32_t rb[2][kPixelSize];
+  uint16_t g[2][kPixelSize];
+};
+ZoomScratch* s_zoom = nullptr;  // ~14 KB, PSRAM, kept between blits
+
+void zoomBlit(const uint16_t* src, uint16_t* dst, float scale) {
+  if (s_zoom == nullptr) {
+    s_zoom = static_cast<ZoomScratch*>(psramAlloc(sizeof(ZoomScratch)));
+    if (s_zoom == nullptr) {
+      s_zoom = static_cast<ZoomScratch*>(malloc(sizeof(ZoomScratch)));
+    }
+    if (s_zoom == nullptr) {
+      memset(dst, 0, kSlotBytes);
+      return;
+    }
+  }
+  ZoomScratch& z = *s_zoom;
+  buildTaps(scale, &z.tx);
+  buildTaps(scale, &z.ty);  // square, same scale both ways
+  // Line buffer k holds source row row_of[k]; top/bottom pick which is which.
+  int row_of[2] = {-1, -1};
+
+  for (int y = 0; y < kPixelSize; ++y) {
+    uint16_t* out = dst + static_cast<size_t>(y) * kPixelSize;
+    if (!z.ty.inside[y]) {
+      memset(out, 0, kPixelSize * sizeof(uint16_t));
+      continue;
+    }
+    const int ra = z.ty.a[y];
+    const int rbw = z.ty.b[y];
+    int top = row_of[0] == ra ? 0 : (row_of[1] == ra ? 1 : -1);
+    int bot = row_of[0] == rbw ? 0 : (row_of[1] == rbw ? 1 : -1);
+    if (top < 0) {
+      top = bot == 0 ? 1 : 0;  // the buffer the bottom row does not need
+      hRow(src + static_cast<size_t>(ra) * kPixelSize, z.tx, z.rb[top], z.g[top]);
+      row_of[top] = ra;
+      if (bot == top) {
+        bot = -1;
+      }
+    }
+    if (bot < 0) {
+      bot = ra == rbw ? top : 1 - top;
+      if (row_of[bot] != rbw) {
+        hRow(src + static_cast<size_t>(rbw) * kPixelSize, z.tx, z.rb[bot], z.g[bot]);
+        row_of[bot] = rbw;
+      }
+    }
+    const uint32_t wb = z.ty.w[y];
+    const uint32_t wa = 32u - wb;
+    const uint32_t* rb0 = z.rb[top];
+    const uint32_t* rb1 = z.rb[bot];
+    const uint16_t* g0 = z.g[top];
+    const uint16_t* g1 = z.g[bot];
+    for (int x = 0; x < kPixelSize; ++x) {
+      if (!z.tx.inside[x]) {
+        out[x] = 0;
+        continue;
+      }
+      // Fields now scaled by 1024; +512 rounds half up, like the old lroundf.
+      const uint32_t rb = rb0[x] * wa + rb1[x] * wb + 0x02000200u;
+      const uint32_t g = static_cast<uint32_t>(g0[x]) * wa + static_cast<uint32_t>(g1[x]) * wb + 512u;
+      out[x] = static_cast<uint16_t>((((rb >> 26) & 0x1Fu) << 11) | (((g >> 10) & 0x3Fu) << 5) |
+                                     ((rb >> 10) & 0x1Fu));
+    }
+  }
 }
 
 }  // namespace
@@ -493,7 +900,14 @@ bool wantsDisplay() {
   return s_enabled && s_meta.valid && metaMatchesLive() && filePresent();
 }
 
-bool cacheReady() { return s_cache_valid; }
+bool cacheReady() {
+  for (const CacheSlot& slot : s_slots) {
+    if (slot.valid) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool hasImage() {
   if (!s_meta.valid) {
@@ -549,10 +963,8 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
   }
   const uint8_t live_mi = ui::radar::scaleActiveMiles();
   const uint8_t baked_mi = sourceMiles(live_mi);
-  if (s_cache_valid && s_cache_mi != baked_mi) {
-    freeCache();  // zoom moved to a different detail bake
-  }
-  if (!s_cache_valid) {
+  CacheSlot* slot = findSlot(baked_mi);
+  if (slot == nullptr) {
     // Never decode on the radar stall path while TLS is active / heap is low —
     // JPEGDEC blocked the loop for ~18s in the field and left max_blk wedged.
     if (!heapOkToDecode()) {
@@ -569,7 +981,8 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
       path = detail;
     }
 #endif
-    if (!decodeFileToCache(path)) {
+    slot = decodeFileToSlot(path, baked_mi);
+    if (slot == nullptr) {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
       if (path != kPath) {
         // Missing / bad detail bake: forget it so the next frame uses the main one.
@@ -582,98 +995,26 @@ bool blitRgb565(uint16_t* dst, int w, int h) {
 #endif
       return false;
     }
-    s_cache_mi = baked_mi;
+  } else {
+    slot->stamp = ++s_slot_clock;
   }
 
-  const size_t px =
-      static_cast<size_t>(kPixelSize) * static_cast<size_t>(kPixelSize);
+  const unsigned long t_blit = millis();
   if (live_mi == baked_mi) {
-    memcpy(dst, s_cache, px * sizeof(uint16_t));
-    Serial.printf("[basemap] blit 1:1 ms=%lu\n", millis() - t0);
+    memcpy(dst, slot->px, kSlotBytes);
+    const unsigned long now = millis();
+    Serial.printf("[basemap] blit 1:1 ms=%lu\n", now - t0);
+    Serial.printf("[perf] blit 1:1 ms=%lu total_ms=%lu\n", now - t_blit, now - t0);
     return true;
   }
 
   // Zoomed in vs bake: bilinear-sample the center crop and stretch to the panel.
   // Nearest-neighbor looked blocky; bilinear softens upscales (no new detail).
-  const float scale =
-      static_cast<float>(live_mi) / static_cast<float>(baked_mi);
-  const float cx = static_cast<float>(kPixelSize - 1) * 0.5f;
-  const float cy = static_cast<float>(kPixelSize - 1) * 0.5f;
-  const int lim = kPixelSize - 1;
-
-  auto sample565 = [&](int sx, int sy) -> uint16_t {
-    if (sx < 0) {
-      sx = 0;
-    } else if (sx > lim) {
-      sx = lim;
-    }
-    if (sy < 0) {
-      sy = 0;
-    } else if (sy > lim) {
-      sy = lim;
-    }
-    return s_cache[static_cast<size_t>(sy) * static_cast<size_t>(kPixelSize) +
-                   static_cast<size_t>(sx)];
-  };
-  auto unpack = [](uint16_t c, int* r, int* g, int* b) {
-    *r = (c >> 11) & 0x1F;
-    *g = (c >> 5) & 0x3F;
-    *b = c & 0x1F;
-  };
-  auto pack = [](int r, int g, int b) -> uint16_t {
-    if (r < 0) {
-      r = 0;
-    } else if (r > 31) {
-      r = 31;
-    }
-    if (g < 0) {
-      g = 0;
-    } else if (g > 63) {
-      g = 63;
-    }
-    if (b < 0) {
-      b = 0;
-    } else if (b > 31) {
-      b = 31;
-    }
-    return static_cast<uint16_t>((r << 11) | (g << 5) | b);
-  };
-
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      const float sx_f = cx + (static_cast<float>(x) - cx) * scale;
-      const float sy_f = cy + (static_cast<float>(y) - cy) * scale;
-      if (sx_f < -1.0f || sy_f < -1.0f || sx_f > static_cast<float>(kPixelSize) ||
-          sy_f > static_cast<float>(kPixelSize)) {
-        dst[static_cast<size_t>(y) * static_cast<size_t>(w) +
-            static_cast<size_t>(x)] = 0;
-        continue;
-      }
-      const int x0 = static_cast<int>(floorf(sx_f));
-      const int y0 = static_cast<int>(floorf(sy_f));
-      const float tx = sx_f - static_cast<float>(x0);
-      const float ty = sy_f - static_cast<float>(y0);
-      int r00, g00, b00, r10, g10, b10, r01, g01, b01, r11, g11, b11;
-      unpack(sample565(x0, y0), &r00, &g00, &b00);
-      unpack(sample565(x0 + 1, y0), &r10, &g10, &b10);
-      unpack(sample565(x0, y0 + 1), &r01, &g01, &b01);
-      unpack(sample565(x0 + 1, y0 + 1), &r11, &g11, &b11);
-      const float r0 = static_cast<float>(r00) + (static_cast<float>(r10 - r00) * tx);
-      const float r1 = static_cast<float>(r01) + (static_cast<float>(r11 - r01) * tx);
-      const float g0 = static_cast<float>(g00) + (static_cast<float>(g10 - g00) * tx);
-      const float g1 = static_cast<float>(g01) + (static_cast<float>(g11 - g01) * tx);
-      const float b0 = static_cast<float>(b00) + (static_cast<float>(b10 - b00) * tx);
-      const float b1 = static_cast<float>(b01) + (static_cast<float>(b11 - b01) * tx);
-      const int r = static_cast<int>(lroundf(r0 + (r1 - r0) * ty));
-      const int g = static_cast<int>(lroundf(g0 + (g1 - g0) * ty));
-      const int b = static_cast<int>(lroundf(b0 + (b1 - b0) * ty));
-      dst[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] =
-          pack(r, g, b);
-    }
-  }
+  zoomBlit(slot->px, dst, static_cast<float>(live_mi) / static_cast<float>(baked_mi));
+  const unsigned long now = millis();
   Serial.printf("[basemap] blit zoom live=%u bake=%u bilinear ms=%lu\n",
-                static_cast<unsigned>(live_mi), static_cast<unsigned>(baked_mi),
-                millis() - t0);
+                static_cast<unsigned>(live_mi), static_cast<unsigned>(baked_mi), now - t0);
+  Serial.printf("[perf] blit zoom ms=%lu total_ms=%lu\n", now - t_blit, now - t0);
   return true;
 }
 
@@ -876,9 +1217,7 @@ bool uploadFinishDetail(uint8_t range_miles) {
   }
   s_detail_mask = static_cast<uint8_t>(s_detail_mask | (1U << idx));
   persistDetailMask();
-  if (s_cache_mi != 0) {
-    freeCache();  // a sharper bake may now cover the live range
-  }
+  freeCache();  // a sharper bake may now cover the live range; drop older decodes
   Serial.printf("[basemap] detail %u mi saved (%u bytes, mask 0x%02X)\n",
                 static_cast<unsigned>(range_miles), static_cast<unsigned>(s_upload_bytes),
                 static_cast<unsigned>(s_detail_mask));
