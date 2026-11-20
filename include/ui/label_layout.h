@@ -29,8 +29,8 @@ constexpr uint8_t kSlotCount = 6;
 
 /** Detail level of a placed tag, best first. */
 enum Tier : uint8_t {
-  kTierFull = 0,    /** callsign + type + altitude */
-  kTierShort = 1,   /** callsign only — a third the height, so it often still fits */
+  kTierFull = 0,    /** maker + model (or the lines the board shows) */
+  kTierShort = 1,   /** first line only (the maker) — so it often still fits */
   kTierHidden = 2,  /** not drawn */
 };
 
@@ -46,10 +46,12 @@ constexpr int kSwitchMarginPct = 8;
  * kUnhideCoveragePct, so a tag hovering on either boundary cannot flicker.
  */
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-// The 4C shows a wider area with many more tags: hide sooner rather than stack
-// text that can't be read (radar_display also shrinks the font when it's busy).
-constexpr int kHideCoveragePct = 12;
-constexpr int kUnhideCoveragePct = 4;
+// The 4C shows a wider area with many more tags: tags never overlap. Two-line
+// maker/model tags are wide, and even the old 12% allowance hid letters on the
+// device. Shrink to one line or hide instead (radar_display also shrinks the font
+// when the sky is busy). 1% covers anti-aliased edges that merely touch.
+constexpr int kHideCoveragePct = 1;
+constexpr int kUnhideCoveragePct = 0;
 #else
 constexpr int kHideCoveragePct = 35;
 constexpr int kUnhideCoveragePct = 15;

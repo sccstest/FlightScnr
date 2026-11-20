@@ -142,7 +142,7 @@ void initLabelMetrics() {
   s_scale_style =
       pickTextSizeForHeight(cardinal_h - radar::kScaleBelowCardinalPx, 0, 3);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  s_tag_style = pickTextSizeForHeight(radar::kAircraftTagLabelHeightPx, 0, 4);
+  s_tag_style = displayFontTagLevel(0);
 #else
   s_tag_style = pickTextSizeForHeight(radar::kAircraftTagLabelHeightPx, 2, 4);
 #endif
@@ -343,24 +343,42 @@ int aircraftSymbolHalfPx() {
   return std::max(aircraft_symbol::radiusPx(), radar::kAircraftIconRadiusPx);
 }
 
-/** Second tag line: ICAO type, or "ground" for parked/taxiing traffic. */
-bool tagTypeLine(const services::adsb::Aircraft& plane, char* out, size_t out_size) {
+/**
+ * Tag text: maker on top, short model below ("Cessna" / "172 Skyhawk"). No tail
+ * number or altitude: those are on the flight detail and the selected-plane banner.
+ * Unknown type: the ICAO code, else the callsign, so a plane is never anonymous.
+ * Notable aircraft show their friendly name ("Hurricane Hunter") as the second line.
+ */
+struct TagText {
+  char line1[24] = "";
+  char line2[32] = "";
+};
+
+TagText tagText(const services::adsb::Aircraft& plane) {
+  TagText t;
+  if (!services::aircraft_type::formatMakeModel(plane.type, t.line1, sizeof(t.line1), t.line2,
+                                                sizeof(t.line2))) {
+    t.line1[0] = '\0';
+    t.line2[0] = '\0';
+    if (plane.type[0] != '\0') {
+      services::aircraft_type::formatRadarTagLabel(plane.type, t.line1, sizeof(t.line1));
+    } else if (plane.callsign[0] != '\0') {
+      snprintf(t.line1, sizeof(t.line1), "%s", plane.callsign);
+    }
+    if (strcmp(plane.alt, "GND") == 0) {
+      snprintf(t.line2, sizeof(t.line2), "ground");
+    }
+  }
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-  // Notable aircraft show their friendly name ("Hurricane Hunter") instead of the type.
   if (const char* tag = services::alert::notableTag(plane)) {
-    snprintf(out, out_size, "%s", tag);
-    return true;
+    snprintf(t.line2, sizeof(t.line2), "%s", tag);
   }
 #endif
-  if (plane.type[0] != '\0') {
-    services::aircraft_type::formatRadarTagLabel(plane.type, out, out_size);
-    return true;
+  if (t.line1[0] == '\0' && t.line2[0] != '\0') {
+    snprintf(t.line1, sizeof(t.line1), "%s", t.line2);
+    t.line2[0] = '\0';
   }
-  if (strcmp(plane.alt, "GND") == 0) {
-    snprintf(out, out_size, "ground");
-    return true;
-  }
-  return false;
+  return t;
 }
 
 // Layout is measured against the panel, never the sprite currently being drawn
@@ -373,28 +391,30 @@ int tagLineHeight() {
 
 int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
   displayFontApply(tft, s_tag_style);
+  const TagText t = tagText(plane);
   int max_w = 0;
-  if (plane.callsign[0] != '\0') {
-    max_w = std::max(max_w, tft.textWidth(plane.callsign));
+  if (t.line1[0] != '\0') {
+    max_w = std::max(max_w, tft.textWidth(t.line1));
   }
-  char type_label[32];
-  if (tagTypeLine(plane, type_label, sizeof(type_label))) {
-    max_w = std::max(max_w, tft.textWidth(type_label));
-  }
-  if (plane.alt[0] != '\0') {
-    char alt_display[20];
-    radar::formatAltitudeDisplay(plane.alt, alt_display, sizeof(alt_display));
-    max_w = std::max(max_w, tft.textWidth(alt_display));
+  if (t.line2[0] != '\0') {
+    max_w = std::max(max_w, tft.textWidth(t.line2));
   }
   return max_w;
 }
 
-int measureCallsignWidth(const services::adsb::Aircraft& plane) {
-  if (plane.callsign[0] == '\0') {
+/** Width of the one-line (crowded) tag: the maker only. */
+int measureTagFirstLineWidth(const services::adsb::Aircraft& plane) {
+  const TagText t = tagText(plane);
+  if (t.line1[0] == '\0') {
     return 0;
   }
   displayFontApply(tft, s_tag_style);
-  return tft.textWidth(plane.callsign);
+  return tft.textWidth(t.line1);
+}
+
+int tagLineCount(const services::adsb::Aircraft& plane) {
+  const TagText t = tagText(plane);
+  return (t.line1[0] != '\0' ? 1 : 0) + (t.line2[0] != '\0' ? 1 : 0);
 }
 
 /** Luma at or above this is a light map; tag ink switches to dark. */
@@ -439,7 +459,7 @@ bool tagSitsOnLightBackground(const label_layout::Box& box) {
           bm_style == services::basemap::Style::Voyager);
 }
 
-uint16_t altitudeInk(const TagInk& ink, const services::adsb::Aircraft& plane) {
+[[maybe_unused]] uint16_t altitudeInk(const TagInk& ink, const services::adsb::Aircraft& plane) {
   if (strcmp(plane.alt, "GND") == 0) {
     return ink.type;
   }
@@ -466,37 +486,26 @@ void drawAircraftTagPlaced(const label_layout::Placement& placement,
   const bool light_bg = tagSitsOnLightBackground(placement.box);
   const TagInk ink = tagInkForBackground(light_bg);
 
-  if (plane.callsign[0] != '\0') {
+  const TagText text = tagText(plane);
+  if (text.line1[0] != '\0') {
     s_draw->setTextColor(ink.label);
-    s_draw->drawString(plane.callsign, anchor_x, ly);
+    s_draw->drawString(text.line1, anchor_x, ly);
   }
-  if (placement.tier != label_layout::kTierFull) {
+  if (placement.tier != label_layout::kTierFull || text.line2[0] == '\0') {
     return;
   }
   ly += line_h;
 
-  char type_label[32];
-  if (tagTypeLine(plane, type_label, sizeof(type_label))) {
-    uint16_t type_ink = ink.type;
+  uint16_t type_ink = ink.type;
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-    if (services::alert::notableTag(plane) != nullptr) {
-      // Notable name in an ink no other tag line uses: white on dark maps (tags there
-      // are green / yellow / cyan / magenta), crimson on light maps (navy / blue / teal /
-      // purple).
-      type_ink = light_bg ? tft.color565(190, 0, 60) : tft.color565(255, 255, 255);
-    }
+  if (services::alert::notableTag(plane) != nullptr) {
+    // Notable name in an ink no other tag line uses: white on dark maps, crimson on
+    // light maps.
+    type_ink = light_bg ? tft.color565(190, 0, 60) : tft.color565(255, 255, 255);
+  }
 #endif
-    s_draw->setTextColor(type_ink);
-    s_draw->drawString(type_label, anchor_x, ly);
-  }
-  ly += line_h;
-
-  if (plane.alt[0] != '\0') {
-    char alt_display[20];
-    radar::formatAltitudeDisplay(plane.alt, alt_display, sizeof(alt_display));
-    s_draw->setTextColor(altitudeInk(ink, plane));
-    s_draw->drawString(alt_display, anchor_x, ly);
-  }
+  s_draw->setTextColor(type_ink);
+  s_draw->drawString(text.line2, anchor_x, ly);
 }
 
 /** Per aircraft-list index, filled by fillAircraftLabelKeys(). */
@@ -583,9 +592,9 @@ uint8_t s_tag_level = 0;
 
 void updateTagDensity() {
   if (!s_tag_styles_ready) {
-    s_tag_styles[0] = s_tag_style;
-    s_tag_styles[1] = pickTextSizeForHeight(0, 0, 0);  // smallest preset (15 pt)
-    s_tag_styles[2] = displayFontTagCrowded();          // 12 pt
+    s_tag_styles[0] = displayFontTagLevel(0);  // 14 pt
+    s_tag_styles[1] = displayFontTagLevel(1);  // 12 pt
+    s_tag_styles[2] = displayFontTagLevel(2);  // 10 pt
     s_tag_styles_ready = true;
     Serial.printf("[radar] tag text heights: %d / %d / %d px\n",
                   displayFontHeight(tft, s_tag_styles[0]), displayFontHeight(tft, s_tag_styles[1]),
@@ -659,8 +668,8 @@ void resolveAircraftLabels() {
     t.x = static_cast<int16_t>(x);
     t.y = static_cast<int16_t>(y);
     t.full_w = static_cast<int16_t>(block_w);
-    t.full_h = static_cast<int16_t>(line_h * 3);
-    t.short_w = static_cast<int16_t>(measureCallsignWidth(planes[i]));
+    t.full_h = static_cast<int16_t>(line_h * tagLineCount(planes[i]));
+    t.short_w = static_cast<int16_t>(measureTagFirstLineWidth(planes[i]));
     t.short_h = t.short_w > 0 ? static_cast<int16_t>(line_h) : 0;
     // Closest to center places first, so nearby traffic keeps the good slots.
     t.priority = distSqFromCenter(x, y);

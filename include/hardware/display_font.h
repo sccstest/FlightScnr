@@ -17,6 +17,10 @@ UiTextStyle displayFontTag();
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 /** Smallest radar tag text, for a crowded sky (4C only). */
 UiTextStyle displayFontTagCrowded();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** Radar tag size for the busy-sky level: 0 normal, 1 busier, 2 crowded. */
+UiTextStyle displayFontTagLevel(uint8_t level);
+#endif
 #endif
 /** Native large sizes for clock (avoid textSize scaling — looks pixelated). */
 UiTextStyle displayFontClockTime();

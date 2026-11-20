@@ -77,7 +77,14 @@ UiTextStyle displayFontScale() { return UiTextStyle{&FS_FONT_9}; }
 UiTextStyle displayFontTag() { return UiTextStyle{&FS_FONT_11}; }
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
-UiTextStyle displayFontTagCrowded() { return UiTextStyle{&MontserratBold12pt4aa}; }
+UiTextStyle displayFontTagCrowded() { return UiTextStyle{&MontserratBold10pt4aa}; }
+
+UiTextStyle displayFontTagLevel(uint8_t level) {
+  // Desk distance (~45 cm): the 720 px panel's old 20/15/12 pt tags read as too big.
+  if (level == 0) return UiTextStyle{&MontserratBold14pt4aa};
+  if (level == 1) return UiTextStyle{&MontserratBold12pt4aa};
+  return UiTextStyle{&MontserratBold10pt4aa};
+}
 #endif
 
 UiTextStyle displayFontClockTime() { return UiTextStyle{&FS_FONT_36}; }
