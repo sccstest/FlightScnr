@@ -14,6 +14,7 @@
 
 #include "config.h"
 #include "util/heap_diag.h"
+#include "util/loop_watchdog.h"
 #include "services/route_cache_store.h"
 #include "hardware/buzzer.h"
 #include "hardware/board_marker.h"
@@ -61,6 +62,14 @@
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 #include "services/sky_events.h"
 #include "ui/sky_banner.h"
+#endif
+
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
+// The precompiled P4 core sets CONFIG_ARDUINO_LOOP_STACK_SIZE=8192 (the 16 KB build
+// flag in platformio.ini only reaches the S3 core). loop() runs the map/radar redraws,
+// JSON handling and the web server, so give it 16 KB. FreeRTOS takes task stacks from
+// internal RAM: this costs 8 KB of it (watch the [heap] dma figures and stk_loop).
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #endif
 
 namespace {
@@ -125,6 +134,133 @@ uint32_t g_diag_sweep_frames = 0;
 uint32_t g_diag_slow_loops = 0;
 uint32_t g_diag_interval_min_heap = UINT32_MAX;
 unsigned long g_diag_adsb_process_max_ms = 0;
+/** [diag] printed during this pass: reset loop_max once the pass has been measured,
+ *  so the diag pass itself is not reported as the next interval's maximum. */
+bool g_diag_loop_stats_reset_pending = false;
+/** weather::bootSanityCheck() waits for the first radar frame (it blocks 1-10 s). */
+bool g_weather_boot_check_pending = false;
+
+// --- [perf] loop: once-a-minute summary of slow loop passes and what caused them. ---
+enum PerfPart : uint8_t {
+  kPerfOffHours,
+  kPerfInput,
+  kPerfScreens,
+  kPerfRainTz,
+  kPerfWebOta,
+  kPerfDetail,
+  kPerfSky,
+  kPerfDiag,
+  kPerfSweep,
+  kPerfFetch,
+  kPerfLink,
+  kPerfAlert,
+  kPerfPartCount,
+};
+constexpr const char* kPerfPartNames[kPerfPartCount] = {
+    "offhours", "input+nav", "screens", "rain+tz", "web+ota", "detail",
+    "sky", "diag", "sweep", "fetch", "wifi_link", "alert_end"};
+constexpr unsigned long kPerfLoopLogIntervalMs = 60000UL;
+unsigned long g_perf_mark_ms = 0;
+unsigned long g_perf_part_max_ms[kPerfPartCount] = {};
+unsigned long g_perf_window_start_ms = 0;
+uint32_t g_perf_passes = 0;
+uint32_t g_perf_over50 = 0;
+uint32_t g_perf_over100 = 0;
+uint32_t g_perf_over250 = 0;
+unsigned long g_perf_loop_max_ms = 0;
+
+/** Attribute the time since the previous mark to `part` (max per window). */
+inline void perfMark(PerfPart part) {
+  const unsigned long now = millis();
+  const unsigned long ms = now - g_perf_mark_ms;
+  g_perf_mark_ms = now;
+  if (ms > g_perf_part_max_ms[part]) {
+    g_perf_part_max_ms[part] = ms;
+  }
+}
+
+void perfLoopPassDone(unsigned long loop_ms) {
+  ++g_perf_passes;
+  if (loop_ms > 50) ++g_perf_over50;
+  if (loop_ms > 100) ++g_perf_over100;
+  if (loop_ms > 250) ++g_perf_over250;
+  if (loop_ms > g_perf_loop_max_ms) g_perf_loop_max_ms = loop_ms;
+  const unsigned long now = millis();
+  if (g_perf_window_start_ms == 0) {
+    g_perf_window_start_ms = now;
+    return;
+  }
+  if (now - g_perf_window_start_ms < kPerfLoopLogIntervalMs) {
+    return;
+  }
+  // The three slowest parts of the window, slowest first.
+  int top[3] = {-1, -1, -1};
+  for (int p = 0; p < kPerfPartCount; ++p) {
+    for (int k = 0; k < 3; ++k) {
+      if (top[k] < 0 || g_perf_part_max_ms[p] > g_perf_part_max_ms[top[k]]) {
+        for (int j = 2; j > k; --j) top[j] = top[j - 1];
+        top[k] = p;
+        break;
+      }
+    }
+  }
+  char parts[96];
+  size_t len = 0;
+  parts[0] = '\0';
+  for (int k = 0; k < 3; ++k) {
+    if (top[k] < 0 || g_perf_part_max_ms[top[k]] == 0) break;
+    const int n = snprintf(parts + len, sizeof(parts) - len, "%s%s=%lums", k > 0 ? " " : "",
+                           kPerfPartNames[top[k]], g_perf_part_max_ms[top[k]]);
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(parts) - len) break;
+    len += static_cast<size_t>(n);
+  }
+  Serial.printf("[perf] loop passes=%lu >50ms=%lu >100ms=%lu >250ms=%lu max=%lums slowest: %s\n",
+                static_cast<unsigned long>(g_perf_passes), static_cast<unsigned long>(g_perf_over50),
+                static_cast<unsigned long>(g_perf_over100),
+                static_cast<unsigned long>(g_perf_over250), g_perf_loop_max_ms,
+                parts[0] != '\0' ? parts : "-");
+  g_perf_window_start_ms = now;
+  g_perf_passes = g_perf_over50 = g_perf_over100 = g_perf_over250 = 0;
+  g_perf_loop_max_ms = 0;
+  for (int p = 0; p < kPerfPartCount; ++p) g_perf_part_max_ms[p] = 0;
+}
+
+// --- Internal-RAM gates ---
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+/** On the P4, ESP.getFreeHeap()/getMaxAllocHeap() include a 31 KB RTC block that the
+ *  Wi-Fi link (ESP-Hosted) and lwIP cannot use. The recovery ladder judges the
+ *  DMA-capable internal RAM instead, sampled at most every 250 ms (the walk over the
+ *  heap's free blocks is not free, and the ladder runs every loop pass). */
+struct DmaHeapSample {
+  uint32_t free_bytes = 0;
+  uint32_t largest = 0;
+};
+DmaHeapSample dmaHeap() {
+  static DmaHeapSample s_sample;
+  static unsigned long s_at_ms = 0;
+  static bool s_valid = false;
+  const unsigned long now = millis();
+  if (!s_valid || now - s_at_ms >= 250UL) {
+    constexpr uint32_t caps = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+    s_sample.free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(caps));
+    s_sample.largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(caps));
+    s_at_ms = now;
+    s_valid = true;
+  }
+  return s_sample;
+}
+bool ladderHeapReadyForAdsb() {
+  const DmaHeapSample h = dmaHeap();
+  return h.free_bytes >= config::kMinFreeHeapForAdsbHttps &&
+         h.largest >= config::kMinContiguousHeapForAdsbTls;
+}
+uint32_t ladderFreeHeap() { return dmaHeap().free_bytes; }
+uint32_t ladderMaxBlock() { return dmaHeap().largest; }
+#else
+bool ladderHeapReadyForAdsb() { return services::https::heapReadyForAdsb(); }
+uint32_t ladderFreeHeap() { return ESP.getFreeHeap(); }
+uint32_t ladderMaxBlock() { return ESP.getMaxAllocHeap(); }
+#endif
 
 const char* resetReasonName() {
   switch (esp_reset_reason()) {
@@ -251,7 +387,19 @@ void logDiagLine(const char* tag, unsigned long diag_ivl_ms = config::kDiagLogIn
   const unsigned mins = static_cast<unsigned>((uptime_sec % 3600UL) / 60UL);
 
   const bool wifi_up = WiFi.status() == WL_CONNECTED;
-  const int rssi = wifi_up ? WiFi.RSSI() : 0;
+  // RSSI is an RPC to the C6 on the P4 (it can block up to ~5 s when the link is
+  // busy): ask at most every 5 min and report the last value in between.
+  static int s_rssi = 0;
+  static unsigned long s_rssi_at_ms = 0;
+  static bool s_rssi_valid = false;
+  if (!wifi_up) {
+    s_rssi_valid = false;
+  } else if (!s_rssi_valid || millis() - s_rssi_at_ms >= 5UL * 60UL * 1000UL) {
+    s_rssi = WiFi.RSSI();
+    s_rssi_at_ms = millis();
+    s_rssi_valid = true;
+  }
+  const int rssi = wifi_up ? s_rssi : 0;
 
   char adsb_ok[16];
   const uint32_t adsb_age_ms = services::adsb::lastFetchOkAgeMs();
@@ -325,7 +473,8 @@ void logDiagLine(const char* tag, unsigned long diag_ivl_ms = config::kDiagLogIn
       ui::flightDetailSpriteReady() ? 1 : 0, g_diag_slow_loops, loop_stack,
       services::adsb::fetchTaskStackFreeBytes(), g_loop_max_ms, lfs_buf);
 
-  g_loop_max_ms = 0;
+  // loop_max resets at the end of this pass, after it has been measured (loop()).
+  g_diag_loop_stats_reset_pending = true;
   g_diag_sweep_frames = 0;
   g_diag_slow_loops = 0;
   g_diag_adsb_process_max_ms = 0;
@@ -435,6 +584,13 @@ void releaseDetailWorkerForHeap() {
 
 /** Drop radar PSRAM sprites and drain TLS when max_blk is still tight after detail. */
 void recoverRadarHeapPressure(const char* reason, uint32_t drain_ms = 1200) {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // 4C: the radar sprites live in PSRAM and the panel is MIPI-DSI (no SPI DMA), so
+  // dropping them frees no internal RAM; draining TLS here only stalled the UI.
+  (void)reason;
+  (void)drain_ms;
+  return;
+#endif
   const uint32_t blk_now = ESP.getMaxAllocHeap();
   if (blk_now >= config::kMinContiguousHeapForAdsbTls) {
     return;
@@ -487,8 +643,12 @@ void reclaimHeapAfterFlightDetail() {
 
   releaseHttpsPressureMemory();
   releaseDetailWorkerForHeap();
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // 4C: no drain on the loop (it always slept >=150 ms and up to 2.5 s on every exit
+  // from flight detail). The next HTTPS user drains before its own TLS session.
   services::https::drainTlsHeapAfterSession(2500);
   recoverRadarHeapPressure("detail_resume");
+#endif
 
   if (config::kRadarResumeDebug || config::kSerialTraceDebug) {
     Serial.printf("[radar] resume_reclaim heap=%u->%u blk=%u->%u adsb_ok=%d\n", heap_before,
@@ -498,7 +658,13 @@ void reclaimHeapAfterFlightDetail() {
 }
 
 bool heapBlocksPanel() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // The 4C's MIPI-DSI panel is a framebuffer in PSRAM: drawing needs no SPI DMA
+  // descriptors, so internal-heap fragmentation can never block it.
+  return false;
+#else
   return ESP.getMaxAllocHeap() < config::kMinContiguousHeapForPanelSpi;
+#endif
 }
 
 /** Flight detail draw uses RAM/sprite only — not the HTTPS lock.
@@ -1959,7 +2125,7 @@ void tickRadarAnimation() {
     }
   }
 
-  if (ESP.getMaxAllocHeap() < config::kMinContiguousHeapForPanelSpi) {
+  if (heapBlocksPanel()) {  // never on the 4C (see heapBlocksPanel)
     static unsigned long s_last_spi_defer_ms = 0;
     if (now - s_last_spi_defer_ms >= 2000UL) {
       logRadarDebugState("defer_spi_heap");
@@ -2189,7 +2355,9 @@ void tickAdsbFetch() {
     logFetchDefer("DNS not ready");
     return;
   }
-  if (!services::https::heapReadyForAdsb()) {
+  // Recovery ladder. On the 4C it judges DMA-capable internal RAM (ladderHeap*), the
+  // RAM the Wi-Fi link and TLS actually need; elsewhere the classic getFreeHeap gate.
+  if (!ladderHeapReadyForAdsb()) {
     if (on_detail) {
       ui::flightDetailReleaseSprite();
     }
@@ -2203,27 +2371,29 @@ void tickAdsbFetch() {
 
       // Prefer reclaiming the route_detail stack over WiFi recycle.
       if (!on_detail) {
-        const uint32_t free_before = ESP.getFreeHeap();
-        const uint32_t blk_before = ESP.getMaxAllocHeap();
+        const uint32_t free_before = ladderFreeHeap();
+        const uint32_t blk_before = ladderMaxBlock();
         releaseDetailWorkerForHeap();
-        services::https::drainTlsHeapAfterSession(400);
+#if !defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+        services::https::drainTlsHeapAfterSession(400);  // 4C: never sleep on the loop
+#endif
         if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
           Serial.printf("[fetch] route_worker_release free=%u->%u max_blk=%u->%u\n", free_before,
-                        ESP.getFreeHeap(), blk_before, ESP.getMaxAllocHeap());
+                        ladderFreeHeap(), blk_before, ladderMaxBlock());
         }
-        if (services::https::heapReadyForAdsb()) {
+        if (ladderHeapReadyForAdsb()) {
           s_heap_recover_attempts = 0;
           s_stuck_recycles = 0;
         }
       }
 
-      if (!services::https::heapReadyForAdsb() && s_heap_recover_attempts >= 3 &&
+      if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 3 &&
           (on_radar || on_detail)) {
         ui::radarDisplayReleasePressureSprites();
-        Serial.printf("[fetch] sprite_release free=%u max_blk=%u\n", ESP.getFreeHeap(),
-                      ESP.getMaxAllocHeap());
+        Serial.printf("[fetch] sprite_release free=%u max_blk=%u\n", ladderFreeHeap(),
+                      ladderMaxBlock());
       }
-      if (!services::https::heapReadyForAdsb() && s_heap_recover_attempts >= 5 &&
+      if (!ladderHeapReadyForAdsb() && s_heap_recover_attempts >= 5 &&
           canRecycleWifiForTlsMemory(now)) {
         // Last resort: recycling WiFi can only reclaim TLS/TCP memory. If the
         // fragmentation is held by something else (e.g. a stray long-lived
@@ -2233,7 +2403,8 @@ void tickAdsbFetch() {
         if (s_stuck_recycles >= 3) {
           Serial.printf(
               "[fetch] heap unrecoverable after %u recycles free=%u max_blk=%u — restart\n",
-              s_stuck_recycles, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+              s_stuck_recycles, ladderFreeHeap(), ladderMaxBlock());
+          fs_util::logInternalHeap("restart");
           delay(200);
           esp_restart();
         }
@@ -2243,11 +2414,11 @@ void tickAdsbFetch() {
         return;
       }
       if (config::kSerialTraceDebug || config::kRadarResumeDebug) {
-        Serial.printf("[fetch] heap recover free=%u max_blk=%u\n", ESP.getFreeHeap(),
-                      ESP.getMaxAllocHeap());
+        Serial.printf("[fetch] heap recover free=%u max_blk=%u\n", ladderFreeHeap(),
+                      ladderMaxBlock());
       }
     }
-    if (!services::https::heapReadyForAdsb()) {
+    if (!ladderHeapReadyForAdsb()) {
       logFetchDefer("heap low");
       return;
     }
@@ -2265,6 +2436,29 @@ void tickAdsbFetch() {
                     g_radar_full_draw_pending ? 1 : 0, ESP.getFreeHeap());
     }
   }
+}
+
+/** Boot weather check, once the radar has drawn its first frame (or 60 s after it was
+ *  scheduled, whatever screen is up), so it never delays the disclaimer. */
+void tickWeatherBootCheck() {
+  static unsigned long s_scheduled_ms = 0;
+  if (!g_weather_boot_check_pending) {
+    return;
+  }
+  const unsigned long now = millis();
+  if (s_scheduled_ms == 0) {
+    s_scheduled_ms = now != 0 ? now : 1;
+  }
+  const bool radar_drawn = g_screen == AppScreen::Radar && g_radar_visible &&
+                           g_last_sweep_done_ms != 0;
+  if (!radar_drawn && now - s_scheduled_ms < 60000UL) {
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  g_weather_boot_check_pending = false;
+  services::weather::bootSanityCheck();
 }
 
 }  // namespace
@@ -2285,7 +2479,10 @@ static void startOnlineServices() {
   services::rain::init();
 #endif
   services::adsb::fetchInit();
-  services::weather::bootSanityCheck();
+  // Synchronous HTTPS call (1-10 s): run it after the first radar frame instead of
+  // holding back the disclaimer (see tickWeatherBootCheck). TODO(lead): switch to the
+  // network agent's queued variant once it is merged.
+  g_weather_boot_check_pending = true;
   settingsSetSavedCallback(applySettingsLive);
   g_last_adsb_fetch_ms = 0;
   g_last_tls_proactive_refresh_ms = millis();
@@ -2354,12 +2551,14 @@ void setup() {
   // never stalls the render loop on core 1. That heavy crypto, together with the
   // WiFi/lwIP tasks, can starve core 0's idle task past the 5s task-watchdog window
   // and reboot the device. We intentionally run heavy work there, so unsubscribe
-  // core 0's idle task from the watchdog (core 1's loop watchdog stays active).
+  // core 0's idle task from the watchdog.
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C) && !defined(FLIGHTSCNR_SIM)
   // IDF 5.x (P4): disableCore0WDT() deletes the idle task but leaves IDF's idle
   // hook registered, which then logs "esp_task_wdt_reset: task not found" every
   // few ms (seen on the first hardware boot). Reconfiguring with no idle cores
-  // removes the hook too; timeout and panic stay as sdkconfig set them.
+  // removes the hook too. After this no task is watched until the end of setup(),
+  // where util::loopwdt::start() arms the loop watchdog (the Arduino loop task is
+  // NOT subscribed by default; nothing else watches loop()).
   {
     const esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms = CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000U,
@@ -2401,12 +2600,55 @@ void setup() {
   }
   // Otherwise loop() keeps retrying the saved networks and starts the services
   // (and the disclaimer -> radar flow) once one connects.
+
+  // From here on a loop() that stops making progress restarts the device (4C).
+  util::loopwdt::start();
 }
+
+#if defined(FLIGHTSCNR_SIM)
+/** Sim only: FLIGHTSCNR_SIM_LOOP_STALL_MS=<ms> makes every loop pass that much slower,
+ *  to test input and timing under a heavy loop (e.g. 300). */
+static unsigned long simLoopStallMs() {
+  static long s_ms = -1;
+  if (s_ms < 0) {
+    const char* v = getenv("FLIGHTSCNR_SIM_LOOP_STALL_MS");
+    s_ms = v != nullptr ? strtol(v, nullptr, 10) : 0;
+    if (s_ms < 0) s_ms = 0;
+    if (s_ms > 0) Serial.printf("[sim] loop stall %ld ms per pass\n", s_ms);
+  }
+  return static_cast<unsigned long>(s_ms);
+}
+#endif
+
+static void loopBody();
 
 void loop() {
   const unsigned long loop_start = millis();
+  g_perf_mark_ms = loop_start;
+  util::loopwdt::notePass();
+#if defined(FLIGHTSCNR_SIM)
+  if (simLoopStallMs() > 0) {
+    delay(simLoopStallMs());
+  }
+#endif
+  loopBody();
+
+  const unsigned long loop_ms = millis() - loop_start;
+  if (g_diag_loop_stats_reset_pending) {
+    // [diag] printed during this pass: start the next interval clean.
+    g_diag_loop_stats_reset_pending = false;
+    g_loop_max_ms = 0;
+  } else if (loop_ms > g_loop_max_ms) {
+    g_loop_max_ms = loop_ms;
+  }
+  perfLoopPassDone(loop_ms);
+}
+
+static void loopBody() {
+  const unsigned long loop_start = millis();
   hardware::buzzerPoll();
   tickOffHours();
+  perfMark(kPerfOffHours);
   if (g_off_hours_active) {
     inputPoll();
     if (inputConsumeKnobPress() || inputConsumeScreenTap(nullptr, nullptr)
@@ -2437,6 +2679,7 @@ void loop() {
   tickBootDetailsSplash();
   tickDisclaimerCountdown();
   handleInput();
+  perfMark(kPerfInput);
   if (bootScreenWifiResetCountdownActive()) {
     settingsWebPoll();
     tickDiagLog();
@@ -2446,15 +2689,20 @@ void loop() {
   tickAutoIdleClock();
   tickClockDisplay();
   tickWeather();
+  tickWeatherBootCheck();
+  perfMark(kPerfScreens);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   services::rain::tick(g_screen == AppScreen::Radar && g_radar_visible,
                        WiFi.status() == WL_CONNECTED);
 #endif
   services::tzlookup::tick();
+  perfMark(kPerfRainTz);
   settingsWebPoll();
   services::ota_github::pollIfDue();
   services::route::tickCacheFlush(millis());
+  perfMark(kPerfWebOta);
   tickFlightDetailRouteEnrich();
+  perfMark(kPerfDetail);
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
   services::sky::tick();
   ui::sky::tick(g_screen == AppScreen::Radar && g_radar_visible);
@@ -2462,9 +2710,11 @@ void loop() {
     ui::sky::detailTick();
   }
 #endif
+  perfMark(kPerfSky);
   tickDiagLog();
   tickRadarSweepHeartbeat();
   tickRadarStallWatchdog();
+  perfMark(kPerfDiag);
 
   if (WiFi.status() != WL_CONNECTED) {
     settingsWebStop();
@@ -2535,9 +2785,12 @@ void loop() {
         showRadar();
       } else {
         const unsigned long radar_loop_start = millis();
+        perfMark(kPerfLink);
         tickRadarAnimation();
+        perfMark(kPerfSweep);
         const unsigned long after_sweep = millis();
         tickAdsbFetch();
+        perfMark(kPerfFetch);
         const unsigned long after_fetch = millis();
         if (config::kOvernightPerfLog || config::kRadarSweepTraceDebug) {
           const unsigned long total = after_fetch - radar_loop_start;
@@ -2554,17 +2807,20 @@ void loop() {
         }
       }
     } else if (g_screen == AppScreen::FlightDetail) {
+      perfMark(kPerfLink);
       tickAdsbFetch();
+      perfMark(kPerfFetch);
     } else if (g_auto_idle_clock &&
                (g_screen == AppScreen::Clock || g_screen == AppScreen::Weather)) {
+      perfMark(kPerfLink);
       tickAdsbFetch();
+      perfMark(kPerfFetch);
     }
   }
+  perfMark(kPerfLink);
 
+  // loop_max for [diag] is kept by loop(), around this whole pass.
   const unsigned long loop_ms = millis() - loop_start;
-  if (loop_ms > g_loop_max_ms) {
-    g_loop_max_ms = loop_ms;
-  }
   const uint32_t free_heap = ESP.getFreeHeap();
   if (free_heap < g_diag_interval_min_heap) {
     g_diag_interval_min_heap = free_heap;
@@ -2581,10 +2837,15 @@ void loop() {
         g_radar_full_draw_pending ? 1 : 0, free_heap, ESP.getMaxAllocHeap());
   }
 
-  // Alert ring is baked into the radar framebuffer; just clear when it ends.
+  // The alert ring is painted only into the radar's aircraft layer, so when it ends
+  // only that layer needs a repaint (the next sweep frame does it, as a dirty patch).
+  // Other screens never show the ring; marking the layer stale is enough for the next
+  // radar visit. Never the full settings path: that rebuilt the map background and
+  // cancelled a flight-detail photo/route fetch in progress.
   if (ui::alertFlashPoll()) {
-    applySettingsLive();
+    ui::radarDisplayInvalidateAircraft();
   }
+  perfMark(kPerfAlert);
 
   delay(1);
 }

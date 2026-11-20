@@ -191,7 +191,7 @@ constexpr bool kSerialTraceDebug = false;
 constexpr bool kRadarSweepTraceDebug = false;
 
 /** [radar] resume diagnostics: detail->radar hang / full_draw_pending (disable once fixed). */
-constexpr bool kRadarResumeDebug = true;
+constexpr bool kRadarResumeDebug = false;
 
 /** Full ADS-B aircraft table on serial (very verbose). */
 constexpr bool kAdsbVerboseAircraftLog = false;
