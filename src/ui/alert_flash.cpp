@@ -15,8 +15,9 @@ constexpr unsigned long kAlertFlashMs = 10000;
 constexpr unsigned long kRingBlinkPhaseMs = 500;
 /** Outer bezel inset so the ring stays on the visible round panel. */
 constexpr int kRingOuterInsetPx = ui::sc(2);
-/** Radial thickness of the alert ring (px). */
-constexpr int kRingThicknessPx = ui::sc(20);
+/** Radial thickness of the alert ring (px). Thin enough that it stays a frame and
+ *  does not reach the tags, banner text and range labels near the edge. */
+constexpr int kRingThicknessPx = ui::sc(12);
 
 constexpr int kRingOuterRadiusPx = config::kDisplayWidth / 2 - kRingOuterInsetPx;
 constexpr int kRingInnerRadiusPx = kRingOuterRadiusPx - kRingThicknessPx;
@@ -26,23 +27,37 @@ unsigned long s_flash_start_ms = 0;
 bool s_active = false;
 AlertFlashKind s_kind = AlertFlashKind::Tracked;
 
-void fillRowSpan(uint16_t* row, int x0, int x1, int width, uint16_t color) {
-  if (x0 < 0) {
-    x0 = 0;
+/** Fill [x0, x1] of one row, clipped to [lo, hi]; pixels set in `keep` stay. */
+void fillRowSpan(uint16_t* row, int x0, int x1, int lo, int hi, uint16_t color,
+                 const uint8_t* keep) {
+  if (x0 < lo) {
+    x0 = lo;
   }
-  if (x1 >= width) {
-    x1 = width - 1;
+  if (x1 > hi) {
+    x1 = hi;
   }
   for (int x = x0; x <= x1; ++x) {
+    if (keep != nullptr && (keep[x >> 3] & (1u << (x & 7))) != 0) {
+      continue;
+    }
     row[x] = color;
   }
 }
 
 /** Solid annulus via horizontal spans into RAM — no SPI, no fillArc wedges. */
-void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
+void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h, int clip_x, int clip_y, int clip_w,
+                     int clip_h, const uint8_t* keep_mask) {
   if (buf == nullptr || w <= 0 || h <= 0) {
     return;
   }
+  const int lo_x = clip_x < 0 ? 0 : clip_x;
+  const int hi_x = clip_x + clip_w > w ? w - 1 : clip_x + clip_w - 1;
+  const int lo_y = clip_y < 0 ? 0 : clip_y;
+  const int hi_y = clip_y + clip_h > h ? h - 1 : clip_y + clip_h - 1;
+  if (hi_x < lo_x || hi_y < lo_y) {
+    return;
+  }
+  const size_t mask_stride = (static_cast<size_t>(w) + 7) / 8;
 
   const int cx = w / 2;
   const int cy = h / 2;
@@ -85,7 +100,7 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
 
   for (int dy = -ro; dy <= ro; ++dy) {
     const int y = cy + dy;
-    if (y < 0 || y >= h) {
+    if (y < lo_y || y > hi_y) {
       continue;
     }
     const int dy2 = dy * dy;
@@ -95,14 +110,16 @@ void paintRingBuffer(uint16_t* buf, int16_t w, int16_t h) {
     }
     const int xo = static_cast<int>(sqrtf(static_cast<float>(xo2)));
     uint16_t* row = buf + static_cast<size_t>(y) * static_cast<size_t>(w);
+    const uint8_t* keep =
+        keep_mask != nullptr ? keep_mask + static_cast<size_t>(y) * mask_stride : nullptr;
 
     if (dy2 >= ri2) {
-      fillRowSpan(row, cx - xo, cx + xo, w, ring_color);
+      fillRowSpan(row, cx - xo, cx + xo, lo_x, hi_x, ring_color, keep);
       continue;
     }
     const int xi = static_cast<int>(sqrtf(static_cast<float>(ri2 - dy2)));
-    fillRowSpan(row, cx - xo, cx - xi - 1, w, ring_color);
-    fillRowSpan(row, cx + xi + 1, cx + xo, w, ring_color);
+    fillRowSpan(row, cx - xo, cx - xi - 1, lo_x, hi_x, ring_color, keep);
+    fillRowSpan(row, cx + xi + 1, cx + xo, lo_x, hi_x, ring_color, keep);
   }
 }
 
@@ -134,10 +151,34 @@ void alertFlashStart(AlertFlashKind kind) {
 bool alertFlashActive() { return s_active; }
 
 void alertFlashPaintBuffer(uint16_t* buf, int16_t w, int16_t h) {
-  const unsigned long phase = (millis() - s_flash_start_ms) / kRingBlinkPhaseMs;
-  if ((phase % 2UL) == 0) {
-    paintRingBuffer(buf, w, h);
+  alertFlashPaintBufferRect(buf, w, h, 0, 0, w, h, nullptr);
+}
+
+void alertFlashPaintBufferRect(uint16_t* buf, int16_t w, int16_t h, int clip_x, int clip_y,
+                               int clip_w, int clip_h, const uint8_t* keep_mask) {
+  if (alertFlashRingShown()) {
+    paintRingBuffer(buf, w, h, clip_x, clip_y, clip_w, clip_h, keep_mask);
   }
+}
+
+bool alertFlashRingShown() {
+  if (!s_active) {
+    return false;
+  }
+  const unsigned long phase = (millis() - s_flash_start_ms) / kRingBlinkPhaseMs;
+  return (phase % 2UL) == 0;
+}
+
+uint32_t alertFlashPhase() {
+  if (!s_active) {
+    return 0;
+  }
+  return static_cast<uint32_t>((millis() - s_flash_start_ms) / kRingBlinkPhaseMs) + 1U;
+}
+
+void alertFlashRingRadii(int* outer, int* inner) {
+  *outer = kRingOuterRadiusPx;
+  *inner = kRingInnerRadiusPx;
 }
 
 bool alertFlashPoll() {
