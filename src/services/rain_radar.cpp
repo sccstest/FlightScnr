@@ -11,6 +11,7 @@
 
 #include <esp_heap_caps.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +23,7 @@
 #include "services/https_heap.h"
 #include "services/https_lock.h"
 #include "services/map_center.h"
+#include "services/radar_basemap.h"
 #include "services/secure_client.h"
 #include "ui/radar_display.h"
 #include "ui/radar_scale.h"
@@ -657,24 +659,56 @@ bool blendInto(uint16_t* pixels, int w, int h) {
   if (pixels == nullptr || w != kPanel || h != kPanel || !shouldShow()) {
     return false;
   }
+  // Light maps (Voyager, Light, VFR): light rain's bright green at ~35% vanished into
+  // the pale green parks. There the fill is much more opaque and every rain area gets
+  // a 1 px outline in a darker shade of its colour, like a weather-app radar. Dark
+  // maps keep the softer tint, which already stands out.
+  const bool light_map = services::basemap::enabled() &&
+                         services::basemap::storedStyle() != services::basemap::Style::Dark;
   uint16_t rgb[kClassCount + 1][3] = {};
+  uint16_t edge[kClassCount + 1][3] = {};
   uint16_t alpha[kClassCount + 1] = {};
   for (int i = 0; i < kClassCount; ++i) {
-    rgb[i + 1][0] = kClasses[i].r >> 3;
-    rgb[i + 1][1] = kClasses[i].g >> 2;
-    rgb[i + 1][2] = kClasses[i].b >> 3;
-    alpha[i + 1] = kClasses[i].a;
+    uint8_t r8 = kClasses[i].r;
+    uint8_t g8 = kClasses[i].g;
+    uint8_t b8 = kClasses[i].b;
+    if (light_map && i < 3) {
+      // The three greens: a deeper, bluer green that reads against park green.
+      static const uint8_t kLightGreens[3][3] = {{20, 190, 60}, {0, 150, 50}, {0, 110, 40}};
+      r8 = kLightGreens[i][0];
+      g8 = kLightGreens[i][1];
+      b8 = kLightGreens[i][2];
+    }
+    rgb[i + 1][0] = r8 >> 3;
+    rgb[i + 1][1] = g8 >> 2;
+    rgb[i + 1][2] = b8 >> 3;
+    edge[i + 1][0] = (r8 * 5 / 10) >> 3;  // same hue at half brightness
+    edge[i + 1][1] = (g8 * 5 / 10) >> 2;
+    edge[i + 1][2] = (b8 * 5 / 10) >> 3;
+    alpha[i + 1] = light_map ? static_cast<uint16_t>(std::min(235, kClasses[i].a + 80))
+                             : kClasses[i].a;
   }
   const uint8_t* cls = s_live;
   for (size_t i = 0; i < kPanelPx; ++i) {
     const uint8_t c = cls[i];
     if (c == 0) continue;
-    const uint16_t a = alpha[c];
+    uint16_t a = alpha[c];
+    const uint16_t* col = rgb[c];
+    if (light_map) {
+      const size_t x = i % kPanel;
+      const bool border = (x == 0 || cls[i - 1] == 0) || (x + 1 == kPanel || cls[i + 1] == 0) ||
+                          (i < kPanel || cls[i - kPanel] == 0) ||
+                          (i + kPanel >= kPanelPx || cls[i + kPanel] == 0);
+      if (border) {
+        col = edge[c];
+        a = 230;
+      }
+    }
     const uint16_t ia = 256 - a;
     const uint16_t p = pixels[i];
-    const uint16_t r = static_cast<uint16_t>((((p >> 11) & 0x1F) * ia + rgb[c][0] * a) >> 8);
-    const uint16_t g = static_cast<uint16_t>((((p >> 5) & 0x3F) * ia + rgb[c][1] * a) >> 8);
-    const uint16_t b = static_cast<uint16_t>(((p & 0x1F) * ia + rgb[c][2] * a) >> 8);
+    const uint16_t r = static_cast<uint16_t>((((p >> 11) & 0x1F) * ia + col[0] * a) >> 8);
+    const uint16_t g = static_cast<uint16_t>((((p >> 5) & 0x3F) * ia + col[1] * a) >> 8);
+    const uint16_t b = static_cast<uint16_t>(((p & 0x1F) * ia + col[2] * a) >> 8);
     pixels[i] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
   }
   s_drawn = true;
@@ -683,10 +717,18 @@ bool blendInto(uint16_t* pixels, int w, int h) {
 }
 
 bool labelText(char* buf, size_t len) {
+  // The radar picture's time ("Rain 5:50 PM") told the owner nothing while it was
+  // current (it refreshes every few minutes). Say something only when it is stale.
   if (buf == nullptr || len == 0 || !shouldShow() || s_live_epoch <= 0) return false;
-  char hhmm[16];
-  services::clock::formatClockFromEpoch(s_live_epoch, hhmm, sizeof(hhmm));
-  snprintf(buf, len, "Rain %s", hhmm);
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return false;  // clock not set yet
+  const long age_min = static_cast<long>((now - static_cast<time_t>(s_live_epoch)) / 60);
+  if (age_min < 30) return false;
+  if (age_min < 120) {
+    snprintf(buf, len, "Rain %ld min old", age_min);
+  } else {
+    snprintf(buf, len, "Rain %ld h old", age_min / 60);
+  }
   return true;
 }
 
