@@ -1,3 +1,6 @@
+// The framebuffer bus copies and fills every screen pixel; the framework default is -Os.
+#pragma GCC optimize("O2")
+
 #include "hardware/p4_dsi_panel.h"
 
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
@@ -136,9 +139,9 @@ void P4FramebufferBus::writeRepeat(uint16_t p, uint32_t len) {
       const int16_t x1 =
           std::min<int16_t>(static_cast<int16_t>(fb_w_ - 1),
                             static_cast<int16_t>(cur_x_ + static_cast<int16_t>(n) - 1));
-      uint16_t* dst = fb_ + static_cast<size_t>(cur_y_) * fb_w_;
-      for (int16_t x = x0; x <= x1; ++x) {
-        dst[x] = p;
+      if (x0 <= x1) {
+        std::fill_n(fb_ + static_cast<size_t>(cur_y_) * fb_w_ + x0,
+                    static_cast<size_t>(x1 - x0 + 1), p);
       }
     }
     len -= n;

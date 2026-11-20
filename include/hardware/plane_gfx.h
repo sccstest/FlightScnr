@@ -33,6 +33,11 @@ class PlaneGfx {
     fb_h_ = h;
   }
   Arduino_GFX* raw() const { return gfx_; }
+  /** RAM pixels this target draws into (sprites / offscreen compose), or null for a
+   *  panel. Fast paths write here directly instead of going through Arduino_GFX. */
+  uint16_t* framebuffer() const { return fb_; }
+  int16_t framebufferWidth() const { return fb_w_; }
+  int16_t framebufferHeight() const { return fb_h_; }
 
   void fillScreen(uint16_t color);
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
@@ -128,6 +133,13 @@ class PlaneGfx {
                        int16_t* y1, uint16_t* w, uint16_t* h) const;
   void drawAaString(const char* text, int16_t cursor_x, int16_t cursor_y);
 };
+
+/** Drawing-time counters. Each add() sums time per kind; about every 10 s one
+ *  "[perf] ..." line reports the totals since the previous line (nothing when idle). */
+namespace gfx_perf {
+enum class Kind : uint8_t { Icon, IconMiss, Text, Flush, kCount };
+void add(Kind kind, uint32_t us);
+}  // namespace gfx_perf
 
 /** RAII hardware panel SPI session for one composited frame. */
 class PanelSession {
