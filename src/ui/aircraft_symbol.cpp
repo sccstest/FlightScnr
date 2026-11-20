@@ -96,6 +96,16 @@ int radiusPx() { return 15; }
 
 int compactHalfPx() { return (kCompactSidePx + 1) / 2; }
 
+int fullReachPx() {
+  static const int reach = aircraft_icon::maxReachPx(kFullSidePx);
+  return reach;
+}
+
+int compactReachPx() {
+  static const int reach = aircraft_icon::maxReachPx(kCompactSidePx);
+  return reach;
+}
+
 void draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
           const services::adsb::Aircraft* aircraft) {
   drawWithOptionalIcon(gfx, cx, cy, heading_deg, color, aircraft, kFullSidePx, kFull);

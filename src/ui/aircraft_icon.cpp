@@ -306,6 +306,14 @@ struct SpanView {
   const Span* end() const { return data + count; }
 };
 
+/** Drawn side for one icon: the base side times the icon's own scale. */
+int drawSide(int base_side_px, uint16_t scale_x100) {
+  return std::max(8, static_cast<int>((base_side_px * static_cast<int>(scale_x100) + 50) / 100));
+}
+
+/** Runs are sampled out to this offset from the center on both axes. */
+int sampleRadius(int side) { return (side + 1) / 2 + 1; }
+
 /** Build the lit runs for one (category, side, heading). Same sampling as the old
  *  per-draw loop, so the pixels are identical for the same heading. */
 void buildSpans(const uint8_t* alpha, int side, float heading_deg, SpanBuf* out) {
@@ -318,7 +326,7 @@ void buildSpans(const uint8_t* alpha, int side, float heading_deg, SpanBuf* out)
   const float rad = heading_deg * kDegToRad;
   const float sin_h = sinf(rad);
   const float cos_h = cosf(rad);
-  const int radius = (side + 1) / 2 + 1;
+  const int radius = sampleRadius(side);
 
   // Destination-space sample: every screen pixel is filled (no sparse upscale holes).
   // Max of nearest 4 source cells keeps thin rotor strokes from sparkling under rotate.
@@ -439,9 +447,7 @@ bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
   const data::aircraft_icons::IconBlob* blob = &data::aircraft_icons::kIcons[category];
   const uint8_t* alpha =
       reinterpret_cast<const uint8_t*>(pgm_read_ptr(&blob->alpha));
-  const uint16_t scale_x100 = pgm_read_word(&blob->scale_x100);
-  const int side =
-      std::max(8, static_cast<int>((base_side_px * static_cast<int>(scale_x100) + 50) / 100));
+  const int side = drawSide(base_side_px, pgm_read_word(&blob->scale_x100));
 
   float heading = std::isfinite(heading_deg) ? heading_deg : 0.0f;
   int heading_step =
@@ -509,6 +515,15 @@ bool draw(PlaneGfx& gfx, int cx, int cy, float heading_deg, uint16_t color,
     gfx_perf::add(gfx_perf::Kind::IconMiss, t_built - t0);
   }
   return true;
+}
+
+int maxReachPx(int base_side_px) {
+  uint16_t max_scale = 100;
+  for (size_t i = 0; i < data::aircraft_icons::kCategoryCount; ++i) {
+    max_scale = std::max<uint16_t>(max_scale,
+                                   pgm_read_word(&data::aircraft_icons::kIcons[i].scale_x100));
+  }
+  return sampleRadius(drawSide(base_side_px, max_scale));
 }
 
 bool isHelicopterIcon(uint8_t category) {

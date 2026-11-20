@@ -1319,17 +1319,31 @@ void paintItem(const IntRect& bounds, DrawFn&& draw) {
 
 // --- Item bounds (conservative: every pixel the item can touch) --------------------
 
+/** Half-side of a box that holds the full symbol at any heading. The icon is sc(28)
+ *  square and rotates, so its corners reach ~sc(20); half + pad covers that. Some
+ *  icons are drawn larger (the glider at 150%): never less than the farthest pixel
+ *  the icon rasterizer can light for the largest of them. */
+int symbolBoundHalfPx() {
+  static const int half =
+      std::max(aircraftSymbolHalfPx() + ui::sc(6), aircraft_symbol::fullReachPx());
+  return half;
+}
+
+/** Same for the compact rim icon (its corners reach ~1.4x the half-side). */
+int dotBoundRadiusPx() {
+  static const int r = std::max({aircraft_symbol::radiusPx() / 2 + 4,
+                                 aircraft_symbol::compactHalfPx() * 3 / 2 + 2,
+                                 aircraft_symbol::compactReachPx()});
+  return r;
+}
+
 IntRect symbolBounds(const PlaneView& v) {
-  // The full icon is sc(28) square and rotates, so its corners reach ~sc(20);
-  // half + pad covers that.
-  const int half = aircraftSymbolHalfPx() + ui::sc(6);
+  const int half = symbolBoundHalfPx();
   return IntRect(v.x - half, v.y - half, 2 * half + 1, 2 * half + 1);
 }
 
 IntRect dotBounds(const PlaneView& v) {
-  // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
-  const int r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
-                         aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
+  const int r = dotBoundRadiusPx();
   return IntRect(v.x - r, v.y - r, 2 * r + 1, 2 * r + 1);
 }
 
@@ -2625,13 +2639,13 @@ void recoverSweepAfterGap(unsigned long gap_ms) {
 /** Symbol plus the tag box it was drawn with; the box MUST be the resolved one
  *  rather than a re-derived guess, or old text ghosts on the panel. */
 IntRect aircraftMarkerBounds(int x, int y, const label_layout::Box& tag) {
-  const int symbol_half = aircraftSymbolHalfPx();
+  const int symbol_half = symbolBoundHalfPx();
   constexpr int kPad = ui::sc(6);
 
-  int min_x = x - symbol_half - kPad;
-  int max_x = x + symbol_half + kPad;
-  int min_y = y - symbol_half - kPad;
-  int max_y = y + symbol_half + kPad;
+  int min_x = x - symbol_half;
+  int max_x = x + symbol_half;
+  int min_y = y - symbol_half;
+  int max_y = y + symbol_half;
 
   if (!tag.empty()) {
     min_x = std::min(min_x, tag.x - kPad);
@@ -2665,9 +2679,7 @@ size_t collectAircraftMarkers(CachedAircraftMarker* markers, size_t max_markers)
 
 IntRect markerBounds(const CachedAircraftMarker& marker) {
   if (marker.beyond_dot) {
-    // Covers the compact icon at any heading (its corners reach ~1.4x the half-side).
-    const int dot_r = std::max(aircraft_symbol::radiusPx() / 2 + 4,
-                               aircraft_symbol::compactHalfPx() * 3 / 2 + 2);
+    const int dot_r = dotBoundRadiusPx();
     return clampRectToScreen(IntRect(marker.x - dot_r, marker.y - dot_r, dot_r * 2 + 1,
                                      dot_r * 2 + 1));
   }
