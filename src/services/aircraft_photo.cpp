@@ -11,7 +11,10 @@
 #include <JPEGDEC.h>
 
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
+#include <atomic>
 #include <cctype>
 #include <cstring>
 
@@ -70,27 +73,45 @@ struct DecodedPhoto {
   bool valid = false;
 };
 
+// Threads: the loop (selection, cancel, draw) and the ADS-B background worker
+// (photoJob) share this state. The decoded frame (s_decoded, incl. its PSRAM pixel
+// buffer) is only touched with decodedLock() held, so a cancel() on the loop can never
+// free the buffer while the worker swaps in a new one or draw() reads it. Flags and
+// counters handed between the two are atomics.
 char s_wanted_callsign[9] = {};
 char s_wanted_hex[7] = {};
 char s_wanted_type[5] = {};
-uint32_t s_generation = 0;
+std::atomic<uint32_t> s_generation{0};
 
 char s_debounce_callsign[9] = {};
 char s_debounce_hex[7] = {};
 unsigned long s_debounce_due_ms = 0;
 bool s_debounce_pending = false;
 
-bool s_job_queued = false;
-bool s_job_running = false;
-uint32_t s_job_generation = 0;
+std::atomic<bool> s_job_queued{false};
+std::atomic<bool> s_job_running{false};
+std::atomic<uint32_t> s_job_generation{0};
 char s_job_callsign[9] = {};
 char s_job_hex[7] = {};
 char s_job_type[5] = {};
 
-bool s_ready = false;
-bool s_ready_ok = false;
+std::atomic<bool> s_ready{false};
+std::atomic<bool> s_ready_ok{false};
 char s_ready_callsign[9] = {};
-unsigned long s_retry_after_ms = 0;
+std::atomic<unsigned long> s_retry_after_ms{0};
+
+SemaphoreHandle_t decodedMutex() {
+  static SemaphoreHandle_t s_mutex = xSemaphoreCreateMutex();  // thread-safe static init
+  return s_mutex;
+}
+
+/** RAII lock for s_decoded. Held only for pointer swaps, frees and the ~2 ms blit. */
+struct DecodedLock {
+  DecodedLock() { xSemaphoreTake(decodedMutex(), portMAX_DELAY); }
+  ~DecodedLock() { xSemaphoreGive(decodedMutex()); }
+  DecodedLock(const DecodedLock&) = delete;
+  DecodedLock& operator=(const DecodedLock&) = delete;
+};
 
 using MetaArray = MetaEntry[kMetaCacheSize];
 FS_BIG_STATIC(MetaArray, s_meta)
@@ -118,7 +139,8 @@ void psramFree(void* p) {
   }
 }
 
-void clearDecoded() {
+/** Call with DecodedLock held. */
+void clearDecodedLocked() {
   if (s_decoded.pixels != nullptr) {
     psramFree(s_decoded.pixels);
     s_decoded.pixels = nullptr;
@@ -127,8 +149,28 @@ void clearDecoded() {
   // Do not touch s_jpeg_ctx — an in-flight decode owns that buffer and frees it.
 }
 
+void clearDecoded() {
+  DecodedLock lock;
+  clearDecodedLocked();
+}
+
+/** s_decoded is valid and belongs to `callsign` (and `hex` when given). */
+bool decodedMatches(const char* callsign, const char* hex = nullptr) {
+  if (callsign == nullptr) {
+    return false;
+  }
+  DecodedLock lock;
+  return s_decoded.valid && strcmp(s_decoded.callsign, callsign) == 0 &&
+         (hex == nullptr || strcmp(s_decoded.hex, hex) == 0);
+}
+
+bool decodedValid() {
+  DecodedLock lock;
+  return s_decoded.valid;
+}
+
 bool selectionMatches(const char* callsign, uint32_t generation) {
-  return generation == s_generation && callsign != nullptr && callsign[0] != '\0' &&
+  return generation == s_generation.load() && callsign != nullptr && callsign[0] != '\0' &&
          strcmp(callsign, s_wanted_callsign) == 0;
 }
 
@@ -366,11 +408,15 @@ bool decodeJpegToFrame(uint8_t* jpeg, size_t jpeg_len, const char* callsign,
     psramFree(frame);
     return false;
   }
-  if (!selectionMatches(callsign, s_job_generation)) {
+  DecodedLock lock;
+  // Checked again under the lock: a cancel() on the loop bumps the generation and
+  // then clears s_decoded under this lock, so it either runs before this check
+  // (frame dropped here) or after the swap (frame freed there). Never both.
+  if (!selectionMatches(callsign, s_job_generation.load())) {
     psramFree(frame);
     return false;
   }
-
+  clearDecodedLocked();
   strncpy(s_decoded.callsign, callsign, sizeof(s_decoded.callsign) - 1);
   strncpy(s_decoded.hex, hex, sizeof(s_decoded.hex) - 1);
   if (photographer != nullptr) {
@@ -546,7 +592,7 @@ bool fetchJpeg(const char* url, PsramPayload* out) {
 enum class JobEnd : uint8_t { Ok, SoftFail, HardFail, HeapFail };
 
 // Latched when a job ends HardFail for the current generation (survives consume()).
-uint32_t s_hard_done_generation = 0;
+std::atomic<uint32_t> s_hard_done_generation{0};
 
 void finishJob(JobEnd end) {
   s_job_running = false;
@@ -558,7 +604,7 @@ void finishJob(JobEnd end) {
     unsigned long delay_ms = kFetchSoftRetryMs;
     if (end == JobEnd::HardFail) {
       delay_ms = kFetchRetryCooldownMs;
-      s_hard_done_generation = s_job_generation;
+      s_hard_done_generation = s_job_generation.load();
     } else if (end == JobEnd::HeapFail) {
       delay_ms = kFetchHeapRetryMs;
     }
@@ -574,9 +620,9 @@ void finishJob(JobEnd end) {
     s_ready = false;
     return;
   }
-  s_ready = true;
-  s_ready_ok = end == JobEnd::Ok && s_decoded.valid;
   strncpy(s_ready_callsign, s_job_callsign, sizeof(s_ready_callsign) - 1);
+  s_ready_ok = end == JobEnd::Ok && decodedValid();
+  s_ready = true;  // last: the loop reads the fields above once it sees this
 }
 
 /** Lowercase, letters/digits only ("A-320neo" -> "a320neo") for loose title matching. */
@@ -810,8 +856,7 @@ void photoJob() {
   }
 
   // Already decoded for this selection (e.g. redraw) — skip download.
-  if (s_decoded.valid && strcmp(s_decoded.callsign, s_job_callsign) == 0 &&
-      strcmp(s_decoded.hex, s_job_hex) == 0) {
+  if (decodedMatches(s_job_callsign, s_job_hex)) {
     finishJob(JobEnd::Ok);
     return;
   }
@@ -845,14 +890,14 @@ bool queuePhotoJob() {
     return false;
   }
   // Skip if already showing this aircraft's photo.
-  if (s_decoded.valid && strcmp(s_decoded.callsign, s_wanted_callsign) == 0) {
-    s_ready = true;
-    s_ready_ok = true;
+  if (decodedMatches(s_wanted_callsign)) {
     strncpy(s_ready_callsign, s_wanted_callsign, sizeof(s_ready_callsign) - 1);
+    s_ready_ok = true;
+    s_ready = true;
     return true;
   }
 
-  s_job_generation = s_generation;
+  s_job_generation = s_generation.load();
   strncpy(s_job_callsign, s_wanted_callsign, sizeof(s_job_callsign) - 1);
   strncpy(s_job_hex, s_wanted_hex, sizeof(s_job_hex) - 1);
   strncpy(s_job_type, s_wanted_type, sizeof(s_job_type) - 1);
@@ -894,9 +939,12 @@ void onFlightDetailSelected(const char* callsign, const char* hex, bool immediat
     s_retry_after_ms = 0;
     s_hard_done_generation = 0;
     // Drop pixels for a different aircraft so scrollaway never shows a stale frame.
-    if (!(s_decoded.valid && callsign != nullptr &&
-          strcmp(s_decoded.callsign, callsign) == 0)) {
-      clearDecoded();
+    {
+      DecodedLock lock;
+      if (!(s_decoded.valid && callsign != nullptr &&
+            strcmp(s_decoded.callsign, callsign) == 0)) {
+        clearDecodedLocked();
+      }
     }
   }
 
@@ -931,8 +979,8 @@ void tickDebounce(unsigned long now_ms) {
   if (!s_debounce_pending) {
     // Retry queue if a prior attempt failed while ADS-B worker was busy.
     if (!s_job_queued && !s_job_running && s_wanted_hex[0] != '\0' &&
-        static_cast<long>(now_ms - s_retry_after_ms) >= 0 &&
-        !(s_decoded.valid && strcmp(s_decoded.callsign, s_wanted_callsign) == 0)) {
+        static_cast<long>(now_ms - s_retry_after_ms.load()) >= 0 &&
+        !decodedMatches(s_wanted_callsign)) {
       MetaEntry* meta = findMeta(s_wanted_hex);
       if (meta == nullptr || (meta->has_photo && meta->thumb_url[0] != '\0')) {
         queuePhotoJob();
@@ -971,11 +1019,11 @@ bool consume(bool* needs_redraw) {
     return false;
   }
   s_ready = false;
-  const bool match = selectionMatches(s_ready_callsign, s_generation) ||
+  const bool match = selectionMatches(s_ready_callsign, s_generation.load()) ||
                      (s_wanted_callsign[0] != '\0' &&
                       strcmp(s_ready_callsign, s_wanted_callsign) == 0);
   if (needs_redraw != nullptr) {
-    *needs_redraw = match && s_ready_ok && s_decoded.valid;
+    *needs_redraw = match && s_ready_ok && decodedValid();
   }
   return match;
 }
@@ -1004,14 +1052,15 @@ bool settled(const char* callsign) {
   if (s_debounce_pending || s_job_queued || s_job_running) {
     return false;
   }
-  if (s_decoded.valid && strcmp(s_decoded.callsign, callsign) == 0) {
+  if (decodedMatches(callsign)) {
     return true;
   }
   MetaEntry* meta = findMeta(s_wanted_hex);
   if (meta != nullptr && meta->resolved && !meta->has_photo) {
     return true;
   }
-  if (s_hard_done_generation == s_generation && s_hard_done_generation != 0) {
+  const uint32_t hard_done = s_hard_done_generation.load();
+  if (hard_done == s_generation.load() && hard_done != 0) {
     return true;
   }
   // Soft/heap retry cooldown still pending, or never finished a terminal outcome.
@@ -1019,6 +1068,7 @@ bool settled(const char* callsign) {
 }
 
 int imageHeight(const char* callsign) {
+  DecodedLock lock;
   if (callsign == nullptr || !s_decoded.valid ||
       strcmp(s_decoded.callsign, callsign) != 0) {
     return 0;
@@ -1027,14 +1077,21 @@ int imageHeight(const char* callsign) {
 }
 
 const char* photographer(const char* callsign) {
+  // Copied under the lock into a loop-owned buffer: the worker may replace the
+  // decoded photo (and its credit) at any time.
+  static char s_credit[kMaxPhotographer] = {};
+  DecodedLock lock;
   if (callsign == nullptr || !s_decoded.valid ||
       strcmp(s_decoded.callsign, callsign) != 0) {
     return "";
   }
-  return s_decoded.photographer;
+  strncpy(s_credit, s_decoded.photographer, sizeof(s_credit) - 1);
+  s_credit[sizeof(s_credit) - 1] = '\0';
+  return s_credit;
 }
 
 bool draw(PlaneGfx& gfx, const char* callsign, int16_t center_x, int16_t y) {
+  DecodedLock lock;  // the worker cannot free or swap the pixels mid-blit
   if (callsign == nullptr || !s_decoded.valid || s_decoded.pixels == nullptr ||
       strcmp(s_decoded.callsign, callsign) != 0) {
     return false;

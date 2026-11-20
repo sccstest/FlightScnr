@@ -77,6 +77,11 @@ constexpr uint8_t kAlertBeepCount = 3;
 uint8_t s_alert_beeps_remaining = 0;
 unsigned long s_alert_next_ms = 0;
 
+/** Debounced NVS save: a burst of long-press mute toggles writes flash once, this long
+ *  after the last change (0 = nothing pending). */
+constexpr unsigned long kPersistDebounceMs = 2000;
+unsigned long s_persist_due_ms = 0;
+
 #if FLIGHTSCNR_HAS_HAPTIC
 SensorDRV2605 s_drv;
 bool s_haptic_ready = false;
@@ -153,6 +158,7 @@ size_t toneIndexFromForm(const char* value) {
 }
 
 void persistSettings() {
+  s_persist_due_ms = 0;  // this write covers any pending debounced save
   Preferences prefs;
   if (prefs.begin(kStoreNs, false)) {
     prefs.putBool(kEnabledKey, s_enabled);
@@ -255,7 +261,13 @@ void buzzerSetEnabled(bool enabled) {
 #if FLIGHTSCNR_HAS_SPEAKER
 bool buzzerToggleAlertSound() {
   s_enabled = !s_enabled;
-  persistSettings();
+  // The web page sees the change at once; the flash write waits until the toggling
+  // stops (buzzerPoll), so repeated long-presses do not each stall both cores.
+  settingsStateBump();
+  s_persist_due_ms = millis() + kPersistDebounceMs;
+  if (s_persist_due_ms == 0) {
+    s_persist_due_ms = 1;
+  }
   Serial.printf("Alert sound: %s (long-press)\n", s_enabled ? "on" : "off");
   if (s_enabled) {
     buzzerPlayChime(chime::Kind::Confirm);
@@ -296,8 +308,14 @@ void buzzerClick() {
 }
 
 void buzzerPoll() {
+  if (s_persist_due_ms != 0 && static_cast<long>(millis() - s_persist_due_ms) >= 0) {
+    persistSettings();  // clears s_persist_due_ms
+  }
+
+  // Signed differences: plain `millis() >= deadline` breaks when millis() wraps
+  // (every 49.7 days).
 #if FLIGHTSCNR_HAS_BUZZER
-  if (s_playing && millis() >= s_stop_at_ms) {
+  if (s_playing && static_cast<long>(millis() - s_stop_at_ms) >= 0) {
     ledcWrite(kLedcChannel, 0);
     s_playing = false;
   }
@@ -306,7 +324,7 @@ void buzzerPoll() {
   if (s_alert_beeps_remaining == 0) {
     return;
   }
-  if (millis() < s_alert_next_ms) {
+  if (s_alert_next_ms != 0 && static_cast<long>(millis() - s_alert_next_ms) < 0) {
     return;
   }
 

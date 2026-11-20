@@ -31,7 +31,8 @@ void markDirty();
 
 using ReadRamSlotFn = bool (*)(size_t index, Entry* out, size_t max_index);
 
-/** Debounced merge-write of RAM + flash (call from main loop). */
+/** Debounced merge-write of RAM + flash. Call from the main loop: it only snapshots
+ *  the RAM rows; the file read, merge and rewrite run in a one-shot background task. */
 void tick(unsigned long now_ms, ReadRamSlotFn read_slot, size_t max_slots, uint32_t now_sec,
           uint32_t ttl_sec);
 
@@ -41,7 +42,8 @@ void sendDownload(WebServer* server);
 /** Delete flash cache file and reset dirty state. Returns true if cleared or absent. */
 bool clear();
 
-/** LittleFS usage for diagnostics (false if not mounted). */
+/** LittleFS usage for diagnostics (false if not mounted). Cached: refreshed after each
+ *  cache save and otherwise at most every 30 min (the real query walks the FS). */
 bool flashUsage(size_t* used_bytes, size_t* total_bytes);
 
 }  // namespace services::route_cache
