@@ -10,6 +10,7 @@
 #include "hardware/display.h"
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
+#include "services/device_identity.h"
 #include "services/ota_github.h"
 #include "ui/radar_display.h"
 #include "ui/radar_theme.h"
@@ -21,8 +22,8 @@ namespace {
 constexpr int kBezelInsetPx = ui::sc(10);
 constexpr int kTextPadPx = ui::sc(6);
 constexpr int kLineGap = ui::sc(4);
-/** Extra space between firmware version and author lines. */
-constexpr int kAuthorTopGap = ui::sc(20);
+/** Space between the About sections (version, network, credits). */
+constexpr int kSectionGap = ui::sc(12);
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
@@ -51,14 +52,19 @@ void fitLineToWidth(char* text, size_t len, UiTextStyle style, int max_width_px)
   if (tft.textWidth(text) <= max_width_px) {
     return;
   }
-  const size_t raw_len = strlen(text);
+  // Work from a copy: snprintf must not read the buffer it writes. ASCII "...":
+  // the device fonts only have 0x20-0x7E.
+  char original[64];
+  strncpy(original, text, sizeof(original) - 1);
+  original[sizeof(original) - 1] = '\0';
+  const size_t raw_len = strlen(original);
   for (size_t n = raw_len; n > 0; --n) {
-    snprintf(text, len, "%.*s…", static_cast<int>(n), text);
+    snprintf(text, len, "%.*s...", static_cast<int>(n), original);
     if (tft.textWidth(text) <= max_width_px) {
       return;
     }
   }
-  strncpy(text, "…", len);
+  strncpy(text, "...", len);
   text[len - 1] = '\0';
 }
 
@@ -86,21 +92,9 @@ struct InfoLine {
   uint16_t color;
 };
 
-int measureBlockHeight(const InfoLine* lines, size_t count) {
-  int total = 0;
-  for (size_t i = 0; i < count; ++i) {
-    total += displayFontHeight(tft, lines[i].style);
-    if (i + 1 < count) {
-      total += kLineGap;
-    }
-  }
-  return total;
-}
-
 }  // namespace
 
 void detailsScreenDraw(bool boot_splash) {
-  (void)boot_splash;
   tft.beginOffscreen();
   const uint16_t bg = tft.color565(0, 0, 0);
   const uint16_t fg = tft.color565(255, 255, 255);
@@ -108,29 +102,21 @@ void detailsScreenDraw(bool boot_splash) {
   const uint16_t hint_fg = tft.color565(120, 140, 160);
 
   char version_line[40];
-  snprintf(version_line, sizeof(version_line), "FW Ver: %s", config::kFirmwareVersion);
+  snprintf(version_line, sizeof(version_line), "Version: %s", config::kFirmwareVersion);
 
   const bool show_update = services::ota_github::updateAvailable();
-  char update_line[48] = {};
-  if (show_update) {
-    snprintf(update_line, sizeof(update_line), "Update available");
-  }
 
-  const InfoLine version_lines[] = {
-      {version_line, displayFontBody(), fg},
-  };
-  const InfoLine update_lines[] = {
-      {update_line, displayFontDetail(), tft.color565(255, 200, 80)},
-      {"Use web settings to install", displayFontDetail(), hint_fg},
-  };
-  // Network status: the IP is how the owner reaches the settings page when the
-  // .local name doesn't resolve, and the feed line explains an empty radar.
+  // Network status: the .local name (or the IP where .local names don't resolve)
+  // is how the owner reaches the settings page; the feed line explains an empty radar.
   const bool wifi_up = WiFi.status() == WL_CONNECTED;
+  char host_line[48];
+  snprintf(host_line, sizeof(host_line), "%s.local",
+           services::device_identity::portalHostname());
   char ip_line[40];
   char feed_line[40];
   uint16_t feed_fg = label_fg;
   if (wifi_up) {
-    snprintf(ip_line, sizeof(ip_line), "IP: %s", WiFi.localIP().toString().c_str());
+    snprintf(ip_line, sizeof(ip_line), "or http://%s", WiFi.localIP().toString().c_str());
     if (services::adsb::feedLooksDown() ||
         ui::radarDisplayLinkStatus() == ui::RadarLinkStatus::FeedDown) {
       snprintf(feed_line, sizeof(feed_line), "Flight data: offline");
@@ -145,24 +131,47 @@ void detailsScreenDraw(bool boot_splash) {
     snprintf(feed_line, sizeof(feed_line), "Retrying saved networks");
     feed_fg = hint_fg;
   }
-  const InfoLine net_lines[] = {
-      {ip_line, displayFontDetail(), wifi_up ? fg : tft.color565(255, 90, 80)},
-      {feed_line, displayFontDetail(), feed_fg},
+
+  InfoLine lines[16];
+  int gaps_before[16] = {};
+  size_t n = 0;
+  auto add = [&](const char* text, UiTextStyle style, uint16_t color, int gap_before) {
+    if (n < sizeof(lines) / sizeof(lines[0])) {
+      lines[n] = {text, style, color};
+      gaps_before[n] = gap_before;
+      ++n;
+    }
   };
 
-  const InfoLine author_lines[] = {
-      {"FlightScnr by", displayFontBody(), label_fg},
-      {"Yash Mulgaonkar", displayFontBody(), label_fg},
-  };
+  add("About", displayFontTitle(), fg, 0);
+  add(version_line, displayFontBody(), fg, 0);
+  if (show_update) {
+    add("Update available", displayFontDetail(), tft.color565(255, 200, 80), 0);
+    add("Install it in Phone settings", displayFontDetail(), hint_fg, 0);
+  }
+  if (wifi_up) {
+    add("Phone settings:", displayFontDetail(), label_fg, kSectionGap);
+    add(host_line, displayFontBody(), fg, 0);
+    add(ip_line, displayFontDetail(), label_fg, 0);
+  } else {
+    add(ip_line, displayFontDetail(), tft.color565(255, 90, 80), kSectionGap);
+  }
+  add(feed_line, displayFontDetail(), feed_fg, 0);
+  // Credits (CC BY-NC-SA 4.0: keep FlightScnr and the case designer named).
+  add("FlightScnr by", displayFontDetail(), label_fg, kSectionGap);
+  add("Yash Mulgaonkar", displayFontDetail(), label_fg, 0);
+  add("Case design: nin3D", displayFontDetail(), label_fg, 0);
+  if (!boot_splash) {
+    add("Swipe down to close", displayFontScale(), hint_fg, kSectionGap);
+  }
 
-  const int version_h = measureBlockHeight(version_lines, sizeof(version_lines) / sizeof(version_lines[0]));
-  const int update_h =
-      show_update ? (measureBlockHeight(update_lines, sizeof(update_lines) / sizeof(update_lines[0])) +
-                     kLineGap)
-                  : 0;
-  const int author_h = measureBlockHeight(author_lines, sizeof(author_lines) / sizeof(author_lines[0]));
-  const int net_h = measureBlockHeight(net_lines, sizeof(net_lines) / sizeof(net_lines[0]));
-  const int block_h = version_h + update_h + kAuthorTopGap + net_h + kAuthorTopGap + author_h;
+  int block_h = 0;
+  for (size_t i = 0; i < n; ++i) {
+    block_h += gaps_before[i] + displayFontHeight(tft, lines[i].style);
+    if (i + 1 < n) {
+      block_h += kLineGap;
+    }
+  }
 
   tft.fillScreen(bg);
 
@@ -170,27 +179,9 @@ void detailsScreenDraw(bool boot_splash) {
   if (y < kBezelInsetPx) {
     y = kBezelInsetPx;
   }
-
-  for (const InfoLine& line : version_lines) {
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-  }
-
-  if (show_update) {
-    y += kLineGap;
-    for (const InfoLine& line : update_lines) {
-      drawCenterLine(line.text, &y, line.style, line.color, bg);
-    }
-  }
-
-  y += kAuthorTopGap - kLineGap;
-  for (const InfoLine& line : net_lines) {
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
-  }
-
-  y += kAuthorTopGap - kLineGap;
-
-  for (const InfoLine& line : author_lines) {
-    drawCenterLine(line.text, &y, line.style, line.color, bg);
+  for (size_t i = 0; i < n; ++i) {
+    y += gaps_before[i];
+    drawCenterLine(lines[i].text, &y, lines[i].style, lines[i].color, bg);
   }
 
   tft.setTextDatum(TextDatum::TopLeft);

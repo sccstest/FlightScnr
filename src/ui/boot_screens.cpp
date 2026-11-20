@@ -70,13 +70,13 @@ void fitSsidLine() {
   }
   const size_t len = strlen(s_connecting_ssid);
   for (size_t n = len; n > 0; --n) {
-    snprintf(s_ssid_line, sizeof(s_ssid_line), "%.*s…", static_cast<int>(n),
+    snprintf(s_ssid_line, sizeof(s_ssid_line), "%.*s...", static_cast<int>(n),
              s_connecting_ssid);
     if (tft.textWidth(s_ssid_line) <= kConnectingTextMaxWidthPx) {
       return;
     }
   }
-  strncpy(s_ssid_line, "…", sizeof(s_ssid_line) - 1);
+  strncpy(s_ssid_line, "...", sizeof(s_ssid_line) - 1);
   s_ssid_line[sizeof(s_ssid_line) - 1] = '\0';
 }
 
@@ -168,14 +168,15 @@ void bootScreenConnectingPulse() {
 void bootScreenShowPortalHint() {
   services::device_identity::init();
   const char* ssid = services::device_identity::portalApName();
-  snprintf(s_portal_ip_alt, sizeof(s_portal_ip_alt), "or %s", config::kPortalIp);
+  // Two numbered steps, so the setup address can't be mistaken for a second network.
+  snprintf(s_portal_ip_alt, sizeof(s_portal_ip_alt), "(or go to %s)", config::kPortalIp);
 
-  // Round panel: keep the whole stack inside a safe chord so wide SSID / header
-  // text is not cropped at the top/bottom bezel.
+  // Round panel: keep the whole stack inside a safe chord so the text lines at
+  // the top and bottom are not cropped by the bezel.
   constexpr int kBezelInsetPx = ui::sc(20);
   constexpr int kSafeRadius = config::kDisplayWidth / 2 - kBezelInsetPx;
-  // Max |y - center| for ~180 px-wide detail text (half-width ≈ 90).
-  constexpr int kTextHalfWidthPx = ui::sc(90);
+  // Max |y - center| for the widest step line (half-width about 108 design px).
+  constexpr int kTextHalfWidthPx = ui::sc(108);
   const int max_dy =
       static_cast<int>(sqrtf(static_cast<float>(kSafeRadius * kSafeRadius -
                                                  kTextHalfWidthPx * kTextHalfWidthPx)));
@@ -186,16 +187,24 @@ void bootScreenShowPortalHint() {
   const int header_h = displayFontHeight(tft, header_style);
   const int detail_h = displayFontHeight(tft, detail_style);
   constexpr int kGap = ui::sc(8);
-  const int fixed_h = header_h + kGap + kGap + detail_h + 4 + detail_h;
+  constexpr int kTight = ui::sc(3);
+  const int fixed_h = header_h + kGap + kGap + 3 * detail_h + 2 * kTight;
 
   // Largest module size whose QR box (version 3 + quiet zone) fits the band.
   constexpr int kQrModules = 4 * 3 + 17 + 2 * 4;  // 37
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  // 720 px face: up to 9 px modules (a ~330 px code a phone camera locks onto
+  // from arm's length). The box corners stay well inside the bezel.
+  constexpr int kMaxModulePx = 9;
+#else
+  // Cap so the white square corners stay inside the round bezel.
+  constexpr int kMaxModulePx = 5;
+#endif
   int module_px = (safe_band - fixed_h) / kQrModules;
   if (module_px < 2) {
     module_px = 2;
-  } else if (module_px > 5) {
-    // Cap so the white square corners stay inside the round bezel.
-    module_px = 5;
+  } else if (module_px > kMaxModulePx) {
+    module_px = kMaxModulePx;
   }
   const int qr_box_px = kQrModules * module_px;
   const int total_h = fixed_h + qr_box_px;
@@ -207,7 +216,7 @@ void bootScreenShowPortalHint() {
   tft.setTextDatum(TextDatum::MiddleCenter);
 
   displayFontApply(tft, header_style);
-  tft.drawString("Scan to join Wi-Fi", kCenterX, y + header_h / 2);
+  tft.drawString("1. Scan to join Wi-Fi", kCenterX, y + header_h / 2);
   y += header_h + kGap;
 
   const int qr_cy = y + qr_box_px / 2;
@@ -218,8 +227,14 @@ void bootScreenShowPortalHint() {
   y += qr_box_px + kGap;
 
   displayFontApply(tft, detail_style);
+  const uint16_t dim = tft.color565(180, 200, 220);
+  tft.setTextColor(dim, config::kColorBlack);
   tft.drawString(ssid, kCenterX, y + detail_h / 2);
-  y += detail_h + 4;
+  y += detail_h + kTight;
+  tft.setTextColor(config::kTextOnBlack, config::kColorBlack);
+  tft.drawString("2. A setup page opens", kCenterX, y + detail_h / 2);
+  y += detail_h + kTight;
+  tft.setTextColor(dim, config::kColorBlack);
   tft.drawString(s_portal_ip_alt, kCenterX, y + detail_h / 2);
   tft.endOffscreen();
 }
@@ -247,13 +262,16 @@ void bootScreenShowConnected(const char* ssid, const char* ip) {
           sizeof(s_connecting_ssid) - 1);
   s_connecting_ssid[sizeof(s_connecting_ssid) - 1] = '\0';
   fitSsidLine();
+  char host[48];
+  snprintf(host, sizeof(host), "%s.local", services::device_identity::portalHostname());
   char url[40];
-  snprintf(url, sizeof(url), "http://%s", ip != nullptr ? ip : "");
+  snprintf(url, sizeof(url), "or http://%s", ip != nullptr ? ip : "");
   const TextLine lines[] = {
       {"Connected", displayFontTitle()},
       {s_ssid_line, displayFontDetail()},
-      {"Settings page:", displayFontBody()},
-      {url, displayFontBody()},
+      {"Phone settings:", displayFontDetail()},
+      {host, displayFontBody()},
+      {url, displayFontDetail()},
   };
   drawTextBlock(config::kColorBlack, config::kTextOnBlack, lines,
                 sizeof(lines) / sizeof(lines[0]));

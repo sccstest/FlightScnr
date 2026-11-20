@@ -33,8 +33,23 @@ constexpr int kClockIconSize = 144;
 constexpr int kClockIconSize = ui::sc(92);
 #endif
 /** Shift the whole clock block up from the panel center so the bottom
- *  sunrise/sunset row clears the round display's clipped lower corners. */
+ *  sunrise/sunset row clears the round display's clipped lower corners.
+ *  The 4C's 720 px face has room: its block is centered (the old bias left
+ *  y 520-700 empty and the clock looked like it sat too high). */
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+constexpr int kClockTopBiasPx = 0;
+#else
 constexpr int kClockTopBiasPx = ui::sc(30);
+#endif
+
+/** Sunrise / sunset text: body size on the 4C so it reads at desk distance. */
+UiTextStyle sunTextStyle() {
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+  return displayFontBody();
+#else
+  return displayFontDetail();
+#endif
+}
 
 const int kCenterX = config::kDisplayWidth / 2;
 const int kCenterY = config::kDisplayHeight / 2;
@@ -68,12 +83,12 @@ void fitLineToWidth(char* text, size_t len, UiTextStyle style, int max_width_px)
   original[sizeof(original) - 1] = '\0';
   const size_t raw_len = strlen(original);
   for (size_t n = raw_len; n > 0; --n) {
-    snprintf(text, len, "%.*s…", static_cast<int>(n), original);
+    snprintf(text, len, "%.*s...", static_cast<int>(n), original);
     if (tft.textWidth(text) <= max_width_px) {
       return;
     }
   }
-  strncpy(text, "…", len);
+  strncpy(text, "...", len);
   text[len - 1] = '\0';
 }
 
@@ -139,7 +154,7 @@ int drawTempAt(int x, int top_y, int value, char unit, UiTextStyle style, uint16
 void drawSunGroup(int cx, bool sunset, const char* time_str, int y, uint16_t fg,
                   uint16_t bg) {
   const int icon = services::weather_icon::sunIconSize();
-  displayFontApply(tft, displayFontDetail());
+  displayFontApply(tft, sunTextStyle());
   const int text_w = tft.textWidth(time_str);
   constexpr int kGap = ui::sc(4);
   const int total = icon + kGap + text_w;
@@ -163,7 +178,7 @@ int sunRowHeight() {
   if (services::weather_icon::hasSunIcons()) {
     return services::weather_icon::sunIconSize() + kLineGap;
   }
-  return displayFontHeight(tft, displayFontDetail()) + kLineGap;
+  return displayFontHeight(tft, sunTextStyle()) + kLineGap;
 }
 
 void drawSunRow(int* y, uint16_t dim, uint16_t bg) {
@@ -183,7 +198,7 @@ void drawSunRow(int* y, uint16_t dim, uint16_t bg) {
   }
   char line[40];
   snprintf(line, sizeof(line), "Sun %s  -  %s", sr, ss);
-  drawCenterLine(line, y, displayFontDetail(), dim, bg);
+  drawCenterLine(line, y, sunTextStyle(), dim, bg);
 }
 
 int currentWeatherRowHeight() {
@@ -246,7 +261,8 @@ void clockScreenDraw() {
   radar::accentHighlightRgb(&accent_r, &accent_g, &accent_b);
   const uint16_t accent_fg = tft.color565(accent_r, accent_g, accent_b);
   const uint16_t ampm_fg = accent_fg;
-  const uint16_t hint_fg = tft.color565(120, 140, 160);
+  // Sunrise / sunset in the label color (was the dim hint grey, hard to read).
+  const uint16_t sun_fg = tft.color565(180, 200, 220);
 
   char time_line[16];
   char ampm_line[8];
@@ -278,7 +294,7 @@ void clockScreenDraw() {
     drawCurrentWeatherRow(&y, fg, bg);
     if (sunRowHeight() > 0) {
       y += kSectionGap - kLineGap;
-      drawSunRow(&y, hint_fg, bg);
+      drawSunRow(&y, sun_fg, bg);
     }
   }
 
