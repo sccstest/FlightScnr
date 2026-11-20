@@ -444,13 +444,18 @@ void formatScaleTag(char* buf, size_t len, float label_km, DistanceUnit unit) {
       break;
   }
 
-  // Integer rounding collapses nearby rings on small ranges (2mi / 3 rings →
-  // 0.67 and 1.33 both became "1mi"). Keep a tenth when not a whole number.
-  const float nearest = roundf(value);
-  if (fabsf(value - nearest) < 0.05f) {
-    snprintf(buf, len, "%d%s", static_cast<int>(nearest), suffix);
+  // Inner rings land on thirds ("2.7 mi", "5.3 mi" on the 8 mi range), which read
+  // as noise. Round to a half below 10 and to a whole from 10 up: "2.5 mi",
+  // "5.5 mi", "13 mi". Never below 0.5 so the 2 mi range's inner ring keeps a label.
+  float shown = value < 9.75f ? roundf(value * 2.0f) / 2.0f : roundf(value);
+  if (shown < 0.5f) {
+    shown = 0.5f;
+  }
+  const float whole = roundf(shown);
+  if (fabsf(shown - whole) < 0.01f) {
+    snprintf(buf, len, "%d %s", static_cast<int>(whole), suffix);
   } else {
-    snprintf(buf, len, "%.1f%s", static_cast<double>(value), suffix);
+    snprintf(buf, len, "%.1f %s", static_cast<double>(shown), suffix);
   }
 }
 
