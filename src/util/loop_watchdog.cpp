@@ -16,7 +16,11 @@ namespace {
 
 /** loop() silent this long with Wi-Fi up = hung. Longest legit pass seen: a few s. */
 constexpr uint32_t kHangMs = 45000;
-/** Wi-Fi down: wifiReconnect() may block up to ~2.5 min (3 networks x 3 x 15 s). */
+/** Wi-Fi down. The loop's reconnect is non-blocking now (wifiReconnectPoll), and the
+ *  setup portal feeds keepAlive() from its own loop, so no known path is silent this
+ *  long. The larger budget stays as a margin for the blocking connect helpers
+ *  (scan + 3 x 15 s per network, ~2.5 min) still used around the portal, and
+ *  because a false restart during an outage costs more than a late one. */
 constexpr uint32_t kHangWifiDownMs = 300000;
 /** Task-watchdog timeout: it bites this long after the monitor stops feeding it, so a
  *  hang with Wi-Fi up restarts the device after about 45 + 15 = 60 s. */

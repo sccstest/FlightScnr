@@ -393,4 +393,11 @@ constexpr char kPresetFallbackIanaTz[] = "America/New_York";
 constexpr double kPresetFallbackTzRadiusDeg = 2.0;
 #endif
 
+/** Runtime Wi-Fi outage: the setup portal opens on its own only once the link has
+ *  been down this long without a break (a changed router password is the case it
+ *  serves). Shorter outages (router reboot, ISP/Wi-Fi drop) keep the normal screens
+ *  with the "No Wi-Fi" badge and keep retrying in the background. Overrides the
+ *  round count in kWifiPortalAfterReconnectFails, which alone was ~80 s. */
+constexpr unsigned long kWifiPortalAfterDownMs = 30UL * 60UL * 1000UL;
+
 }  // namespace config

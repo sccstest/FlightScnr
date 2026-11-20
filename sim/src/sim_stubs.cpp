@@ -39,6 +39,8 @@ bool wifiReconnectPoll() {
   return true;
 }
 bool wifiReconnectActive() { return s_sim_reconnecting; }
+void wifiNoteLinkUp() {}
+void wifiRestartOutageClock() { Serial.println("[sim] Wi-Fi outage clock restarted"); }
 bool wifiSoftRecycle() {
   Serial.println("[sim] Wi-Fi recycle (no-op)");
   return true;

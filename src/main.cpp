@@ -2295,8 +2295,10 @@ void tryTlsWifiRefresh(unsigned long now) {
 }
 
 /** Last-resort restarts, checked every loop pass (cheap; acts at most once a
- *  minute). Wi-Fi down 30 min in a row, or Wi-Fi up but no adsb.fi data for 20 min
- *  while the radar wants it: only a full P4 reset re-initializes the C6. */
+ *  minute). Wi-Fi up but no adsb.fi data for 20 min while the radar wants it: only a
+ *  full P4 reset re-initializes the C6. Wi-Fi down: the reconnect rounds open the
+ *  setup portal at 30 min (wifi_setup.cpp; the portal has its own escalation), so
+ *  the Wi-Fi-down restart here is only a backstop at 60 min in case it never did. */
 void tickNetworkEscalation(unsigned long now) {
   static unsigned long s_no_data_since_ms = 0;
   static unsigned long s_last_try_ms = 0;
@@ -2311,8 +2313,8 @@ void tickNetworkEscalation(unsigned long now) {
 
   const char* why = nullptr;
   if (!wifi_up && g_wifi_down_since != 0 &&
-      now - g_wifi_down_since >= config::kEscalateWifiDownMs) {
-    why = "Wi-Fi down for 30 min";
+      now - g_wifi_down_since >= config::kEscalateWifiDownMs + config::kWifiPortalAfterDownMs) {
+    why = "Wi-Fi down for 60 min";
   } else if (s_no_data_since_ms != 0 && now - s_no_data_since_ms >= config::kEscalateNoAdsbMs) {
     why = "Wi-Fi up but no adsb.fi data for 20 min";
   }
@@ -2873,6 +2875,7 @@ static void loopBody() {
     if (wifi_reconnected || WiFi.status() == WL_CONNECTED) {
       g_wifi_down_since = 0;
       g_wifi_loss_logged = false;
+      wifiNoteLinkUp();
       tickLinkStatus();
       if (!g_online_services_started) {
         // Wi-Fi was unavailable at boot: start the services and the normal
@@ -2906,6 +2909,7 @@ static void loopBody() {
   } else {
     g_wifi_down_since = 0;
     g_wifi_loss_logged = false;
+    wifiNoteLinkUp();  // RAM only: clears failed-round counts the driver's own rejoin left
     if (!g_online_services_started) {
       // Came up on its own (auto-reconnect) after a boot without Wi-Fi.
       startOnlineServices();
