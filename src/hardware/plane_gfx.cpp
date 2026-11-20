@@ -1,4 +1,11 @@
+// Hot pixel code (sprite fills, AA text, panel blits): the framework builds with -Os,
+// which keeps per-pixel loops as calls and real divides. Must come before the includes
+// so inline helpers from headers get the same level.
+#pragma GCC optimize("O2")
+
 #include "hardware/plane_gfx.h"
+
+#include <Arduino.h>
 
 #include <algorithm>
 #include <cmath>
@@ -43,16 +50,96 @@ class SpriteCanvas : public Arduino_GFX {
             static_cast<size_t>(x)] = color;
   }
 
+  // Arduino_GFX's defaults for these go pixel by pixel through two virtual calls and
+  // a bounds check each. Same clipping (to the canvas), but whole rows at once.
   void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h,
                                uint16_t color) override {
-    for (int16_t row = y; row < y + h; ++row) {
-      for (int16_t col = x; col < x + w; ++col) {
-        writePixelPreclipped(col, row, color);
+    int32_t x0 = x;
+    int32_t y0 = y;
+    int32_t x1 = static_cast<int32_t>(x) + w;
+    int32_t y1 = static_cast<int32_t>(y) + h;
+    if (!clipRect(&x0, &y0, &x1, &y1)) {
+      return;
+    }
+    const size_t n = static_cast<size_t>(x1 - x0);
+    uint16_t* row = buffer_ + static_cast<size_t>(y0) * static_cast<size_t>(width_) +
+                    static_cast<size_t>(x0);
+    for (int32_t r = y0; r < y1; ++r, row += width_) {
+      std::fill_n(row, n, color);
+    }
+  }
+
+  void writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override {
+    if (w <= 0) {
+      return;
+    }
+    writeFillRectPreclipped(x, y, w, 1, color);
+  }
+
+  void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override {
+    if (h <= 0 || x < 0 || x >= width_) {
+      return;
+    }
+    int32_t y0 = std::max<int32_t>(0, y);
+    const int32_t y1 = std::min<int32_t>(height_, static_cast<int32_t>(y) + h);
+    uint16_t* p = buffer_ + static_cast<size_t>(y0) * static_cast<size_t>(width_) +
+                  static_cast<size_t>(x);
+    for (; y0 < y1; ++y0, p += width_) {
+      *p = color;
+    }
+  }
+
+  using Arduino_GFX::draw16bitRGBBitmap;
+
+  void draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t* bitmap, int16_t w,
+                          int16_t h) override {
+    copyBitmap(x, y, bitmap, w, h, false, 0);
+  }
+
+  void draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t* bitmap,
+                          uint16_t transparent_color, int16_t w, int16_t h) override {
+    copyBitmap(x, y, bitmap, w, h, true, transparent_color);
+  }
+
+ private:
+  bool clipRect(int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1) const {
+    if (*x0 < 0) *x0 = 0;
+    if (*y0 < 0) *y0 = 0;
+    if (*x1 > width_) *x1 = width_;
+    if (*y1 > height_) *y1 = height_;
+    return *x0 < *x1 && *y0 < *y1;
+  }
+
+  void copyBitmap(int16_t x, int16_t y, const uint16_t* bitmap, int16_t w, int16_t h,
+                  bool keyed, uint16_t key) {
+    if (bitmap == nullptr || w <= 0 || h <= 0) {
+      return;
+    }
+    int32_t x0 = x;
+    int32_t y0 = y;
+    int32_t x1 = static_cast<int32_t>(x) + w;
+    int32_t y1 = static_cast<int32_t>(y) + h;
+    if (!clipRect(&x0, &y0, &x1, &y1)) {
+      return;
+    }
+    const size_t n = static_cast<size_t>(x1 - x0);
+    for (int32_t r = y0; r < y1; ++r) {
+      const uint16_t* src = bitmap + static_cast<size_t>(r - y) * static_cast<size_t>(w) +
+                            static_cast<size_t>(x0 - x);
+      uint16_t* dst = buffer_ + static_cast<size_t>(r) * static_cast<size_t>(width_) +
+                      static_cast<size_t>(x0);
+      if (!keyed) {
+        memmove(dst, src, n * sizeof(uint16_t));
+        continue;
+      }
+      for (size_t i = 0; i < n; ++i) {
+        if (src[i] != key) {
+          dst[i] = src[i];
+        }
       }
     }
   }
 
- private:
   uint16_t* buffer_;
   int16_t width_;
   int16_t height_;
@@ -403,29 +490,78 @@ void PlaneGfx::setTextWrap(bool wrap) {
 
 namespace {
 
-uint16_t blend565(uint16_t fg, uint16_t bg, uint8_t a4) {
+/** v / 15 for v <= 945 (63 * 15), exact: 4370 / 65536 overshoots 1/15 by less than
+ *  1/15 / 4681, so the floor never moves. Avoids three real divides per pixel. */
+inline uint32_t div15(uint32_t v) { return (v * 4370u) >> 16; }
+
+/** (fg * a + bg * (15 - a)) / 15 per channel, 4-bit alpha. Same results as the old
+ *  divide-by-15 version, so text looks exactly as before. */
+inline uint16_t blend565(uint16_t fg, uint16_t bg, uint8_t a4) {
   if (a4 == 0) {
     return bg;
   }
   if (a4 >= 15) {
     return fg;
   }
-  const uint8_t fr = static_cast<uint8_t>((fg >> 11) & 0x1F);
-  const uint8_t fg_g = static_cast<uint8_t>((fg >> 5) & 0x3F);
-  const uint8_t fb = static_cast<uint8_t>(fg & 0x1F);
-  const uint8_t br = static_cast<uint8_t>((bg >> 11) & 0x1F);
-  const uint8_t bg_g = static_cast<uint8_t>((bg >> 5) & 0x3F);
-  const uint8_t bb = static_cast<uint8_t>(bg & 0x1F);
-  const uint8_t r =
-      static_cast<uint8_t>((fr * a4 + br * (15 - a4)) / 15);
-  const uint8_t g =
-      static_cast<uint8_t>((fg_g * a4 + bg_g * (15 - a4)) / 15);
-  const uint8_t b =
-      static_cast<uint8_t>((fb * a4 + bb * (15 - a4)) / 15);
+  const uint32_t ia = 15u - a4;
+  const uint32_t r = div15(((fg >> 11) & 0x1Fu) * a4 + ((bg >> 11) & 0x1Fu) * ia);
+  const uint32_t g = div15(((fg >> 5) & 0x3Fu) * a4 + ((bg >> 5) & 0x3Fu) * ia);
+  const uint32_t b = div15((fg & 0x1Fu) * a4 + (bg & 0x1Fu) * ia);
   return static_cast<uint16_t>((r << 11) | (g << 5) | b);
 }
 
+// ---- [perf] counters ------------------------------------------------------------
+struct PerfSlot {
+  uint32_t n = 0;
+  uint32_t us = 0;
+  uint32_t max_us = 0;
+};
+PerfSlot s_perf[static_cast<size_t>(gfx_perf::Kind::kCount)];
+unsigned long s_perf_last_ms = 0;
+constexpr unsigned long kPerfReportMs = 10000;
+
 }  // namespace
+
+namespace gfx_perf {
+
+void add(Kind kind, uint32_t us) {
+  PerfSlot& s = s_perf[static_cast<size_t>(kind)];
+  ++s.n;
+  s.us += us;
+  if (us > s.max_us) {
+    s.max_us = us;
+  }
+  const unsigned long now = millis();
+  if (s_perf_last_ms == 0) {
+    s_perf_last_ms = now;
+    return;
+  }
+  if (now - s_perf_last_ms < kPerfReportMs) {
+    return;
+  }
+  s_perf_last_ms = now;
+  const PerfSlot& ic = s_perf[static_cast<size_t>(Kind::Icon)];
+  const PerfSlot& im = s_perf[static_cast<size_t>(Kind::IconMiss)];
+  const PerfSlot& tx = s_perf[static_cast<size_t>(Kind::Text)];
+  const PerfSlot& fl = s_perf[static_cast<size_t>(Kind::Flush)];
+  // icon: every icon drawn (miss = rotated mask built, n of them included in icon);
+  // text: AA strings; flush: panel blits of 1/3 screen or more. ms = total, max = worst one.
+  Serial.printf(
+      "[perf] icon n=%lu ms=%lu.%lu (miss n=%lu ms=%lu.%lu) text n=%lu ms=%lu.%lu max=%luus "
+      "flush n=%lu ms=%lu.%lu max=%luus\n",
+      static_cast<unsigned long>(ic.n), static_cast<unsigned long>(ic.us / 1000),
+      static_cast<unsigned long>((ic.us % 1000) / 100), static_cast<unsigned long>(im.n),
+      static_cast<unsigned long>(im.us / 1000), static_cast<unsigned long>((im.us % 1000) / 100),
+      static_cast<unsigned long>(tx.n), static_cast<unsigned long>(tx.us / 1000),
+      static_cast<unsigned long>((tx.us % 1000) / 100), static_cast<unsigned long>(tx.max_us),
+      static_cast<unsigned long>(fl.n), static_cast<unsigned long>(fl.us / 1000),
+      static_cast<unsigned long>((fl.us % 1000) / 100), static_cast<unsigned long>(fl.max_us));
+  for (PerfSlot& slot : s_perf) {
+    slot = PerfSlot{};
+  }
+}
+
+}  // namespace gfx_perf
 
 void PlaneGfx::getAaTextBounds(const char* text, int16_t x, int16_t y, int16_t* x1,
                                int16_t* y1, uint16_t* w, uint16_t* h) const {
@@ -663,6 +799,41 @@ void PlaneGfx::drawAaString(const char* text, int16_t cursor_x, int16_t cursor_y
 
     const int16_t ox = static_cast<int16_t>(x + g.xOffset);
     const int16_t oy = static_cast<int16_t>(y + g.yOffset);
+
+    if (fb_ != nullptr) {
+      // RAM target (sprite / offscreen canvas): blend straight into its pixels. Same
+      // result as the scratch + draw16bitRGBBitmap path below, without a per-pixel
+      // trip through Arduino_GFX. Transparent text skips alpha-0 pixels; opaque
+      // text still paints the whole glyph box (alpha 0 = background).
+      const uint8_t* bm = aa_font_->bitmap + g.bitmapOffset;
+      const int32_t c0 = std::max<int32_t>(0, -static_cast<int32_t>(ox));
+      const int32_t c1 =
+          std::min<int32_t>(gw, static_cast<int32_t>(fb_w_) - static_cast<int32_t>(ox));
+      const int32_t r0 = std::max<int32_t>(0, -static_cast<int32_t>(oy));
+      const int32_t r1 =
+          std::min<int32_t>(gh, static_cast<int32_t>(fb_h_) - static_cast<int32_t>(oy));
+      for (int32_t row = r0; row < r1; ++row) {
+        uint16_t* dst = fb_ + static_cast<size_t>(oy + row) * static_cast<size_t>(fb_w_) +
+                        static_cast<size_t>(ox);
+        size_t bit_i = static_cast<size_t>(row) * static_cast<size_t>(gw) +
+                       static_cast<size_t>(c0);
+        for (int32_t col = c0; col < c1; ++col, ++bit_i) {
+          const uint8_t byte = bm[bit_i >> 1];
+          const uint8_t a4 = (bit_i & 1) ? static_cast<uint8_t>(byte & 0x0F)
+                                         : static_cast<uint8_t>(byte >> 4);
+          if (transparent) {
+            if (a4 != 0) {
+              dst[col] = blend565(fg, dst[col], a4);
+            }
+          } else {
+            dst[col] = blend565(fg, opaque_bg, a4);
+          }
+        }
+      }
+      x = static_cast<int16_t>(x + g.xAdvance);
+      continue;
+    }
+
     const size_t pixels = static_cast<size_t>(gw) * static_cast<size_t>(gh);
     // Transparent text composites against the framebuffer in one blit. An
     // opaque background would stamp a solid chip behind every glyph.
@@ -741,7 +912,15 @@ void PlaneGfx::drawString(const char* text, int16_t x, int16_t y) {
   }
 
   if (aa_font_ != nullptr) {
+    const uint32_t t0 = micros();
+#if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
+    // The P4 "panel" is a PSRAM framebuffer whose bus nests write sessions; one
+    // session per string means one cache write-back instead of one per glyph pixel.
+    const bool opened_here = write_depth_ == 0;
+#else
+    // QSPI panels: drawPixel opens its own CS session; nesting breaks CS.
     const bool opened_here = write_depth_ == 0 && !hardware_panel_;
+#endif
     if (opened_here) {
       startWrite();
     }
@@ -749,6 +928,7 @@ void PlaneGfx::drawString(const char* text, int16_t x, int16_t y) {
     if (opened_here) {
       endWrite();
     }
+    gfx_perf::add(gfx_perf::Kind::Text, micros() - t0);
     return;
   }
 
@@ -962,6 +1142,19 @@ void PlaneGfx::blitRegionFromBuffer(int16_t x, int16_t y, int16_t w, int16_t h,
   if (x >= screen_w || y >= screen_h) {
     return;
   }
+
+  // [perf] flush: time panel blits of a third of the screen or more.
+  struct FlushTimer {
+    bool on;
+    uint32_t t0;
+    ~FlushTimer() {
+      if (on) {
+        gfx_perf::add(gfx_perf::Kind::Flush, static_cast<uint32_t>(micros()) - t0);
+      }
+    }
+  } const flush_timer{static_cast<int32_t>(w) * h * 3 >=
+                          static_cast<int32_t>(screen_w) * screen_h,
+                      static_cast<uint32_t>(micros())};
 
   if (x < 0) {
     src += static_cast<size_t>(-x);
