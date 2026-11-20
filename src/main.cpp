@@ -137,7 +137,7 @@ unsigned long g_diag_adsb_process_max_ms = 0;
 /** [diag] printed during this pass: reset loop_max once the pass has been measured,
  *  so the diag pass itself is not reported as the next interval's maximum. */
 bool g_diag_loop_stats_reset_pending = false;
-/** weather::bootSanityCheck() waits for the first radar frame (it blocks 1-10 s). */
+/** The boot weather check is queued once the first radar frame is up. */
 bool g_weather_boot_check_pending = false;
 
 // --- [perf] loop: once-a-minute summary of slow loop passes and what caused them. ---
@@ -2522,8 +2522,11 @@ void tickWeatherBootCheck() {
   if (WiFi.status() != WL_CONNECTED) {
     return;
   }
-  g_weather_boot_check_pending = false;
-  services::weather::bootSanityCheck();
+  // Queued on the HTTPS worker so the loop (and touch) never waits on TLS. If the
+  // worker is busy, try again on a later pass.
+  if (services::weather::queueBootCheck()) {
+    g_weather_boot_check_pending = false;
+  }
 }
 
 }  // namespace
@@ -2544,9 +2547,8 @@ static void startOnlineServices() {
   services::rain::init();
 #endif
   services::adsb::fetchInit();
-  // Synchronous HTTPS call (1-10 s): run it after the first radar frame instead of
-  // holding back the disclaimer (see tickWeatherBootCheck). TODO(lead): switch to the
-  // network agent's queued variant once it is merged.
+  // One weather check after the first radar frame, queued on the HTTPS worker
+  // (see tickWeatherBootCheck), so it never holds back the disclaimer or the loop.
   g_weather_boot_check_pending = true;
   settingsSetSavedCallback(applySettingsLive);
   g_last_adsb_fetch_ms = 0;
