@@ -975,8 +975,19 @@ void applySettingsLive() {
   services::route::cancelDetailEnrichment();
   services::photo::cancel();
   ui::flightDetailReleaseSprite();
-  hardware::displayApplyBrightness();
   g_last_adsb_fetch_ms = 0;
+
+  // Night mode: a phone Save (or a map upload) must not relight the dimmed clock or
+  // draw the day screen behind a sleeping panel. Keep the night look until morning.
+  if (g_off_hours_active) {
+    if (services::offhours::mode() == services::offhours::Mode::Dim) {
+      g_screen = AppScreen::Clock;
+      showClock();
+      hardware::displayBrightnessOverride(20);
+    }
+    return;
+  }
+  hardware::displayApplyBrightness();
 
   switch (g_screen) {
     case AppScreen::Radar:
@@ -1066,8 +1077,11 @@ void returnToRadar(bool from_idle_timeout = false, bool manual_navigation = fals
   if (from_idle_timeout) {
     ui::infoScreenResetToMain();
     ui::clockSettingsResetFocus();
-    inputDiscardPendingInteractions();
   }
+  // Every return drops queued input. Clock, weather and About ignore taps and pinches,
+  // so they stayed queued; an automatic return ("aircraft appeared", feed back) then
+  // opened flight detail or changed the range on its own minutes later.
+  inputDiscardPendingInteractions();
   g_screen = AppScreen::Radar;
   g_radar_visible = false;
   if (WiFi.status() == WL_CONNECTED) {
@@ -1099,7 +1113,7 @@ void openSettingsFromRadar() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (1/4)");
+  Serial.println("Screen: settings (1, Status)");
   logNavContext("settings_p1");
 }
 
@@ -1127,7 +1141,7 @@ void saveOrientationAdjust() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (2/4) facing saved");
+  Serial.println("Screen: settings (2, Display) facing saved");
   logNavContext("orient_save");
 }
 
@@ -1137,7 +1151,7 @@ void cancelOrientationAdjust() {
   g_screen = AppScreen::Settings;
   noteSecondaryActivity();
   showSettings();
-  Serial.println("Screen: settings (2/4) facing cancelled");
+  Serial.println("Screen: settings (2, Display) facing cancelled");
   logNavContext("orient_cancel");
 }
 
@@ -1172,6 +1186,7 @@ void openDetailsFromRadar() {
 #if defined(FLIGHTSCNR_BOARD_WAVESHARE_P4_4C)
 void openSkyEventFromRadar() {
   ui::flightDetailReleaseSprite();
+  inputDiscardPendingInteractions();  // a double tap on the banner must not close it again
   g_screen = AppScreen::SkyEvent;
   g_radar_visible = false;
   noteSecondaryActivity();
@@ -1252,10 +1267,15 @@ void onRangeStep(int8_t delta) {
     return;
   }
 
-  if (delta > 0) {
-    ui::radar::scaleIncrease();
-  } else {
-    ui::radar::scaleDecrease();
+  // Several steps (a fast pinch gathered during a redraw) change the range once and
+  // redraw once.
+  const int steps = delta > 0 ? delta : -delta;
+  for (int i = 0; i < steps; ++i) {
+    if (delta > 0) {
+      ui::radar::scaleIncrease();
+    } else {
+      ui::radar::scaleDecrease();
+    }
   }
   char range_label[12];
   ui::radar::formatActiveScaleTag(range_label, sizeof(range_label));
@@ -1399,6 +1419,12 @@ void handleNavigation() {
   } else if (swipe == SwipeRight && g_screen == AppScreen::Orientation) {
     cancelOrientationAdjust();
     navigated = true;
+  } else if (vertical && g_screen == AppScreen::Orientation) {
+    // Same rule as the other secondary screens: up/down goes back to the radar
+    // (without saving the previewed facing).
+    ui::radar::applyFacingDeg(g_facing_saved_deg);
+    returnToRadar(false, true);
+    navigated = true;
   } else if (swipe == SwipeRight && g_screen == AppScreen::Settings) {
     if (ui::infoScreenPrevPage()) {
       ui::infoScreenResetDisplayFocus();
@@ -1484,7 +1510,12 @@ void tickSecondaryScreenTimeout() {
     return;
   }
   if (g_screen == AppScreen::Orientation) {
-    // Stay on adjust screen until tap-save or swipe-cancel.
+    // Tap-save or swipe-cancel normally ends it; left alone for 2 minutes, cancel (the
+    // facing preview is not saved) and go back to the radar so it never sticks there.
+    if (millis() - g_secondary_activity_ms >= 120000UL) {
+      ui::radar::applyFacingDeg(g_facing_saved_deg);
+      returnToRadar(true);
+    }
     return;
   }
   if (g_screen == AppScreen::FlightDetail) {
@@ -1543,6 +1574,9 @@ void tickOffHours() {
   g_off_hours_active = is_active;
 
   if (!was_active && is_active) {
+    if (g_screen == AppScreen::Orientation) {
+      ui::radar::applyFacingDeg(g_facing_saved_deg);  // drop an unsaved facing preview
+    }
     const auto mode = services::offhours::mode();
     if (mode == services::offhours::Mode::DisplayOff) {
       displaySleep();
@@ -1730,12 +1764,23 @@ void handleInput() {
     // Unlike the dial, a pinch stops at the ends instead of wrapping 2 mi <-> 30 mi.
     const int8_t pinch = inputConsumePinchStep();
     if (pinch != 0) {
+      // Apply every step the touch task gathered, clamped to the presets left in that
+      // direction (one step per pass used to drop the rest of a fast pinch).
       const uint8_t mi = ui::radar::scaleActiveMiles();
-      const bool at_min = mi <= ui::radar::kRangeMileOptions[0];
-      const bool at_max =
-          mi >= ui::radar::kRangeMileOptions[ui::radar::kRangeMileOptionCount - 1];
-      if ((pinch > 0 && !at_min) || (pinch < 0 && !at_max)) {
-        onRangeStep(pinch > 0 ? -1 : 1);
+      const int count = static_cast<int>(ui::radar::kRangeMileOptionCount);
+      int idx = 0;  // first preset at or above the live range
+      while (idx < count - 1 && ui::radar::kRangeMileOptions[idx] < mi) {
+        ++idx;
+      }
+      int want = -pinch;  // spread (pinch > 0) = zoom in = smaller range preset
+      if (want < -idx) {
+        want = -idx;
+      }
+      if (want > count - 1 - idx) {
+        want = count - 1 - idx;
+      }
+      if (want != 0) {
+        onRangeStep(static_cast<int8_t>(want));
       }
     }
     return;
@@ -2729,6 +2774,9 @@ static void loopBody() {
       }
       hardware::displayBrightnessRestore();
       g_off_hours_wake_override_until_ms = millis() + 5UL * 60UL * 1000UL;
+      // The waking tap is used up; taps, swipes and pinches made in the dark (or while
+      // the panel relights) must not open flight detail or the clock a moment later.
+      inputDiscardPendingInteractions();
       g_screen = AppScreen::Radar;
       if (WiFi.status() == WL_CONNECTED) {
         showRadar();
@@ -2738,6 +2786,9 @@ static void loopBody() {
       if (services::offhours::mode() == services::offhours::Mode::Dim) {
         tickClockDisplay();
       }
+      // Only a tap wakes it; drop swipes and pinches so none is replayed after a wake.
+      (void)inputConsumeSwipe();
+      (void)inputConsumePinchStep();
       settingsWebPoll();
       tickDiagLog();
       return;

@@ -569,8 +569,8 @@ void handleSettingsPage() {
 #if FLIGHTSCNR_HAS_ENCODER
         "On the device: Settings &rarr; Display &rarr; Facing, then turn the dial."
 #else
-        "On the device: swipe left on the radar, Settings 2/4 &rarr; Facing, then tap the "
-        "left or right side to turn and the middle to save."
+        "On the device: swipe left on the radar and once more to the Display page, tap "
+        "Facing, then tap the left or right side to turn and the middle to save."
 #endif
         "</p>",
         static_cast<unsigned>(ui::radar::facingDeg()));
@@ -1352,8 +1352,8 @@ void handleSettingsPage() {
             "portal.</p></div></details>");
 #else
             "<p class=\"wifi-note\">To forget every network and start Wi&#8209;Fi setup again: on "
-            "the device, swipe left on the radar, then on Settings 1/4 tap <b>Reset Wi-Fi</b> "
-            "twice.</p></div></details>");
+            "the device, swipe left on the radar to the Status page, tap <b>Reset Wi-Fi</b>, "
+            "then tap it again when it turns red.</p></div></details>");
 #endif
 
   // ---------- Advanced group (collapsed): route lookups, cache, disclaimer, firmware ----------
@@ -1648,6 +1648,10 @@ void handleSettingsPage() {
       ".then(function(){if(s===seq)timer=setTimeout(function(){poll(s);},"
       "quiet>10?3000:1000);});"
       "}"
+      // A focused, untouched field was skipped by apply(); once it loses focus, apply the
+      // last device values again so it catches up (poll only re-applies on a change).
+      "document.addEventListener('focusout',function(){"
+      "if(last)setTimeout(function(){apply(JSON.parse(last));},0);},true);"
       "function arm(){if(timer)clearTimeout(timer);timer=null;seq++;quiet=0;poll(seq);}"
       "document.addEventListener('visibilitychange',function(){"
       "if(document.visibilityState==='visible')arm();"
@@ -1845,7 +1849,9 @@ void handleRestart() {
                  "max-width:28rem;margin:2rem auto;padding:0 1rem\">"
                  "<h1 style=\"font-size:1.2rem\">Restarting...</h1>"
                  "<p>The radar is restarting. This page reloads in 20 seconds.</p>"
-                 "<script>setTimeout(function(){location.href='/';},20000);</script>");
+                 // replaceState: a refresh or Back here must not re-send the restart POST.
+                 "<script>try{history.replaceState(null,'','/');}catch(e){}"
+                 "setTimeout(function(){location.replace('/');},20000);</script>");
   delay(500);  // let the reply leave before the reset
   ESP.restart();
 }

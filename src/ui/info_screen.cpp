@@ -169,6 +169,7 @@ int s_rows_drawn = 0;
 // button instead. First tap arms it ("Tap again to reset"), a second tap within
 // kWifiResetConfirmMs wipes saved networks and reboots into the setup portal.
 constexpr unsigned long kWifiResetConfirmMs = 5000UL;
+constexpr unsigned long kWifiResetMinConfirmGapMs = 700UL;
 unsigned long s_wifi_reset_armed_ms = 0;
 int s_wifi_reset_row_top = -1;
 int s_wifi_reset_row_bottom = -1;
@@ -838,9 +839,17 @@ MainPageTap infoScreenMainTap(int16_t x, int16_t y) {
     return MainPageTap::None;
   }
   const unsigned long now = millis();
-  if (s_wifi_reset_armed_ms != 0 && now - s_wifi_reset_armed_ms < kWifiResetConfirmMs) {
-    s_wifi_reset_armed_ms = 0;
-    return MainPageTap::ResetConfirmed;
+  if (s_wifi_reset_armed_ms != 0) {
+    const unsigned long since = now - s_wifi_reset_armed_ms;
+    // A quick double tap (both taps queued by the touch task) must not arm and confirm
+    // in one go: the confirm has to be a deliberate second tap after the red label shows.
+    if (since < kWifiResetMinConfirmGapMs) {
+      return MainPageTap::None;
+    }
+    if (since < kWifiResetConfirmMs) {
+      s_wifi_reset_armed_ms = 0;
+      return MainPageTap::ResetConfirmed;
+    }
   }
   s_wifi_reset_armed_ms = now != 0 ? now : 1;
   return MainPageTap::ResetArmed;
