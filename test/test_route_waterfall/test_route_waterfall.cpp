@@ -5,6 +5,8 @@
 #include "services/route_waterfall.h"
 
 using services::route::mergePartialRoute;
+using services::route::routeFitsPosition;
+using services::route::routeOffPathKm;
 using services::route::routeEndpointsComplete;
 using services::route::RouteInfo;
 using services::route::shouldFinishLiveApiStep;
@@ -77,6 +79,39 @@ void test_merge_partial_null_dest_is_safe(void) {
   mergePartialRoute(nullptr, partial);
 }
 
+// KLAS, KMSY, KTPA, KBDL; plane over Odessa, FL (just north-west of Tampa).
+constexpr float kLasLat = 36.08f, kLasLon = -115.15f;
+constexpr float kMsyLat = 29.99f, kMsyLon = -90.26f;
+constexpr float kTpaLat = 27.98f, kTpaLon = -82.53f;
+constexpr float kBdlLat = 41.94f, kBdlLon = -72.68f;
+constexpr float kOdessaLat = 28.19f, kOdessaLon = -82.59f;
+
+void test_stale_adsbdb_route_rejected(void) {
+  // SWA4976 seen over Tampa while adsbdb still says LAS-MSY (Nov 2026).
+  float off = 0;
+  TEST_ASSERT_FALSE(
+      routeFitsPosition(kLasLat, kLasLon, kMsyLat, kMsyLon, kOdessaLat, kOdessaLon, &off));
+  TEST_ASSERT_TRUE(off > 700.0f && off < 850.0f);  // ~770 km past New Orleans
+}
+
+void test_real_route_accepted_near_origin(void) {
+  TEST_ASSERT_TRUE(routeFitsPosition(kTpaLat, kTpaLon, kBdlLat, kBdlLon, kOdessaLat, kOdessaLon));
+}
+
+void test_mid_route_cross_track(void) {
+  // Midway along the equator from (0,0) to (0,20): 1 degree north is ~111 km off.
+  const float off = routeOffPathKm(0, 0, 0, 20, 1, 10);
+  TEST_ASSERT_FLOAT_WITHIN(2.0f, 111.2f, off);
+  // ~2224 km route -> limit ~322 km: 1 degree off fits, 4 degrees off does not.
+  TEST_ASSERT_TRUE(routeFitsPosition(0, 0, 0, 20, 1, 10));
+  TEST_ASSERT_FALSE(routeFitsPosition(0, 0, 0, 20, 4, 10));
+}
+
+void test_behind_origin_uses_origin_distance(void) {
+  const float off = routeOffPathKm(0, 0, 0, 20, 0, -2);
+  TEST_ASSERT_FLOAT_WITHIN(2.0f, 222.4f, off);
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -85,5 +120,9 @@ int main(int argc, char** argv) {
   RUN_TEST(test_airline_only_does_not_finish_waterfall);
   RUN_TEST(test_merge_partial_fills_empty_only);
   RUN_TEST(test_merge_partial_null_dest_is_safe);
+  RUN_TEST(test_stale_adsbdb_route_rejected);
+  RUN_TEST(test_real_route_accepted_near_origin);
+  RUN_TEST(test_mid_route_cross_track);
+  RUN_TEST(test_behind_origin_uses_origin_distance);
   return UNITY_END();
 }

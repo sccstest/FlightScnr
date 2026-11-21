@@ -309,6 +309,11 @@ bool slotNeedsApiRouteUpgrade(const CacheSlot& slot) {
   if (slot.api_done && slot.source == ApiSource::kNone) {
     return false;
   }
+  // adsbdb is the last live step, so api_done there means every source was
+  // tried (also when its route was dropped as off-path): don't refetch.
+  if (slot.api_done && slot.source == ApiSource::kAdsbDb) {
+    return false;
+  }
   return true;
 }
 
@@ -546,6 +551,38 @@ void storeCache(const char* callsign, const RouteInfo& info, ApiSource src, bool
   storeCache(callsign, info, src, api_done, nowSec(), true);
 }
 
+/**
+ * adsbdb is a fixed callsign list, so a reused flight number can carry an old
+ * route (SWA4976 showed LAS-MSY while flying TPA-BDL). Check the route against
+ * where the plane is now and drop origin/dest when it can't be this flight,
+ * keeping the airline. Returns true when the route was dropped. Unknown plane
+ * position or airport -> keep the route.
+ */
+bool dropRouteIfOffPath(const char* callsign, RouteInfo* route) {
+  if (route == nullptr || route->origin[0] == '\0' || route->dest[0] == '\0') {
+    return false;
+  }
+  services::adsb::Aircraft ac = {};
+  if (!services::adsb::copyAircraftByCallsign(callsign, &ac) ||
+      (ac.lat == 0.0f && ac.lon == 0.0f)) {
+    return false;
+  }
+  float olat = 0, olon = 0, dlat = 0, dlon = 0;
+  if (!services::airport::lookupLatLon(route->origin, &olat, &olon) ||
+      !services::airport::lookupLatLon(route->dest, &dlat, &dlon)) {
+    return false;
+  }
+  float off_km = 0;
+  if (routeFitsPosition(olat, olon, dlat, dlon, ac.lat, ac.lon, &off_km)) {
+    return false;
+  }
+  Serial.printf("[route] %s %s-%s dropped: plane is %.0f km off that path\n", callsign,
+                route->origin, route->dest, off_km);
+  route->origin[0] = '\0';
+  route->dest[0] = '\0';
+  return true;
+}
+
 void loadFileEntryToRam(const char* callsign, const route_cache::Entry& file_entry) {
   RouteInfo info;
   routeClear(&info);
@@ -556,7 +593,10 @@ void loadFileEntryToRam(const char* callsign, const route_cache::Entry& file_ent
   strncpy(info.dest, file_entry.dest, sizeof(info.dest) - 1);
   info.dest[sizeof(info.dest) - 1] = '\0';
   const ApiSource src = static_cast<ApiSource>(file_entry.source);
-  storeCache(callsign, info, src, file_entry.api_done, file_entry.cached_at_sec, false);
+  // Routes cached before the position check existed are checked on the way in;
+  // a dropped one is written back so the flash copy is fixed too.
+  const bool dropped = src == ApiSource::kAdsbDb && dropRouteIfOffPath(callsign, &info);
+  storeCache(callsign, info, src, file_entry.api_done, file_entry.cached_at_sec, dropped);
 }
 
 /**
@@ -1984,6 +2024,7 @@ void detailWorkerRunStepFor(const char* callsign) {
         // adsbdb may only know the route; fill airline/ICAO from the local
         // callsign prefix so route + airline/logo appear together.
         applyCallsignAirlineFallback(callsign, &live);
+        dropRouteIfOffPath(callsign, &live);
         s_detail_result = live;
         s_detail_result_src = ApiSource::kAdsbDb;
         storeCache(callsign, live, ApiSource::kAdsbDb, true);

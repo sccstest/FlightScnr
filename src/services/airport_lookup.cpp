@@ -190,6 +190,25 @@ bool lookupName(const char* code, char* out, size_t out_len) {
   return lookupNameByIcao(icao, out, out_len);
 }
 
+bool lookupLatLon(const char* code, float* lat, float* lon) {
+  if (lat == nullptr || lon == nullptr) {
+    return false;
+  }
+  char icao[5];
+  size_t index = 0;
+  if (!resolveToIcao(code, icao) || !findIcaoIndex(icao, &index)) {
+    return false;
+  }
+  data::airports::Entry entry;
+  readEntryAt(index, &entry);
+  if (entry.lat_centi == 0 && entry.lon_centi == 0) {
+    return false;
+  }
+  *lat = entry.lat_centi / 100.0f;
+  *lon = entry.lon_centi / 100.0f;
+  return true;
+}
+
 bool normalizeRouteCode(const char* code, char* icao_out, size_t icao_len) {
   if (icao_len == 0 || icao_out == nullptr) {
     return false;

@@ -24,4 +24,22 @@ bool shouldFinishLiveApiStep(const RouteInfo& r);
  */
 void mergePartialRoute(RouteInfo* dest, const RouteInfo& partial);
 
+/**
+ * Great-circle distance in km from the plane at (plat, plon) to the path
+ * origin -> dest: the cross-track distance while the plane is between the two
+ * airports, otherwise the distance to the nearer end.
+ */
+float routeOffPathKm(float olat, float olon, float dlat, float dlon, float plat, float plon);
+
+/** Allowed distance off the path: 100 km plus 10% of the route length. */
+float routeOffPathLimitKm(float route_km);
+
+/**
+ * False when the plane is too far from the origin -> dest path for the route
+ * to be its current flight (e.g. adsbdb's stale LAS-MSY for a plane over
+ * Tampa). Static callsign databases go stale when airlines reuse numbers.
+ */
+bool routeFitsPosition(float olat, float olon, float dlat, float dlon, float plat, float plon,
+                       float* off_km_out = nullptr);
+
 }  // namespace services::route
